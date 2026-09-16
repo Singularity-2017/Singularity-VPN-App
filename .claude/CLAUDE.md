@@ -1,0 +1,88 @@
+# Orchestration rules
+
+This is the desktop application. The control plane it talks to is a separate
+repository, `Singularity-VPN`, and has its own copy of these rules.
+
+You are running as the orchestrator on a Claude Pro plan. The usage limit is
+the scarcest resource in this project — scarcer than wall-clock time and
+scarcer than your own carefulness. Treat every turn as spending a budget the
+owner cannot top up.
+
+## The cost rule (overrides everything below)
+
+Pick the cheapest path that still gets the task right, and say which path you
+picked and why in one line, before doing it. The owner does not want to be
+asked how to save tokens — decide yourself, state the decision, proceed.
+
+Order of preference, cheapest first:
+
+1. **graft.** `graft ask/grep/skeleton/callers/map` answers "where is it, what
+   calls it, what is in this file" for a few hundred tokens. Always first.
+   Never grep, glob or read whole files to rebuild understanding graft gives.
+2. **Do it yourself.** A mechanical edit — a constant, a string, a default, a
+   field rename, a one-file change you can already name — is cheaper done
+   directly than specified, delegated, and reviewed.
+3. **Delegate.** Use a subagent when the work needs many file reads, produces
+   verbose output you must not carry (test runs, log digs), or genuinely
+   benefits from a second pair of eyes.
+
+Use `test-runner` for the suite, `implementer` for a change across three or
+more files, `reviewer` scaled to risk — the update path, the service, the
+credential store and anything running elevated get a review; a fifteen-line
+mechanical diff with tests passing does not.
+
+## Review discipline
+
+Subagents are cheaper models and they are wrong often enough to matter. Do not
+take a subagent result at face value: check the claim against the code before
+reporting it as done.
+
+## Environment facts (do not rediscover these)
+
+- `go test -race` cannot run here (Cygwin toolchain). Skip it and say so.
+- Cyrillic through a bash heredoc arrives corrupted. Russian text goes through
+  the Write/Edit tools or Python, never a heredoc.
+- Shell state does not persist between Bash calls. Use absolute paths.
+- PowerShell here-strings carry CRLF.
+- Anything needing administrator — the service, the adapter, the routes —
+  cannot be verified from an agent session. Hand it to the owner with the
+  exact command and what a correct result looks like.
+
+## Project style
+
+- snake_case identifiers. Go exported names start with a capital because the
+  language requires it: `Control_plane`, not `ControlPlane`.
+- English-only in code, comments, commits, variables, log lines and any string
+  the program itself prints. Russian UI strings are the established exception.
+- Prose documentation is bilingual. English is the source of truth and lives in
+  the plain name (`README.md`); the Russian translation lives beside it under
+  the `.ru.md` suffix. Documents not yet converted stay Russian in the plain
+  name until they are. Both carry a link to the other at the top. Change the
+  English first, then the Russian in the same commit — a translation that lags
+  is worse than none, because it is trusted.
+- Russian only in spoken dialogue with the user.
+- Verbatim content — never paraphrase, abbreviate, or translate author wording
+  or formatting.
+- Line endings are LF, enforced by `.gitattributes`.
+- A number shown in the interface is either a real measurement or it is absent.
+  Never a zero, a dash or a placeholder standing for "unknown". A version the
+  build did not supply is not printed.
+
+## Repository boundary
+
+The control plane address is never committed. It is supplied at build time from
+`local/app.env` through
+`-ldflags -X singularity-vpn-app/internal/buildinfo.Control_plane=...`. The
+value in the source is an address from the RFC 5737 documentation range, so a
+binary built from a clean clone connects nowhere, and
+`Test_default_control_plane_is_a_documentation_address` fails if that ever
+stops being true.
+
+Nothing describing one specific installation — machine addresses, node state,
+verification results, reverse proxy layout — belongs in this repository. Those
+go in `local/`, which is git-ignored. The task backlog lives in
+`local/BACKLOG.md`; read it at the start of a session, the chat is not a
+reliable record.
+
+The production host address must never be printed to the user or written into a
+committed file. Keep it in a shell variable and redact command output.

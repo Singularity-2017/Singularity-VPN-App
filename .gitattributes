@@ -1,0 +1,8 @@
+# One line ending, everywhere, decided once. The control plane repository is
+# stored with CRLF and has to normalise every file before it can run gofmt;
+# this one does not.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.dll binary
+*.exe binary

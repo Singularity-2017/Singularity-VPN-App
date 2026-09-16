@@ -1,0 +1,16 @@
+# secrets and anything describing one specific installation (never commit)
+/local/
+*.env
+
+# build output
+/dist/
+*.exe
+*.syso
+
+# Claude Code: settings.json is committed, personal overrides are not
+.claude/settings.local.json
+.claude/*.tmp
+
+# graft's local graph cache and settings -- regenerable, not committed
+/graft/
+/.graft/
