@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  # The runner is one machine that can be off or broken. Being able to start
+  # the checks by hand is the difference between seeing that and guessing.
+  workflow_dispatch:
 
 jobs:
   check:
