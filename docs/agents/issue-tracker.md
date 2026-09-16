@@ -1,7 +1,7 @@
 # Issue tracker: Gitea
 
-Issues for this repository live in the self-hosted Gitea instance, in the
-repository named `Singularity-VPN-App` under the owner's account.
+Issues for this repository live in the self-hosted Gitea instance, in
+`Singularity/Singularity-VPN-App`.
 
 This is the source of truth. GitHub is only a mirror for published copies --
 do not open issues there, and do not assume `gh` points at this project.
