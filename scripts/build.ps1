@@ -32,8 +32,11 @@ if (Test-Path $env_file) {
 $version = ""
 $commit = ""
 if (Test-Path (Join-Path $root ".git")) {
-    $version = & git -C $root describe --tags --always --dirty
-    if ($LASTEXITCODE -ne 0) { $version = "" }
+    # describe fails loudly when no tag exists yet, so ask first.
+    if (& git -C $root tag --list | Select-Object -First 1) {
+        $version = & git -C $root describe --tags --dirty
+        if ($LASTEXITCODE -ne 0) { $version = "" }
+    }
     $commit = & git -C $root rev-parse --short HEAD
     if ($LASTEXITCODE -ne 0) { $commit = "" }
 }
