@@ -6,7 +6,15 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # The only runner this installation has is the owner's Windows machine,
+    # running act_runner in host mode under the label below. That is also the
+    # one platform the product ships on, so every step here is already the
+    # build that matters -- there is no cross-build step to add.
+    runs-on: windows-latest
+    defaults:
+      run:
+        # The steps are shell scripts, and the host provides bash through Git.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -18,14 +26,6 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
-      # The product is a Windows application, and the runner is Linux. Without
-      # this step a file that only compiles on Linux passes CI and breaks the
-      # only build that matters.
-      - name: Build for Windows
-        env:
-          GOOS: windows
-          GOARCH: amd64
-        run: go build ./...
       - name: Formatting
         run: |
           bad=$(gofmt -l cmd internal)
