@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Error is what a call returns when the control plane itself said no -- a
@@ -46,4 +47,42 @@ func Is_code(err error, code string) bool {
 		return api_err.Code == code
 	}
 	return false
+}
+
+// Err_incomplete_response is what a call returns when the control plane's
+// answer decoded cleanly but arrived without a value this client acts on. Go
+// cannot tell a field the server renamed from a field the server left empty:
+// both land as the zero value, and the call would otherwise succeed carrying
+// an empty client_id or an empty config. Refusing is the cheaper failure --
+// by the time Create_profile's answer is decoded the account has already
+// spent one of its profile slots, and a client_id silently lost at that
+// moment is a slot nobody can reclaim.
+//
+// It is deliberately neither an *Error nor a transport failure: the server
+// did not say no, and the connection worked. It is also never retried -- a
+// second answer would be incomplete in exactly the same way.
+var Err_incomplete_response = errors.New("api: the control plane's answer is incomplete")
+
+// required_field names one value a response must carry and says whether it
+// arrived.
+type required_field struct {
+	name    string
+	arrived bool
+}
+
+// check_required reports every missing field at once rather than the first
+// one, because a rename on the server side usually moves more than one field
+// and one round trip per discovery is a slow way to find that out.
+func check_required(what string, fields ...required_field) error {
+	var missing []string
+	for _, field := range fields {
+		if !field.arrived {
+			missing = append(missing, field.name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s arrived without %s",
+		Err_incomplete_response, what, strings.Join(missing, ", "))
 }

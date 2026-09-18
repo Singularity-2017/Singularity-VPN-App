@@ -29,6 +29,20 @@ type Recommendation struct {
 	Alternatives []Alternative `json:"alternatives"`
 }
 
+// validate lists the fields of a recommendation this client acts on.
+// node_name, country, region and city are deliberately not among them: they
+// are shown to a person rather than acted on, and the server omits region
+// and city on purpose when nobody has typed them -- an unknown place is a
+// real state, not an empty string. A rename of those is caught by the
+// contract test in the control plane repository, because refusing to connect
+// over a missing label would be the worse failure.
+func (r Recommendation) validate() error {
+	return check_required("the recommendation",
+		required_field{"node_id", r.Node_id != ""},
+		required_field{"protocol", r.Protocol != ""},
+	)
+}
+
 // Profile is what Create_profile provisions. Its Client_id belongs in local
 // state, because Create_profile itself must run at most once per
 // installation.
@@ -43,6 +57,20 @@ type Profile struct {
 	Alternatives []Alternative `json:"alternatives"`
 }
 
+// validate covers every field of a profile except its alternatives, which
+// are a list the server may legitimately leave empty. Client_id first: it is
+// the one value here that cannot be asked for again.
+func (p Profile) validate() error {
+	return check_required("the created profile",
+		required_field{"client_id", p.Client_id != ""},
+		required_field{"config", p.Config != ""},
+		required_field{"node", p.Node_id != ""},
+		required_field{"node_ip", p.Node_ip != ""},
+		required_field{"protocol", p.Protocol != ""},
+		required_field{"expires_at", !p.Expires_at.IsZero()},
+	)
+}
+
 // Vpn_config is a config fetched for an already-provisioned client.
 type Vpn_config struct {
 	Config     string    `json:"config"`
@@ -51,12 +79,35 @@ type Vpn_config struct {
 	Expires_at time.Time `json:"expires_at"`
 }
 
+// validate refuses a config the client cannot act on. An expiry that did not
+// arrive is not a small loss: it is the difference between a connection that
+// warns before it lapses and one that simply stops.
+func (v Vpn_config) validate() error {
+	return check_required("the fetched config",
+		required_field{"config", v.Config != ""},
+		required_field{"protocol", v.Protocol != ""},
+		required_field{"mode", v.Mode != ""},
+		required_field{"expires_at", !v.Expires_at.IsZero()},
+	)
+}
+
 // Device is what Mint_device_token returns: a token the service can use to
 // authenticate before anybody logs in.
 type Device struct {
 	Device_id    string    `json:"device_id"`
 	Device_token string    `json:"device_token"`
 	Expires_at   time.Time `json:"expires_at"`
+}
+
+// validate refuses a device whose token or identity did not arrive. Both are
+// stored, and a stored empty string would authenticate nothing while looking
+// like a credential the service already holds.
+func (d Device) validate() error {
+	return check_required("the minted device token",
+		required_field{"device_id", d.Device_id != ""},
+		required_field{"device_token", d.Device_token != ""},
+		required_field{"expires_at", !d.Expires_at.IsZero()},
+	)
 }
 
 // Login exchanges a username and password for a session token. Wrong
@@ -71,6 +122,10 @@ func (c *Client) Login(ctx context.Context, username, password string) (string, 
 		Token string `json:"token"`
 	}
 	if err := c.do(ctx, "POST", "/api/v1/auth/login", nil, "", request, &response, true); err != nil {
+		return "", err
+	}
+	if err := check_required("the login response",
+		required_field{"token", response.Token != ""}); err != nil {
 		return "", err
 	}
 	return response.Token, nil
@@ -95,6 +150,9 @@ func (c *Client) Mint_device_token(ctx context.Context, session_token, name stri
 	if err := c.do(ctx, "POST", "/api/v1/auth/device", nil, session_token, request, &device, false); err != nil {
 		return Device{}, err
 	}
+	if err := device.validate(); err != nil {
+		return Device{}, err
+	}
 	return device, nil
 }
 
@@ -104,6 +162,9 @@ func (c *Client) Mint_device_token(ctx context.Context, session_token, name stri
 func (c *Client) Recommend(ctx context.Context, token string) (Recommendation, error) {
 	var recommendation Recommendation
 	if err := c.do(ctx, "GET", "/api/v1/vpn/recommend", nil, token, nil, &recommendation, true); err != nil {
+		return Recommendation{}, err
+	}
+	if err := recommendation.validate(); err != nil {
 		return Recommendation{}, err
 	}
 	return recommendation, nil
@@ -128,6 +189,9 @@ func (c *Client) Create_profile(ctx context.Context, token, protocol, node_id st
 
 	var profile Profile
 	if err := c.do(ctx, "POST", "/api/v1/vpn/auto", nil, token, request, &profile, false); err != nil {
+		return Profile{}, err
+	}
+	if err := profile.validate(); err != nil {
 		return Profile{}, err
 	}
 	return profile, nil
@@ -156,6 +220,9 @@ func (c *Client) Fetch_config(ctx context.Context, token, client_id, protocol, n
 
 	var config Vpn_config
 	if err := c.do(ctx, "GET", "/api/v1/vpn/config", query, token, nil, &config, true); err != nil {
+		return Vpn_config{}, err
+	}
+	if err := config.validate(); err != nil {
 		return Vpn_config{}, err
 	}
 	return config, nil
