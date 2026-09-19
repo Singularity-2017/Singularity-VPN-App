@@ -1,0 +1,808 @@
+package connection
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"singularity-vpn-app/internal/api"
+	"singularity-vpn-app/internal/diagnostics"
+	"singularity-vpn-app/internal/events"
+	"singularity-vpn-app/internal/protocols"
+	"singularity-vpn-app/internal/recovery"
+	"singularity-vpn-app/internal/state"
+)
+
+// probe_errors_before_lost is how many consecutive failed probes it takes
+// before an unknown is treated as Verdict_lost: one error is noise a flaky
+// probe can produce on its own; two in a row is a symptom worth acting on.
+const probe_errors_before_lost = 2
+
+// Control_plane is the subset of api.Client this package drives. It is an
+// interface, not *api.Client, so a test scripts a control plane without a
+// network.
+type Control_plane interface {
+	Recommend(ctx context.Context, token string) (api.Recommendation, error)
+	Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error)
+	Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (api.Vpn_config, error)
+}
+
+// Token_source hands over the token the service holds. The manager never
+// sees a password and never stores the token: stage 4 wires this to the
+// secure store, and until then a test fake is the only implementation.
+type Token_source interface {
+	Token(ctx context.Context) (string, error)
+}
+
+// State_store is what this package needs from stage 1's state.Store:
+// enough to read and write Client_id and the last-used node and protocol.
+// *state.Store satisfies this without any adapter.
+type State_store interface {
+	Load() (state.State, error)
+	Save(s state.State) error
+}
+
+// Dependencies is everything the manager needs and nothing it invents,
+// except Now and New_session_id: those two may default, because a real
+// clock and a real random id are the only pieces of this package that are
+// reasonable to assume in production and safe to fake in a test.
+type Dependencies struct {
+	Control_plane  Control_plane
+	Token          Token_source
+	Protocols      protocols.Manager
+	Prober         diagnostics.Prober
+	Policy         *recovery.Policy
+	Store          State_store
+	Bus            *events.Bus
+	Now            func() time.Time
+	New_session_id func() string
+	Config         Config
+}
+
+// Mode is whether a connect was asked for by the person (with a specific
+// node and protocol) or left to the control plane's recommendation.
+type Mode int
+
+const (
+	Mode_auto Mode = iota
+	Mode_manual
+)
+
+// Connect_request is what Connect is asked to do. Node_id and Protocol are
+// only read in Mode_manual; in Mode_auto the control plane chooses.
+type Connect_request struct {
+	Mode     Mode
+	Node_id  string
+	Protocol string
+}
+
+// Err_busy is what Connect, Disconnect or Switch return when the current
+// state genuinely forbids the operation -- mid-switch, mid-disconnect, or
+// already busy some other way. It exists for that refusal, not for the
+// operation mutex someone else happens to be holding: op_mu simply makes a
+// concurrent caller wait, which is correct, because there is nothing yet to
+// act on.
+var Err_busy = errors.New("connection: busy with another operation")
+
+// Manager is the state machine: it decides when to provision a profile,
+// when to bring a protocol up, what a tick's probe means, and when recovery
+// should try another target. It contains no platform code of its own --
+// everything impure above is an interface, and every timer is a parameter,
+// not a clock read from inside.
+type Manager struct {
+	control_plane  Control_plane
+	token          Token_source
+	protocols      protocols.Manager
+	prober         diagnostics.Prober
+	policy         *recovery.Policy
+	store          State_store
+	bus            *events.Bus
+	now            func() time.Time
+	new_session_id func() string
+	config         Config
+
+	// op_mu serializes Connect, Disconnect, Switch and Tick: they mutate
+	// one session and must never interleave. A Tick that arrives while a
+	// connect is running simply waits, which is correct -- there is
+	// nothing to monitor yet.
+	op_mu sync.Mutex
+
+	// state_mu guards only state and session, so State() and Session() can
+	// answer a status query without waiting for a Connect that might take
+	// up to Connect_timeout to finish.
+	state_mu    sync.RWMutex
+	state       State
+	session     Session
+	has_session bool
+
+	// The rest is only ever touched under op_mu.
+	mode            Mode
+	current         recovery.Target
+	current_config  protocols.Connection_config
+	protocol_handle protocols.Protocol
+	alternatives    []recovery.Target
+	local_state     state.State
+
+	baseline                 diagnostics.Baseline
+	degraded_since           time.Time
+	degraded_since_set       bool
+	consecutive_probe_errors int
+	last_reevaluation        time.Time
+}
+
+// New_manager builds a Manager, refusing a Dependencies missing anything it
+// cannot invent. Now and New_session_id are the two it may default.
+func New_manager(dependencies Dependencies) (*Manager, error) {
+	switch {
+	case dependencies.Control_plane == nil:
+		return nil, fmt.Errorf("connection: Dependencies.Control_plane is required")
+	case dependencies.Token == nil:
+		return nil, fmt.Errorf("connection: Dependencies.Token is required")
+	case dependencies.Protocols == nil:
+		return nil, fmt.Errorf("connection: Dependencies.Protocols is required")
+	case dependencies.Prober == nil:
+		return nil, fmt.Errorf("connection: Dependencies.Prober is required")
+	case dependencies.Policy == nil:
+		return nil, fmt.Errorf("connection: Dependencies.Policy is required")
+	case dependencies.Store == nil:
+		return nil, fmt.Errorf("connection: Dependencies.Store is required")
+	case dependencies.Bus == nil:
+		return nil, fmt.Errorf("connection: Dependencies.Bus is required")
+	}
+
+	if dependencies.Now == nil {
+		dependencies.Now = time.Now
+	}
+	if dependencies.New_session_id == nil {
+		dependencies.New_session_id = default_session_id
+	}
+
+	return &Manager{
+		control_plane:  dependencies.Control_plane,
+		token:          dependencies.Token,
+		protocols:      dependencies.Protocols,
+		prober:         dependencies.Prober,
+		policy:         dependencies.Policy,
+		store:          dependencies.Store,
+		bus:            dependencies.Bus,
+		now:            dependencies.Now,
+		new_session_id: dependencies.New_session_id,
+		config:         dependencies.Config.with_defaults(),
+		state:          State_disconnected,
+	}, nil
+}
+
+// State reports the current state without waiting for any in-flight
+// Connect, Disconnect or Switch to finish.
+func (m *Manager) State() State {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return m.state
+}
+
+// Session reports the current session, if any, the same way State does.
+func (m *Manager) Session() (Session, bool) {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return m.session, m.has_session
+}
+
+func (m *Manager) get_state() State {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return m.state
+}
+
+func (m *Manager) set_session(session Session, ok bool) {
+	m.state_mu.Lock()
+	m.session = session
+	m.has_session = ok
+	m.state_mu.Unlock()
+}
+
+// set_state moves the machine to to, publishing Kind_state_changed. A
+// transition Allowed forbids is refused rather than performed: reaching
+// here with a bad transition is a programming mistake in this package, and
+// this code runs inside a service that owns a person's network route, where
+// a panic is worse than a wrong-but-stable state. The refusal keeps the
+// state it had and reports the mistake as an ordinary event instead of
+// vanishing silently.
+func (m *Manager) set_state(to State) {
+	m.state_mu.Lock()
+	from := m.state
+	if !Allowed(from, to) {
+		m.state_mu.Unlock()
+		m.publish(events.Kind_error, fmt.Errorf("connection: refused invalid transition %s -> %s", from, to))
+		return
+	}
+	if from == to {
+		m.state_mu.Unlock()
+		return // a no-op self-transition changes nothing and emits nothing
+	}
+	m.state = to
+	m.state_mu.Unlock()
+	m.publish(events.Kind_state_changed, State_change{From: from, To: to})
+}
+
+func (m *Manager) publish(kind events.Kind, data any) {
+	session_id := ""
+	if session, ok := m.Session(); ok {
+		session_id = session.Id
+	}
+	m.bus.Publish(events.Event{Kind: kind, At: m.now(), Session_id: session_id, Data: data})
+}
+
+// --- Connect -------------------------------------------------------------
+
+// Connect brings up a tunnel, choosing the target automatically or taking
+// the one the person picked, provisioning a profile if this installation
+// has none yet. CLIENT_CORE.md section 43, CLIENT_AUTO_SWITCH.md section 3.
+func (m *Manager) Connect(ctx context.Context, request Connect_request) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	current := m.get_state()
+	if current == State_connected {
+		return nil // CLIENT_CORE.md 35: a second Connect does not make a second tunnel
+	}
+	if !Allowed(current, State_connecting) {
+		return Err_busy
+	}
+
+	connect_ctx := ctx
+	var cancel context.CancelFunc
+	if m.config.Connect_timeout > 0 {
+		connect_ctx, cancel = context.WithTimeout(ctx, m.config.Connect_timeout)
+		defer cancel()
+	}
+
+	now := m.now()
+	m.mode = request.Mode
+	m.policy.Reset() // a person asked for this connect: the budget and cooldowns start over
+	m.set_state(State_connecting)
+	m.publish(events.Kind_connection_started, nil)
+
+	token, err := m.token.Token(connect_ctx)
+	if err != nil {
+		return m.fail(now, &Fault{Kind: Fault_authentication, Op: "connect", Err: err})
+	}
+
+	local, err := m.store.Load()
+	if err != nil {
+		return m.fail(now, &Fault{Kind: Fault_configuration, Op: "connect", Err: err})
+	}
+	m.local_state = local
+
+	target, config, fault := m.provision(connect_ctx, token, request)
+	if fault != nil {
+		return m.fail(now, fault)
+	}
+
+	return m.connect_loop(connect_ctx, now, token, target, config)
+}
+
+// connect_loop tries to establish target, and on a hard failure (auto mode
+// only) keeps asking recovery.Policy for another target until one works or
+// the policy refuses. CLIENT_AUTO_SWITCH.md section 3: "a failure at step 6
+// or 7 is a hard failure ... ask the policy for another target and switch
+// to it."
+func (m *Manager) connect_loop(ctx context.Context, now time.Time, token string, target recovery.Target, config api.Vpn_config) error {
+	for {
+		protocol, fault := m.establish(ctx, target, config)
+		if fault == nil {
+			return m.settle_connected(ctx, now, target, protocol, config, "connect", events.Kind_connection_established, nil)
+		}
+
+		m.policy.Record_failure(now, target)
+		if m.mode != Mode_auto {
+			return m.fail(now, fault)
+		}
+
+		next, err := m.policy.Next_target(now, recovery.Reason_hard_fail, target, m.alternatives)
+		if err != nil {
+			// Err_budget_spent or Err_no_target: nothing left to try. The
+			// fault reported is the technical reason the last attempt
+			// failed, which is what the person needs to see.
+			return m.fail(now, fault)
+		}
+
+		next_config, cerr := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, next.Protocol, next.Node_id)
+		if cerr != nil {
+			return m.fail(now, classify_control_plane_error("connect", cerr))
+		}
+		target, config = next, next_config
+	}
+}
+
+// provision decides which node and protocol to use and makes sure a
+// client_id exists on the control plane for it, provisioning at most once.
+// The client_id is saved to the store the moment Create_profile answers --
+// before anything else in this connect can fail -- because it is what the
+// account's client_limit counts, and a profile provisioned and not recorded
+// is a slot the person has paid for and cannot reclaim.
+func (m *Manager) provision(ctx context.Context, token string, request Connect_request) (recovery.Target, api.Vpn_config, *Fault) {
+	if m.local_state.Client_id == "" {
+		return m.create_profile(ctx, token, request)
+	}
+
+	target, fault := m.choose_target(ctx, token, request)
+	if fault != nil {
+		return recovery.Target{}, api.Vpn_config{}, fault
+	}
+
+	config, err := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, target.Protocol, target.Node_id)
+	if err == nil {
+		return target, config, nil
+	}
+
+	if !api.Is_code(err, api.Code_client_not_found) {
+		return recovery.Target{}, api.Vpn_config{}, classify_control_plane_error("fetch_config", err)
+	}
+
+	// The stored client_id no longer exists on the control plane. Provision
+	// again, exactly once -- looping here would spend the account's
+	// client_limit on every retry.
+	m.local_state.Client_id = ""
+	if serr := m.store.Save(m.local_state); serr != nil {
+		return recovery.Target{}, api.Vpn_config{}, &Fault{Kind: Fault_configuration, Op: "connect", Err: serr}
+	}
+	return m.create_profile(ctx, token, request)
+}
+
+// choose_target picks the node and protocol to fetch a config for, when a
+// client_id already exists. Manual mode uses what the person chose; auto
+// mode asks the control plane and remembers its alternatives for recovery.
+func (m *Manager) choose_target(ctx context.Context, token string, request Connect_request) (recovery.Target, *Fault) {
+	if request.Mode == Mode_manual {
+		return recovery.Target{Node_id: request.Node_id, Protocol: request.Protocol}, nil
+	}
+	recommendation, err := m.control_plane.Recommend(ctx, token)
+	if err != nil {
+		return recovery.Target{}, classify_control_plane_error("recommend", err)
+	}
+	m.alternatives = alternatives_from(recommendation.Alternatives)
+	return recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}, nil
+}
+
+// create_profile provisions a new client_id. Manual mode passes the
+// person's chosen node and protocol through to Create_profile; auto mode
+// leaves both empty so the server picks, matching api.Client.Create_profile.
+func (m *Manager) create_profile(ctx context.Context, token string, request Connect_request) (recovery.Target, api.Vpn_config, *Fault) {
+	protocol, node_id := "", ""
+	if request.Mode == Mode_manual {
+		protocol, node_id = request.Protocol, request.Node_id
+	}
+
+	profile, err := m.control_plane.Create_profile(ctx, token, protocol, node_id, m.config.Profile_duration_days)
+	if err != nil {
+		return recovery.Target{}, api.Vpn_config{}, classify_control_plane_error("create_profile", err)
+	}
+
+	m.local_state.Client_id = profile.Client_id
+	if serr := m.store.Save(m.local_state); serr != nil {
+		return recovery.Target{}, api.Vpn_config{}, &Fault{Kind: Fault_configuration, Op: "create_profile", Err: serr}
+	}
+
+	m.alternatives = alternatives_from(profile.Alternatives)
+	target := recovery.Target{Node_id: profile.Node_id, Protocol: profile.Protocol}
+	config := api.Vpn_config{Config: profile.Config, Protocol: profile.Protocol, Expires_at: profile.Expires_at}
+	return target, config, nil
+}
+
+func alternatives_from(list []api.Alternative) []recovery.Target {
+	targets := make([]recovery.Target, 0, len(list))
+	for _, alt := range list {
+		targets = append(targets, recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol})
+	}
+	return targets
+}
+
+// establish gets the named protocol adapter, connects it within
+// Protocol_timeout, and verifies the tunnel actually carries traffic. A
+// protocol that started is not a connection: on a failed verification, the
+// protocol is disconnected before returning, so a half-established tunnel
+// is never left behind with nothing watching it.
+func (m *Manager) establish(ctx context.Context, target recovery.Target, config api.Vpn_config) (protocols.Protocol, *Fault) {
+	protocol, err := m.protocols.Get(target.Protocol)
+	if err != nil {
+		return nil, classify_protocol_lookup_error("connect", err)
+	}
+
+	connect_config := protocols.Connection_config{Node_id: target.Node_id, Protocol: target.Protocol, Data: []byte(config.Config)}
+
+	connect_ctx := ctx
+	var cancel context.CancelFunc
+	if m.config.Protocol_timeout > 0 {
+		connect_ctx, cancel = context.WithTimeout(ctx, m.config.Protocol_timeout)
+	}
+	err = protocol.Connect(connect_ctx, connect_config)
+	if cancel != nil {
+		cancel()
+	}
+	if err != nil {
+		return nil, classify_connect_error("connect", err)
+	}
+
+	if err := diagnostics.Verify(ctx, m.prober); err != nil {
+		_ = protocol.Disconnect(ctx)
+		return nil, classify_verify_error("connect", err)
+	}
+
+	return protocol, nil
+}
+
+// new_session builds the Session for a newly established target. In the
+// practically-never case that the id generator itself is broken (see
+// default_session_id), it disconnects the protocol that just came up and
+// reports the failure instead of starting a session nothing could later
+// correlate with anything.
+func (m *Manager) new_session(ctx context.Context, now time.Time, target recovery.Target, protocol protocols.Protocol) (Session, *Fault) {
+	id := m.new_session_id()
+	if !session_id_usable(id) {
+		_ = protocol.Disconnect(ctx)
+		return Session{}, &Fault{Kind: Fault_platform, Op: "connect", Err: errors.New("connection: the session id generator did not produce a usable id")}
+	}
+	return Session{Id: id, Node_id: target.Node_id, Protocol: target.Protocol, Started_at: now}, nil
+}
+
+// settle_connected lands a newly established target in State_connected:
+// build the session, record success with the policy, remember the target
+// for next time, and emit completed. Both Connect and Switch reach
+// State_connected through here, because everything that must happen the
+// moment a tunnel is verified is the same regardless of which flow got
+// there.
+func (m *Manager) settle_connected(ctx context.Context, now time.Time, target recovery.Target, protocol protocols.Protocol, config api.Vpn_config, op string, completed events.Kind, completed_data any) error {
+	session, fault := m.new_session(ctx, now, target, protocol)
+	if fault != nil {
+		return m.fail(now, fault)
+	}
+
+	m.protocol_handle = protocol
+	m.current = target
+	m.current_config = protocols.Connection_config{Node_id: target.Node_id, Protocol: target.Protocol, Data: []byte(config.Config)}
+	m.set_session(session, true)
+	m.baseline = diagnostics.Baseline{}
+	m.degraded_since_set = false
+	m.consecutive_probe_errors = 0
+	m.last_reevaluation = now
+	m.policy.Record_success(now, target)
+
+	m.local_state.Last_node_id = target.Node_id
+	m.local_state.Last_protocol = target.Protocol
+	if err := m.store.Save(m.local_state); err != nil {
+		// The tunnel is up; a failed save of the last-used hint is not
+		// worth tearing it down over, but it must not vanish silently.
+		m.publish(events.Kind_error, &Fault{Kind: Fault_configuration, Op: op, Err: err})
+	}
+
+	m.set_state(State_connected)
+	m.publish(completed, completed_data)
+	return nil
+}
+
+// fail lands the machine in State_failed and reports fault.
+// State_disconnected means nobody has asked for a connection; every path
+// through Connect or Switch that did not end in State_connected means
+// somebody asked and it did not work, which is State_failed regardless of
+// which step failed.
+func (m *Manager) fail(now time.Time, fault *Fault) error {
+	m.set_state(State_failed)
+	m.publish(events.Kind_error, fault)
+	return fault
+}
+
+// --- Disconnect ------------------------------------------------------
+
+// Disconnect stops the current protocol and returns to State_disconnected.
+// CLIENT_CORE.md section 44. Disconnecting when already disconnected is not
+// an error and starts nothing (CLIENT_CORE.md 35).
+func (m *Manager) Disconnect(ctx context.Context) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	current := m.get_state()
+	if current == State_disconnected {
+		return nil
+	}
+	if !Allowed(current, State_disconnecting) {
+		return Err_busy
+	}
+
+	m.set_state(State_disconnecting)
+
+	var fault *Fault
+	if m.protocol_handle != nil {
+		if err := m.protocol_handle.Disconnect(ctx); err != nil {
+			// Refusing to let go of a connection the person asked to end
+			// is the worse failure: the state still moves to
+			// State_disconnected, and the error is reported rather than
+			// silently dropped.
+			fault = &Fault{Kind: Fault_protocol_connection, Op: "disconnect", Err: err}
+		}
+		m.protocol_handle = nil
+	}
+	m.clear_session()
+	m.set_state(State_disconnected)
+
+	if fault != nil {
+		m.publish(events.Kind_error, fault)
+		return fault
+	}
+	return nil
+}
+
+func (m *Manager) clear_session() {
+	m.set_session(Session{}, false)
+	m.current = recovery.Target{}
+	m.current_config = protocols.Connection_config{}
+	m.degraded_since_set = false
+	m.consecutive_probe_errors = 0
+}
+
+// --- Switch ----------------------------------------------------------
+
+// Switch moves the connection to target. CLIENT_CORE.md section 45.
+// Restoring the previous connection when a switch fails is named there as
+// something to implement "only after a safe strategy is defined" -- it is
+// not implemented here; a future stage that defines that strategy owns it.
+func (m *Manager) Switch(ctx context.Context, target recovery.Target) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	current := m.get_state()
+	if !Allowed(current, State_switching) {
+		return Err_busy
+	}
+
+	now := m.now()
+	m.set_state(State_switching)
+	m.publish(events.Kind_switch_started, target)
+	return m.switch_loop(ctx, now, target)
+}
+
+// switch_loop is the mechanical part of a switch: it assumes the caller has
+// already entered State_switching and announced Kind_switch_started, and
+// has already decided target is worth trying. Switch does both itself with
+// target already known; escalate does them before it knows whether
+// recovery.Policy can even name a target, because entering State_switching
+// is the only way this package's transition table lets a connected or
+// degraded machine reach State_failed -- there is no direct edge for it,
+// and there should not be one: "attempting to leave" is genuinely a
+// different state from "connected" even when the attempt finds nowhere to
+// go.
+func (m *Manager) switch_loop(ctx context.Context, now time.Time, target recovery.Target) error {
+	token, err := m.token.Token(ctx)
+	if err != nil {
+		return m.fail(now, &Fault{Kind: Fault_authentication, Op: "switch", Err: err})
+	}
+
+	for {
+		if m.protocol_handle != nil {
+			// Leaving this target regardless of what stopping it reports:
+			// a failure to stop cleanly does not cancel the switch.
+			_ = m.protocol_handle.Disconnect(ctx)
+			m.protocol_handle = nil
+		}
+
+		config, cerr := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, target.Protocol, target.Node_id)
+		var fault *Fault
+		var protocol protocols.Protocol
+		if cerr != nil {
+			fault = classify_control_plane_error("switch", cerr)
+		} else {
+			protocol, fault = m.establish(ctx, target, config)
+			if fault == nil {
+				return m.settle_connected(ctx, now, target, protocol, config, "switch", events.Kind_switch_completed, target)
+			}
+		}
+
+		m.publish(events.Kind_switch_failed, fault)
+		m.policy.Record_failure(now, target)
+
+		next, nerr := m.policy.Next_target(now, recovery.Reason_hard_fail, target, m.alternatives)
+		if nerr != nil {
+			return m.fail(now, fault)
+		}
+		target = next
+	}
+}
+
+// retry_current re-establishes the current target once, reusing the config
+// already fetched for it: a retry is not a new choice of node, so nothing
+// about it needs the control plane again. It reports true only if the
+// tunnel comes back up and verifies.
+func (m *Manager) retry_current(ctx context.Context) bool {
+	if m.protocol_handle != nil {
+		_ = m.protocol_handle.Disconnect(ctx)
+		m.protocol_handle = nil
+	}
+
+	protocol, err := m.protocols.Get(m.current.Protocol)
+	if err != nil {
+		return false
+	}
+
+	connect_ctx := ctx
+	var cancel context.CancelFunc
+	if m.config.Protocol_timeout > 0 {
+		connect_ctx, cancel = context.WithTimeout(ctx, m.config.Protocol_timeout)
+	}
+	err = protocol.Connect(connect_ctx, m.current_config)
+	if cancel != nil {
+		cancel()
+	}
+	if err != nil {
+		return false
+	}
+
+	if err := diagnostics.Verify(ctx, m.prober); err != nil {
+		_ = protocol.Disconnect(ctx)
+		return false
+	}
+
+	m.protocol_handle = protocol
+	return true
+}
+
+// --- Tick ------------------------------------------------------------
+
+// Tick is given the time and does all the monitoring, the degradation
+// window and the re-evaluation. It is the only place this package reasons
+// about the passage of time, and it never reads a clock of its own.
+func (m *Manager) Tick(ctx context.Context, now time.Time) {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	current := m.get_state()
+	if current != State_connected && current != State_degraded {
+		return // nothing is being monitored outside these two states
+	}
+
+	sample, err := m.prober.Probe(ctx)
+	if err != nil {
+		m.consecutive_probe_errors++
+		if m.consecutive_probe_errors < probe_errors_before_lost {
+			return // an unknown is not a reason to move a person's connection
+		}
+		m.consecutive_probe_errors = 0
+		m.handle_lost(ctx, now)
+		return
+	}
+	m.consecutive_probe_errors = 0
+
+	m.baseline.Observe(sample)
+	verdict := diagnostics.Judge(sample, m.baseline, diagnostics.Default_thresholds())
+
+	switch verdict {
+	case diagnostics.Verdict_healthy:
+		if current == State_degraded {
+			m.degraded_since_set = false
+			m.set_state(State_connected) // no switch, no event beyond the state change
+		}
+		m.maybe_reevaluate(ctx, now)
+
+	case diagnostics.Verdict_degraded:
+		if current != State_degraded {
+			m.degraded_since = now
+			m.degraded_since_set = true
+			m.set_state(State_degraded)
+			m.publish(events.Kind_connection_degraded, nil)
+			return
+		}
+		if m.mode == Mode_auto && m.degraded_since_set && now.Sub(m.degraded_since) >= m.config.Recovery.Degradation_window {
+			m.escalate(ctx, now, recovery.Reason_degraded)
+		}
+
+	case diagnostics.Verdict_lost:
+		m.handle_lost(ctx, now)
+	}
+}
+
+// handle_lost implements CLIENT_CORE.md section 20: a lost verdict does not
+// immediately move a person off their current target. It is retried once;
+// only a retry that itself fails is treated as a hard failure and handed to
+// recovery, and only in auto mode.
+func (m *Manager) handle_lost(ctx context.Context, now time.Time) {
+	m.publish(events.Kind_connection_lost, nil)
+
+	if m.retry_current(ctx) {
+		return // the retry established and verified; carry on
+	}
+
+	m.policy.Record_failure(now, m.current)
+	if m.mode != Mode_auto {
+		// CLIENT_CORE.md 47: the person chose this node; the manager
+		// reports the loss and stops here rather than moving them off a
+		// choice they were explicitly given.
+		return
+	}
+	m.escalate(ctx, now, recovery.Reason_hard_fail)
+}
+
+// escalate asks recovery.Policy for another target and switches to it.
+//
+// What happens when the policy refuses depends on whether there is still a
+// tunnel. Reason_degraded means there is: the connection is worse than it
+// should be and is carrying traffic anyway. Err_too_soon there is not a
+// failure at all but the anti-flapping window saying "not yet", which a
+// later tick will ask again -- turning it into State_failed would use the
+// guard that exists to protect a connection as the thing that declares it
+// dead. The other refusals mean recovery has nowhere to go, and a degraded
+// tunnel is still better than none, so the machine stays where it is and
+// says so rather than reporting a failure a person would act on by
+// reconnecting something that already works, badly.
+//
+// Reason_hard_fail means the tunnel is gone, and there State_failed is the
+// truth. It is reached through State_switching because connected and
+// degraded have no direct edge to failed in this package's table (only
+// switching does), and "the machine is attempting to leave" is true the
+// moment recovery is consulted.
+func (m *Manager) escalate(ctx context.Context, now time.Time, reason recovery.Reason) {
+	next, err := m.policy.Next_target(now, reason, m.current, m.alternatives)
+	if err != nil {
+		if reason == recovery.Reason_degraded {
+			if !errors.Is(err, recovery.Err_too_soon) {
+				m.publish(events.Kind_error, fault_from_recovery_error("tick", err))
+			}
+			return
+		}
+		m.set_state(State_switching)
+		m.publish(events.Kind_switch_started, nil)
+		m.fail(now, fault_from_recovery_error("tick", err))
+		return
+	}
+
+	m.set_state(State_switching)
+	m.publish(events.Kind_switch_started, next)
+	_ = m.switch_loop(ctx, now, next)
+}
+
+// maybe_reevaluate offers a better option once per Reevaluation_interval
+// while the connection is healthy. CLIENT_AUTO_SWITCH.md section 15 says
+// "offer a switch" -- offering is the whole instruction: switching a
+// healthy connection because something might be marginally better is
+// exactly the flapping this design forbids, and nobody asked for it. Manual
+// mode never reaches here for the connect target it was given, matching
+// CLIENT_CORE.md section 47.
+func (m *Manager) maybe_reevaluate(ctx context.Context, now time.Time) {
+	if m.mode != Mode_auto {
+		return
+	}
+	if now.Sub(m.last_reevaluation) < m.config.Reevaluation_interval {
+		return
+	}
+	m.last_reevaluation = now
+
+	token, err := m.token.Token(ctx)
+	if err != nil {
+		return // an unsolicited check failing is not worth reporting as a Fault
+	}
+	recommendation, err := m.control_plane.Recommend(ctx, token)
+	if err != nil {
+		return
+	}
+	if recommendation.Node_id != m.current.Node_id || recommendation.Protocol != m.current.Protocol {
+		m.publish(events.Kind_better_option, recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol})
+	}
+}
+
+// --- Run ---------------------------------------------------------------
+
+// Run drives Tick on Monitor_interval until ctx ends. It is the only place
+// in this package a real ticker exists, and no test calls it: every timer
+// this package owns is exercised by calling Tick with an explicit time
+// instead.
+func (m *Manager) Run(ctx context.Context) error {
+	ticker := time.NewTicker(m.config.Monitor_interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case t := <-ticker.C:
+			m.Tick(ctx, t)
+		}
+	}
+}
