@@ -86,9 +86,10 @@ stops being true.
 
 Nothing describing one specific installation — machine addresses, node state,
 verification results, reverse proxy layout — belongs in this repository. Those
-go in `local/`, which is git-ignored. The task backlog lives in
-`local/BACKLOG.md`; read it at the start of a session, the chat is not a
-reliable record.
+go in `local/`, which is git-ignored. The running log of this project lives
+in `local/LOG.md`; read it at the start of a session, the chat is not a
+reliable record. It holds the stage table, what is open, and what has been
+verified on a real machine and when.
 
 The production host address must never be printed to the user or written into a
 committed file. Keep it in a shell variable and redact command output.
