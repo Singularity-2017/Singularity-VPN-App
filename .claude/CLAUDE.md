@@ -43,6 +43,12 @@ reporting it as done.
 - Cyrillic through a bash heredoc arrives corrupted. Russian text goes through
   the Write/Edit tools or Python, never a heredoc.
 - Shell state does not persist between Bash calls. Use absolute paths.
+- `sum.golang.org` does not resolve here -- a DNS filter answers for it and a
+  direct fetch hangs. A new module needs
+  `GOPROXY=https://proxy.golang.org go get ...`, without the `,direct` the
+  default carries; the proxy mirrors the checksum database, so this still
+  verifies the module. Never `GOSUMDB=off`. Builds after `go.sum` has the
+  hashes are unaffected.
 - PowerShell here-strings carry CRLF.
 - Anything needing administrator — the service, the adapter, the routes —
   cannot be verified from an agent session. Hand it to the owner with the
