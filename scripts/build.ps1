@@ -59,6 +59,16 @@ if ($control_plane) {
     Write-Host "control plane: not supplied -- the binary will connect nowhere"
 }
 
-& go build -ldflags ($ldflags -join " ") -o $out_dir $Target
+# go resolves a relative target against the current directory, not against
+# this script. Everything else here already goes through $root; this did not,
+# so ./cmd/svpn-service meant scripts/cmd/svpn-service to anyone who ran the
+# build from anywhere but the repository root -- which is what double-clicking
+# scripts/build.cmd does.
+Push-Location $root
+try {
+    & go build -ldflags ($ldflags -join " ") -o $out_dir $Target
+} finally {
+    Pop-Location
+}
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "built into $Out"
