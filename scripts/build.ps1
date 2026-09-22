@@ -9,7 +9,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$Target = "./cmd/svpn-service",
+    # The service and the console harness that drives it: one is no use
+    # without the other until the interface exists.
+    [string[]]$Target = @("./cmd/svpn-service", "./cmd/svpn-ctl"),
     [string]$Out = "dist"
 )
 
@@ -66,7 +68,7 @@ if ($control_plane) {
 # scripts/build.cmd does.
 Push-Location $root
 try {
-    & go build -ldflags ($ldflags -join " ") -o $out_dir $Target
+    & go build -ldflags ($ldflags -join " ") -o $out_dir @Target
 } finally {
     Pop-Location
 }

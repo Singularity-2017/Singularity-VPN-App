@@ -3,6 +3,7 @@ module singularity-vpn-app
 go 1.25.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	golang.org/x/sys v0.43.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	golang.zx2c4.com/wireguard/windows v1.1.1

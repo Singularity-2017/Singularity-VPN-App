@@ -75,9 +75,8 @@ func (m *Memory_store) Delete(key string) error {
 }
 
 // Cipher is what protects a File_store's values at rest. DPAPI at machine
-// scope is the real Cipher this application ships, and it is not written
-// here: it is Windows-only, it cannot be unit tested on this machine, and it
-// belongs behind platform/windows in stage 3.
+// scope, Dpapi_cipher in dpapi_windows.go, is the real one this application
+// ships.
 type Cipher interface {
 	Encrypt(plaintext []byte) ([]byte, error)
 	Decrypt(ciphertext []byte) ([]byte, error)
@@ -91,8 +90,7 @@ func (no_cipher) Encrypt(plaintext []byte) ([]byte, error) { return plaintext, n
 func (no_cipher) Decrypt(ciphertext []byte) ([]byte, error) { return ciphertext, nil }
 
 // No_cipher does not protect anything -- it exists for tests and for tests
-// only, standing in until platform/windows supplies the real DPAPI cipher in
-// stage 3.
+// only.
 var No_cipher Cipher = no_cipher{}
 
 // File_store is a Secure_store backed by a JSON file of base64-encoded
