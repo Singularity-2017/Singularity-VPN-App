@@ -50,9 +50,18 @@ reporting it as done.
   verifies the module. Never `GOSUMDB=off`. Builds after `go.sum` has the
   hashes are unaffected.
 - PowerShell here-strings carry CRLF.
-- Anything needing administrator — the service, the adapter, the routes —
-  cannot be verified from an agent session. Hand it to the owner with the
-  exact command and what a correct result looks like.
+- The agent session may run elevated: it inherits whatever token the
+  desktop app was started with, so check rather than assume. Being able to
+  is not permission to. The service, the adapter and the routes change the
+  owner's networking — hand those to the owner with the exact command and
+  what a correct result looks like. What elevation is fine for here: tests
+  that only create and inspect objects in a temporary directory or the pipe
+  namespace (the pipe owner and data-directory ACL tests), which skip
+  themselves when the session is not elevated.
+- Nothing about who owns an object created elevated can be assumed. On a
+  stock install an elevated administrator's objects are owned by the user,
+  not by Administrators; set the owner explicitly (`O:BA`) wherever an owner
+  check depends on it.
 
 ## Project style
 
