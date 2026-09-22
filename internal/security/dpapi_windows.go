@@ -43,7 +43,14 @@ var dpapi_entropy = []byte("singularity-vpn-app/security/v1")
 
 const dpapi_flags = windows.CRYPTPROTECT_LOCAL_MACHINE | windows.CRYPTPROTECT_UI_FORBIDDEN
 
+// Encrypt refuses an empty plaintext by name. DPAPI refuses it too, with
+// "The parameter is incorrect", which would send somebody looking for a
+// bad argument in the wrong place; and an empty credential is not one
+// worth storing.
 func (Dpapi_cipher) Encrypt(plaintext []byte) ([]byte, error) {
+	if len(plaintext) == 0 {
+		return nil, errors.New("security: dpapi encrypt: refusing to store an empty value")
+	}
 	var out windows.DataBlob
 	err := windows.CryptProtectData(blob_of(plaintext), nil, blob_of(dpapi_entropy), 0, nil, dpapi_flags, &out)
 	if err != nil {

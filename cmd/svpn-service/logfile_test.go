@@ -82,3 +82,24 @@ func Test_a_reopened_log_counts_what_is_already_there(t *testing.T) {
 		t.Fatalf("service.log = %q, want a rollover before the new line", got)
 	}
 }
+
+// Test_a_log_that_could_not_reopen_recovers_on_the_next_write guards the
+// one way a rollover can leave the writer without a file: the next write
+// must reopen it, not dereference nothing inside a LocalSystem service.
+func Test_a_log_that_could_not_reopen_recovers_on_the_next_write(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.log")
+	w, err := open_capped_writer(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open_capped_writer: %v", err)
+	}
+	defer w.Close()
+
+	w.file.Close()
+	w.file = nil
+	if _, err := w.Write([]byte("after\n")); err != nil {
+		t.Fatalf("Write after a failed reopen = %v, want the log reopened", err)
+	}
+	if got := read(t, path); got != "after\n" {
+		t.Fatalf("service.log = %q, want the line written after reopening", got)
+	}
+}

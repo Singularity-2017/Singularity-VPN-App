@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,15 @@ func Test_dpapi_refuses_corrupted_bytes(t *testing.T) {
 
 	if got, err := cipher.Decrypt(ciphertext); err == nil {
 		t.Fatalf("Decrypt(corrupted) = %q, nil; want an error rather than garbage", got)
+	}
+}
+
+func Test_dpapi_refuses_an_empty_value_by_name(t *testing.T) {
+	for _, empty := range [][]byte{nil, {}} {
+		_, err := New_dpapi_cipher().Encrypt(empty)
+		if err == nil || !strings.Contains(err.Error(), "empty") {
+			t.Fatalf("Encrypt(%v) = %v, want a refusal that says the value is empty", empty, err)
+		}
 	}
 }
 

@@ -52,37 +52,50 @@ func (w *capped_writer) open() error {
 
 // Write rolls over before a write that would cross the cap, never in the
 // middle of one, so a log line is never split across the two files.
+//
+// A rollover whose rename failed leaves the size over the cap, so the next
+// write tries again. That is deliberate: the usual cause is service.log.1
+// held open by whatever somebody is reading it with, and the log should
+// start rolling again the moment they close it.
 func (w *capped_writer) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.size > 0 && w.size+int64(len(p)) > w.max {
+	if w.file != nil && w.size > 0 && w.size+int64(len(p)) > w.max {
 		w.roll()
+	}
+	if w.file == nil {
+		// The last rollover could not reopen the log. Try again here
+		// rather than giving up on logging for the life of the service.
+		if err := w.open(); err != nil {
+			return 0, err
+		}
 	}
 	n, err := w.file.Write(p)
 	w.size += int64(n)
 	return n, err
 }
 
-// roll never leaves w without an open file: every way out of it either
-// swapped the new file in or reopened the old one.
+// roll leaves w.file either open or nil, never closed-but-set: a nil file
+// is reopened by the next Write, so a rollover that fails costs lines, not
+// the log.
 func (w *capped_writer) roll() {
 	w.file.Close()
-	if err := os.Rename(w.path, w.path+".1"); err != nil {
-		// Still the same file on disk; carry on appending to it.
-		if reopen_err := w.open(); reopen_err != nil {
-			w.file, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-		}
-		return
-	}
-	if err := w.open(); err != nil {
-		w.file, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-		w.size = 0
-	}
+	w.file = nil
+	// Whether or not the rename worked, the next step is the same: open
+	// service.log. If the rename failed it is still the old file, and
+	// appending to it carries on past the cap.
+	os.Rename(w.path, w.path+".1")
+	w.open()
 }
 
 func (w *capped_writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.file.Close()
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
 }
