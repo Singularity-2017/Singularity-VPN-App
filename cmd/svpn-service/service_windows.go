@@ -54,6 +54,14 @@ const (
 // inside this.
 const serve_drain = 10 * time.Second
 
+// The two resume notifications, from winuser.h; x/sys does not carry them.
+// Automatic arrives on every resume, Suspend only when a person is at the
+// machine -- either one means the tunnel may have died while it slept.
+const (
+	pbt_apmresumesuspend   = 0x0007
+	pbt_apmresumeautomatic = 0x0012
+)
+
 // Exit codes the service reports to the service control manager as
 // service-specific errors, so that "failed to start" and "failed to stop
 // cleanly" are told apart in `sc query` without opening the log.
@@ -84,7 +92,7 @@ func (h *handler) Execute(args []string, requests <-chan svc.ChangeRequest, stat
 	}
 	h.elog.Info(1, "Singularity VPN started.")
 
-	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPowerEvent}
 
 	for {
 		select {
@@ -102,6 +110,14 @@ func (h *handler) Execute(args []string, requests <-chan svc.ChangeRequest, stat
 					return true, exit_stop_failed
 				}
 				return false, 0
+			case svc.PowerEvent:
+				if request.EventType == pbt_apmresumeautomatic || request.EventType == pbt_apmresumesuspend {
+					// In a goroutine: this loop must answer the service
+					// control manager promptly, and a recheck runs a
+					// network probe that can take seconds.
+					running.logger.Info("resumed from sleep; checking the connection")
+					go running.application.Recheck(running.ctx)
+				}
 			default:
 				// Nothing else was asked for in Accepts; ignore it and
 				// leave the reported status as it is.
@@ -127,6 +143,7 @@ func (h *handler) Execute(args []string, requests <-chan svc.ChangeRequest, stat
 // running_service is everything start built and stop must take apart.
 type running_service struct {
 	application *core.Application
+	ctx         context.Context
 	cancel      context.CancelFunc
 	served      chan error
 	logger      *slog.Logger
@@ -187,6 +204,7 @@ func start(console bool) (*running_service, error) {
 	logger.Info("service running", "pipe", ipc.Pipe_name)
 	return &running_service{
 		application: application,
+		ctx:         ctx,
 		cancel:      cancel,
 		served:      served,
 		logger:      logger,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,9 +132,11 @@ func (p *fake_protocol) disconnects() int {
 type fake_prober struct {
 	sample diagnostics.Sample
 	err    error
+	calls  atomic.Int32
 }
 
 func (p *fake_prober) Probe(ctx context.Context) (diagnostics.Sample, error) {
+	p.calls.Add(1)
 	return p.sample, p.err
 }
 
@@ -175,6 +178,7 @@ type fixture struct {
 	secrets       *security.Memory_store
 	store         *memory_state_store
 	protocol      *fake_protocol
+	prober        *fake_prober
 	bus           *events.Bus
 }
 
@@ -196,6 +200,7 @@ func new_fixture(t *testing.T) *fixture {
 		secrets:       &security.Memory_store{},
 		store:         &memory_state_store{},
 		protocol:      protocol,
+		prober:        &fake_prober{sample: diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Dns_ok: true, Rtt: 10 * time.Millisecond}},
 		bus:           events.New_bus(16),
 	}
 
@@ -204,7 +209,7 @@ func new_fixture(t *testing.T) *fixture {
 		Secrets:       f.secrets,
 		Store:         f.store,
 		Protocols:     registry,
-		Prober:        &fake_prober{sample: diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Dns_ok: true, Rtt: 10 * time.Millisecond}},
+		Prober:        f.prober,
 		Bus:           f.bus,
 		Device_name:   "test machine",
 	})
@@ -314,6 +319,30 @@ func Test_a_connect_without_credentials_says_not_signed_in(t *testing.T) {
 	err := f.app.Connect(context.Background(), connect_params_auto())
 	if !errors.Is(err, ipc.Err_not_signed_in) {
 		t.Fatalf("Connect() without credentials = %v, want ipc.Err_not_signed_in -- an interface shows a sign-in form for that and a wrong-password message for unauthorized", err)
+	}
+}
+
+// Test_recheck_probes_a_live_connection_at_once is the resume path: the
+// machine woke up, and the connection is verified now rather than at the
+// next tick.
+func Test_recheck_probes_a_live_connection_at_once(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+
+	before := f.prober.calls.Load()
+	f.app.Recheck(context.Background())
+	if got := f.prober.calls.Load() - before; got != 1 {
+		t.Fatalf("Recheck probed %d times, want exactly one immediate pass", got)
+	}
+}
+
+func Test_recheck_leaves_a_disconnected_machine_alone(t *testing.T) {
+	f := new_fixture(t)
+
+	f.app.Recheck(context.Background())
+	if got := f.prober.calls.Load(); got != 0 {
+		t.Fatalf("Recheck probed %d times with nothing connected, want none", got)
 	}
 }
 

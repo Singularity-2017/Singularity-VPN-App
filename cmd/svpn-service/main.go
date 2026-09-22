@@ -40,6 +40,12 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		run_in_console()
+	case "install":
+		install()
+	case "uninstall":
+		uninstall()
+	case "status":
+		query()
 	default:
 		usage()
 		os.Exit(2)
@@ -50,7 +56,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "Singularity VPN service.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  svpn-service run    run in this console until Ctrl+C, for diagnosis (needs Administrator)")
+	fmt.Fprintln(os.Stderr, "  svpn-service install     register the service, from under Program Files (needs Administrator)")
+	fmt.Fprintln(os.Stderr, "  svpn-service uninstall   stop it and remove it; its data is kept (needs Administrator)")
+	fmt.Fprintln(os.Stderr, "  svpn-service status      what the service control manager says")
+	fmt.Fprintln(os.Stderr, "  svpn-service run         run in this console until Ctrl+C, for diagnosis (needs Administrator)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Started with no argument, it expects to be run by the service control manager.")
 }
