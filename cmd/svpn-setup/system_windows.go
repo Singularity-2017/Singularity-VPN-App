@@ -122,12 +122,28 @@ func write_replacing(path string, data []byte) error {
 	from, _ := windows.UTF16PtrFromString(temp)
 	to, _ := windows.UTF16PtrFromString(path)
 	var err error
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := 0; attempt < 6; attempt++ {
 		err = windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 		if err == nil {
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
+	}
+	// Still locked: a program is running from it -- the window, during a
+	// quiet update. A running image cannot be overwritten but can be
+	// renamed; it is moved aside, the new file takes its name, and the old
+	// one goes when it is no longer running, or at the next start.
+	aside := path + ".old"
+	os.Remove(aside)
+	aside_ptr, _ := windows.UTF16PtrFromString(aside)
+	if windows.MoveFileEx(to, aside_ptr, windows.MOVEFILE_REPLACE_EXISTING) == nil {
+		if err = windows.MoveFileEx(from, to, windows.MOVEFILE_WRITE_THROUGH); err == nil {
+			if os.Remove(aside) != nil {
+				delete_at_reboot(aside)
+			}
+			return nil
+		}
+		windows.MoveFileEx(aside_ptr, to, 0) // put the old one back
 	}
 	os.Remove(temp)
 	return err

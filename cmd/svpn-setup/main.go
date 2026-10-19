@@ -29,6 +29,10 @@ func main() {
 	args := os.Args[1:]
 	elevated_child := take(&args, elevated_flag)
 	purge := take(&args, "--purge")
+	// --quiet is how svpn-swap runs an update: as LocalSystem, with nobody
+	// at a console -- no window opened, running windows left alone (their
+	// files are moved aside), nothing waited for.
+	quiet = take(&args, "--quiet")
 	verb := "install"
 	if len(args) > 0 {
 		verb = args[0]
@@ -75,10 +79,12 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	if !elevated_child {
+	if !elevated_child && !quiet {
 		finish(verb)
 	}
 }
+
+var quiet bool
 
 // finish runs where the person started setup: after an install it opens
 // the window, unelevated.
@@ -134,10 +140,12 @@ func install() error {
 		return fmt.Errorf("protecting %s: %w", dir, err)
 	}
 
-	if n, err := close_windows_from(dir); err != nil {
-		warn("  не удалось проверить запущенные окна: %v", err)
-	} else if n > 0 {
-		step("закрыто окон приложения: %d", n)
+	if !quiet {
+		if n, err := close_windows_from(dir); err != nil {
+			warn("  не удалось проверить запущенные окна: %v", err)
+		} else if n > 0 {
+			step("закрыто окон приложения: %d", n)
+		}
 	}
 
 	existed, err := stop_service()

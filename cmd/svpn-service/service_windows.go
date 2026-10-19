@@ -150,6 +150,26 @@ type running_service struct {
 	log_file    io.Closer
 }
 
+// update_settle is how long a starting service waits before launching a
+// staged update's swap -- long enough to have reported Running. update_grace
+// is how long it then waits to be stopped by the swap before carrying on as
+// if no update had been staged.
+const (
+	update_settle = 10 * time.Second
+	update_grace  = 3 * time.Minute
+)
+
+func wait(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // start builds the service in the order that leaves the least to unwind.
 // The pipe is created before the application starts: if the pipe cannot be
 // created -- including because something else has taken its name -- then
@@ -189,13 +209,55 @@ func start(console bool) (*running_service, error) {
 		return nil, err
 	}
 
+	// A staged update is applied at start, before anything connects: a
+	// start is the one moment nothing can be carrying traffic. It is
+	// launched a little later, from a goroutine, because the swap's setup
+	// stops this service, and a service still reporting START_PENDING does
+	// not accept a stop. The connection is held back meanwhile, and
+	// started only if the swap never stops us.
+	updater := build_updater(p, application, logger)
+	pending := updater != nil && updater.Has_staged()
+
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := application.Start(ctx); err != nil {
-		cancel()
-		listener.Close()
-		logger.Error("service did not start", "error", err.Error())
-		log_file.Close()
-		return nil, err
+	if pending {
+		go func() {
+			start_normally := func() {
+				if ctx.Err() != nil {
+					return // stopped meanwhile; Stop has already run
+				}
+				if err := application.Start(ctx); err != nil {
+					logger.Error("starting after an update that did not happen", "error", err.Error())
+				}
+				go updater.Run(ctx)
+			}
+			if !wait(ctx, update_settle) {
+				return
+			}
+			launched, err := updater.Maybe_apply()
+			if err != nil {
+				logger.Warn("staged update not applied", "err", err)
+			}
+			if !launched {
+				start_normally()
+				return
+			}
+			if !wait(ctx, update_grace) {
+				return
+			}
+			logger.Warn("the update swap did not stop the service; starting normally")
+			start_normally()
+		}()
+	} else {
+		if err := application.Start(ctx); err != nil {
+			cancel()
+			listener.Close()
+			logger.Error("service did not start", "error", err.Error())
+			log_file.Close()
+			return nil, err
+		}
+		if updater != nil {
+			go updater.Run(ctx)
+		}
 	}
 
 	served := make(chan error, 1)

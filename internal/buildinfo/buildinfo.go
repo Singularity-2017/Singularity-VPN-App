@@ -22,6 +22,12 @@ var (
 	Built_at = ""
 )
 
+// Update_mirror is the last-resort update channel, a mirror base URL
+// compiled into the build from local/app.env (UPDATE_MIRROR). Empty means
+// the build has none; the control plane and the mirrors named by signed
+// manifests are tried first either way.
+var Update_mirror = ""
+
 // Summary describes the build in one line, naming only what the build
 // actually told us.
 func Summary() string {

@@ -13,11 +13,12 @@ const (
 	service_exe = "svpn-service.exe"
 	window_exe  = "SingularityVPN.exe"
 	ctl_exe     = "svpn-ctl.exe"
+	swap_exe    = "svpn-swap.exe"
 	wintun_dll  = "wintun.dll"
 	uninstaller = "uninstall.exe"
 )
 
-var payload_files = []string{service_exe, window_exe, ctl_exe, wintun_dll}
+var payload_files = []string{service_exe, window_exe, ctl_exe, swap_exe, wintun_dll}
 
 // payload_contents reads every payload file from source, refusing a payload
 // that lacks any of them by name: an installation without wintun.dll
