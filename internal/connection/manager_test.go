@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -41,7 +42,11 @@ type fake_control_plane struct {
 	recommend_result api.Recommendation
 	recommend_err    error
 
-	create_profile_calls  int
+	recommend_requests []api.Recommend_request
+
+	create_profile_calls int
+	create_profile_nodes []string
+
 	create_profile_result api.Profile
 	create_profile_err    error
 
@@ -51,13 +56,15 @@ type fake_control_plane struct {
 	fetch_config_sequence []fetch_config_response
 }
 
-func (f *fake_control_plane) Recommend(ctx context.Context, token string) (api.Recommendation, error) {
+func (f *fake_control_plane) Recommend(ctx context.Context, token string, request api.Recommend_request) (api.Recommendation, error) {
 	f.recommend_calls++
+	f.recommend_requests = append(f.recommend_requests, request)
 	return f.recommend_result, f.recommend_err
 }
 
 func (f *fake_control_plane) Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error) {
 	f.create_profile_calls++
+	f.create_profile_nodes = append(f.create_profile_nodes, node_id)
 	return f.create_profile_result, f.create_profile_err
 }
 
@@ -584,7 +591,7 @@ func Test_connect_while_connected_starts_no_second_tunnel(t *testing.T) {
 		t.Fatalf("second Connect() error = %v, want nil (a no-op)", err)
 	}
 	session_after, _ := manager.Session()
-	if session_before != session_after {
+	if !reflect.DeepEqual(session_before, session_after) {
 		t.Fatalf("Session() changed across a redundant Connect(): %+v -> %+v", session_before, session_after)
 	}
 	if env.control_plane.create_profile_calls != 1 {
@@ -750,7 +757,7 @@ func Test_recovered_before_the_window_returns_to_connected_without_switching(t *
 		t.Fatalf("State() = %v, want State_connected after recovering", manager.State())
 	}
 	session_after, _ := manager.Session()
-	if session_before != session_after {
+	if !reflect.DeepEqual(session_before, session_after) {
 		t.Fatalf("Session() changed on a mere recovery: %+v -> %+v", session_before, session_after)
 	}
 	if env.control_plane.fetch_config_calls != fetch_config_calls_before {
@@ -778,7 +785,7 @@ func Test_a_lost_tick_retries_the_current_target_once_before_switching(t *testin
 		t.Fatalf("State() = %v, want State_connected: the retry should have carried on", manager.State())
 	}
 	session_after, _ := manager.Session()
-	if session_before != session_after {
+	if !reflect.DeepEqual(session_before, session_after) {
 		t.Fatalf("Session() changed on a successful retry: %+v -> %+v", session_before, session_after)
 	}
 	if env.protocol.connect_calls != 2 {
@@ -868,7 +875,7 @@ func Test_a_better_recommendation_during_a_healthy_connection_emits_better_optio
 		t.Fatalf("State() = %v, want State_connected: an offer must not switch anything", manager.State())
 	}
 	session_after, _ := manager.Session()
-	if session_before != session_after {
+	if !reflect.DeepEqual(session_before, session_after) {
 		t.Fatalf("Session() changed on a mere offer: %+v -> %+v", session_before, session_after)
 	}
 	if env.control_plane.fetch_config_calls != fetch_config_calls_before {
@@ -986,7 +993,7 @@ func Test_a_degraded_connection_with_nowhere_to_go_stays_degraded(t *testing.T) 
 		t.Fatalf("State() = %v, want State_degraded: a degraded tunnel is still a tunnel", manager.State())
 	}
 	session_after, ok := manager.Session()
-	if !ok || session_before != session_after {
+	if !ok || !reflect.DeepEqual(session_before, session_after) {
 		t.Fatalf("Session() = %+v, %v: the session was dropped although nothing replaced it", session_after, ok)
 	}
 	if !contains_kind(drain_events(subscription), events.Kind_error) {

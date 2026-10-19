@@ -24,7 +24,7 @@ const probe_errors_before_lost = 2
 // interface, not *api.Client, so a test scripts a control plane without a
 // network.
 type Control_plane interface {
-	Recommend(ctx context.Context, token string) (api.Recommendation, error)
+	Recommend(ctx context.Context, token string, request api.Recommend_request) (api.Recommendation, error)
 	Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error)
 	Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (api.Vpn_config, error)
 }
@@ -412,7 +412,7 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 	if request.Mode == Mode_manual {
 		return recovery.Target{Node_id: request.Node_id, Protocol: request.Protocol}, nil
 	}
-	recommendation, err := m.control_plane.Recommend(ctx, token)
+	recommendation, err := m.control_plane.Recommend(ctx, token, m.recommend_request())
 	if err != nil {
 		return recovery.Target{}, classify_control_plane_error("recommend", err)
 	}
@@ -422,13 +422,36 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 	return recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}, nil
 }
 
+// recommend_request is what the control plane is asked for: the stored
+// strategy, and the connection a route goal measures.
+func (m *Manager) recommend_request() api.Recommend_request {
+	s := m.local_state.Strategy
+	return api.Recommend_request{
+		Anonymity: s.Anonymity,
+		Bypass:    s.Bypass,
+		Country:   s.Country,
+		Route:     s.Route,
+		Client_id: m.local_state.Client_id,
+		Node_id:   s.Node_id,
+	}
+}
+
 // create_profile provisions a new client_id. Manual mode passes the
 // person's chosen node and protocol through to Create_profile; auto mode
-// leaves both empty so the server picks, matching api.Client.Create_profile.
+// leaves both empty so the server picks, matching api.Client.Create_profile
+// -- unless the strategy names a country or a server, which the server's
+// own pick at provisioning would ignore: then the recommendation is asked
+// first and its node is the one provisioned on.
 func (m *Manager) create_profile(ctx context.Context, token string, request Connect_request) (recovery.Target, api.Vpn_config, *Fault) {
 	protocol, node_id := "", ""
 	if request.Mode == Mode_manual {
 		protocol, node_id = request.Protocol, request.Node_id
+	} else if s := m.local_state.Strategy; s.Country != "" || s.Node_id != "" {
+		target, fault := m.choose_target(ctx, token, request)
+		if fault != nil {
+			return recovery.Target{}, api.Vpn_config{}, fault
+		}
+		protocol, node_id = target.Protocol, target.Node_id
 	}
 
 	profile, err := m.control_plane.Create_profile(ctx, token, protocol, node_id, m.config.Profile_duration_days)
@@ -505,6 +528,8 @@ func (m *Manager) new_session(ctx context.Context, now time.Time, target recover
 		session.Node_name = m.recommended.Node_name
 		session.Country = m.recommended.Country
 		session.City = m.recommended.City
+		session.Reason = m.recommended.Reason
+		session.Goals = append([]api.Goal_outcome(nil), m.recommended.Goals...)
 	}
 	return session, nil
 }
@@ -582,6 +607,65 @@ func (m *Manager) Set_connect_on_start(want bool) error {
 	}
 	m.local_state = local
 	return nil
+}
+
+// Set_strategy records what the connection is for. It takes effect at the
+// next recommendation; Apply_strategy moves a connection that is already
+// up.
+func (m *Manager) Set_strategy(strategy state.Strategy) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	local, err := m.store.Load()
+	if err != nil {
+		return err
+	}
+	local.Strategy = strategy
+	if err := m.store.Save(local); err != nil {
+		return err
+	}
+	m.local_state = local
+	return nil
+}
+
+// Strategy reports what Set_strategy last recorded.
+func (m *Manager) Strategy() (state.Strategy, error) {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+	local, err := m.store.Load()
+	if err != nil {
+		return state.Strategy{}, err
+	}
+	return local.Strategy, nil
+}
+
+// Apply_strategy asks the control plane again for a connection that is up
+// in auto mode, and switches to its answer if that is somewhere else. A
+// connection that is not up, or that the person pinned in manual mode, is
+// left alone: the next connect asks with the new strategy anyway.
+func (m *Manager) Apply_strategy(ctx context.Context) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	current := m.get_state()
+	if (current != State_connected && current != State_degraded) || m.mode != Mode_auto {
+		return nil
+	}
+	token, err := m.token.Token(ctx)
+	if err != nil {
+		return &Fault{Kind: Fault_authentication, Op: "apply_strategy", Err: err}
+	}
+	target, fault := m.choose_target(ctx, token, Connect_request{Mode: Mode_auto})
+	if fault != nil {
+		return fault
+	}
+	if target == m.current {
+		return nil
+	}
+	now := m.now()
+	m.set_state(State_switching)
+	m.publish(events.Kind_switch_started, target)
+	return m.switch_loop(ctx, now, target)
 }
 
 // Connect_on_start reports what Set_connect_on_start last recorded.
@@ -877,7 +961,7 @@ func (m *Manager) maybe_reevaluate(ctx context.Context, now time.Time) {
 	if err != nil {
 		return // an unsolicited check failing is not worth reporting as a Fault
 	}
-	recommendation, err := m.control_plane.Recommend(ctx, token)
+	recommendation, err := m.control_plane.Recommend(ctx, token, m.recommend_request())
 	if err != nil {
 		return
 	}

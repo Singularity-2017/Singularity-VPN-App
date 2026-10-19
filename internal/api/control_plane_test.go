@@ -78,7 +78,7 @@ func Test_authorization_header_carries_exactly_bearer_token(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := client.Recommend(context.Background(), "svpn_abc"); err != nil {
+	if _, err := client.Recommend(context.Background(), "svpn_abc", Recommend_request{}); err != nil {
 		t.Fatalf("Recommend: %v", err)
 	}
 	if got_header != "Bearer svpn_abc" {
@@ -181,7 +181,7 @@ func Test_retry_on_500_then_success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := client.Recommend(context.Background(), "tok"); err != nil {
+	if _, err := client.Recommend(context.Background(), "tok", Recommend_request{}); err != nil {
 		t.Fatalf("Recommend: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -202,7 +202,7 @@ func Test_no_retry_on_400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = client.Recommend(context.Background(), "tok")
+	_, err = client.Recommend(context.Background(), "tok", Recommend_request{})
 	if err == nil {
 		t.Fatalf("expected an error")
 	}
@@ -254,7 +254,7 @@ func Test_cancelled_context_returns_promptly_without_sleeping(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = client.Recommend(ctx, "tok")
+	_, err = client.Recommend(ctx, "tok", Recommend_request{})
 	if err == nil {
 		t.Fatalf("expected an error")
 	}

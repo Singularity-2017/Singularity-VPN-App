@@ -12,6 +12,7 @@ import (
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/security"
+	"singularity-vpn-app/internal/state"
 )
 
 // Application is what the pipe drives. The assertion is here rather than in
@@ -52,6 +53,10 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 	result.Node_name = session.Node_name
 	result.Country = session.Country
 	result.City = session.City
+	result.Reason = session.Reason
+	for _, g := range session.Goals {
+		result.Goals = append(result.Goals, ipc.Goal_outcome{Goal: g.Goal, Applied: g.Applied, Why: g.Why, Compared: g.Compared})
+	}
 
 	// A sample without a round trip -- a prober that confirmed reachability
 	// without timing it -- reports nothing rather than a perfect zero.
@@ -270,4 +275,56 @@ func (a *Application) Version(ctx context.Context) (ipc.Version_result, error) {
 		Commit:  buildinfo.Commit,
 		Built:   buildinfo.Built_at,
 	}, nil
+}
+
+// Strategy answers Command_strategy: what the connection is for, as last
+// recorded.
+func (a *Application) Strategy(ctx context.Context) (ipc.Strategy, error) {
+	s, err := a.manager.Strategy()
+	if err != nil {
+		return ipc.Strategy{}, map_error(err)
+	}
+	return ipc.Strategy{Anonymity: s.Anonymity, Bypass: s.Bypass, Country: s.Country, Route: s.Route, Node_id: s.Node_id}, nil
+}
+
+// Set_strategy answers Command_set_strategy: it records the strategy and,
+// if a connection is up, moves it to wherever the control plane now points.
+// A strategy that was recorded but could not be applied is reported as the
+// failure to apply it; the record stands, and the next connect uses it.
+func (a *Application) Set_strategy(ctx context.Context, strategy ipc.Strategy) error {
+	if err := strategy.Validate(); err != nil {
+		return err
+	}
+	a.logger.Info("strategy set", "anonymity", strategy.Anonymity, "bypass", strategy.Bypass,
+		"country", strategy.Country, "route", strategy.Route, "node_id", strategy.Node_id)
+	if err := a.manager.Set_strategy(state.Strategy{
+		Anonymity: strategy.Anonymity,
+		Bypass:    strategy.Bypass,
+		Country:   strategy.Country,
+		Route:     strategy.Route,
+		Node_id:   strategy.Node_id,
+	}); err != nil {
+		return map_error(err)
+	}
+	return map_error(a.manager.Apply_strategy(ctx))
+}
+
+// Servers answers Command_servers: the servers this account may be put on,
+// as the control plane lists them.
+func (a *Application) Servers(ctx context.Context) (ipc.Servers_result, error) {
+	token, err := (&token_source{secrets: a.secrets}).Token(ctx)
+	if err != nil {
+		return ipc.Servers_result{}, map_error(err)
+	}
+	list, err := a.control_plane.Servers(ctx, token)
+	if err != nil {
+		return ipc.Servers_result{}, map_error(err)
+	}
+	result := ipc.Servers_result{Servers: make([]ipc.Server, 0, len(list))}
+	for _, s := range list {
+		result.Servers = append(result.Servers, ipc.Server{
+			Node_id: s.Node_id, Name: s.Name, Country: s.Country, Region: s.Region, City: s.City, Available: s.Available,
+		})
+	}
+	return result, nil
 }

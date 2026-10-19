@@ -112,7 +112,7 @@ func Test_recommend_does_not_invent_region_or_city(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	rec, err := client.Recommend(context.Background(), "tok")
+	rec, err := client.Recommend(context.Background(), "tok", Recommend_request{})
 	if err != nil {
 		t.Fatalf("Recommend: %v", err)
 	}

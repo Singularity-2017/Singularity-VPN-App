@@ -29,9 +29,10 @@ const stop_timeout = 30 * time.Second
 type Control_plane interface {
 	Login(ctx context.Context, username, password string) (string, error)
 	Mint_device_token(ctx context.Context, session_token, name string) (api.Device, error)
-	Recommend(ctx context.Context, token string) (api.Recommendation, error)
+	Recommend(ctx context.Context, token string, request api.Recommend_request) (api.Recommendation, error)
 	Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error)
 	Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (api.Vpn_config, error)
+	Servers(ctx context.Context, token string) ([]api.Server, error)
 }
 
 // Dependencies is everything the application needs and nothing it invents,

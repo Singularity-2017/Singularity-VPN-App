@@ -31,6 +31,7 @@ const (
 	Code_unauthorized             = "UNAUTHORIZED"
 	Code_client_limit_reached     = "CLIENT_LIMIT_REACHED"
 	Code_node_unavailable         = "NODE_UNAVAILABLE"
+	Code_no_node_in_country       = "NO_NODE_IN_COUNTRY"
 	Code_client_not_found         = "CLIENT_NOT_FOUND"
 	Code_invalid_input            = "INVALID_INPUT"
 	Code_forbidden                = "FORBIDDEN"

@@ -29,6 +29,10 @@ import (
 type fake_control_plane struct {
 	mu sync.Mutex
 
+	recommend_requests []api.Recommend_request
+	servers            []api.Server
+	servers_err        error
+
 	login_token string
 	login_err   error
 	login_calls []string // usernames, never passwords
@@ -61,8 +65,15 @@ func (f *fake_control_plane) Mint_device_token(ctx context.Context, session_toke
 	return f.device, f.device_err
 }
 
-func (f *fake_control_plane) Recommend(ctx context.Context, token string) (api.Recommendation, error) {
+func (f *fake_control_plane) Recommend(ctx context.Context, token string, request api.Recommend_request) (api.Recommendation, error) {
+	f.mu.Lock()
+	f.recommend_requests = append(f.recommend_requests, request)
+	f.mu.Unlock()
 	return f.recommendation, f.recommend_err
+}
+
+func (f *fake_control_plane) Servers(ctx context.Context, token string) ([]api.Server, error) {
+	return f.servers, f.servers_err
 }
 
 func (f *fake_control_plane) Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error) {

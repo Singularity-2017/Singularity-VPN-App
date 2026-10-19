@@ -36,6 +36,10 @@ func map_error(err error) error {
 		return fmt.Errorf("%w: %w", ipc.Err_busy, err)
 	case api.Is_code(err, api.Code_unauthorized):
 		return fmt.Errorf("%w: %w", ipc.Err_unauthorized, err)
+	case api.Is_code(err, api.Code_no_node_in_country):
+		return fmt.Errorf("%w: %w", ipc.Err_no_server_in_country, err)
+	case api.Is_code(err, api.Code_node_unavailable):
+		return fmt.Errorf("%w: %w", ipc.Err_server_unavailable, err)
 	}
 
 	// Last, because the two checks above are more specific readings of

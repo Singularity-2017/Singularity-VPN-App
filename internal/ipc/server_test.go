@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,11 @@ import (
 type fake_service struct {
 	status_result Status_result
 	status_err    error
+
+	strategy         Strategy
+	set_strategy_err error
+	servers          Servers_result
+	servers_err      error
 
 	// calls_mu guards connect_calls. Connect runs on the server's dispatch
 	// goroutine while the test goroutine watches for it to arrive, so
@@ -109,6 +115,19 @@ func (f *fake_service) Subscribe() (<-chan events.Event, func()) {
 
 func (f *fake_service) Version(ctx context.Context) (Version_result, error) {
 	return f.version_result, f.version_err
+}
+
+func (f *fake_service) Strategy(ctx context.Context) (Strategy, error) {
+	return f.strategy, nil
+}
+
+func (f *fake_service) Set_strategy(ctx context.Context, strategy Strategy) error {
+	f.strategy = strategy
+	return f.set_strategy_err
+}
+
+func (f *fake_service) Servers(ctx context.Context) (Servers_result, error) {
+	return f.servers, f.servers_err
 }
 
 // new_fake_service returns a fake_service with its bus ready, so a test
@@ -203,7 +222,7 @@ func Test_a_status_request_gets_its_own_result(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status() error = %v, want nil", err)
 	}
-	if got != service.status_result {
+	if !reflect.DeepEqual(got, service.status_result) {
 		t.Fatalf("Status() = %+v, want %+v", got, service.status_result)
 	}
 }
@@ -246,7 +265,7 @@ func Test_a_malformed_frame_does_not_close_the_connection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status() after a malformed frame: error = %v, want nil", err)
 	}
-	if got != service.status_result {
+	if !reflect.DeepEqual(got, service.status_result) {
 		t.Fatalf("Status() after a malformed frame = %+v, want %+v", got, service.status_result)
 	}
 }
@@ -296,7 +315,7 @@ func Test_a_status_query_is_answered_while_a_connect_is_in_flight(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Status() while connect is in flight: error = %v, want nil", err)
 	}
-	if status != service.status_result {
+	if !reflect.DeepEqual(status, service.status_result) {
 		t.Fatalf("Status() while connect is in flight = %+v, want %+v", status, service.status_result)
 	}
 

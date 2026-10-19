@@ -135,6 +135,54 @@ func (a *App) Sign_out() Outcome {
 	return a.act(func(ctx context.Context, c *ipc.Client) error { return c.Sign_out(ctx) })
 }
 
+// Strategy_view is the stored strategy, or why it could not be read.
+type Strategy_view struct {
+	Strategy *ipc.Strategy `json:"strategy,omitempty"`
+	Error    *Outcome      `json:"error,omitempty"`
+}
+
+func (a *App) Strategy() Strategy_view {
+	var view Strategy_view
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		s, err := c.Strategy(ctx)
+		if err == nil {
+			view.Strategy = &s
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
+// Set_strategy records what the connection is for. If a connection is up,
+// the service moves it, which is why this can take as long as a connect.
+func (a *App) Set_strategy(strategy ipc.Strategy) Outcome {
+	return a.act(func(ctx context.Context, c *ipc.Client) error { return c.Set_strategy(ctx, strategy) })
+}
+
+// Servers_view is the server list, or why it could not be had.
+type Servers_view struct {
+	Servers []ipc.Server `json:"servers"`
+	Error   *Outcome     `json:"error,omitempty"`
+}
+
+func (a *App) Servers() Servers_view {
+	view := Servers_view{Servers: []ipc.Server{}}
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		result, err := c.Servers(ctx)
+		if err == nil && result.Servers != nil {
+			view.Servers = result.Servers
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
 // Version is the service's version. Fields the build did not supply are
 // absent, and the page prints nothing for them.
 func (a *App) Version() ipc.Version_result {
@@ -164,6 +212,21 @@ func (a *App) act(do func(context.Context, *ipc.Client) error) Outcome {
 		return *outcome_of(err)
 	}
 	a.changed()
+	return Outcome{}
+}
+
+// act_quietly is act for a read: nothing changed, so nothing is announced.
+func (a *App) act_quietly(do func(context.Context, *ipc.Client) error) Outcome {
+	client, outcome := a.connected_client()
+	if outcome != nil {
+		return *outcome
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, call_timeout)
+	defer cancel()
+	if err := do(ctx, client); err != nil {
+		a.dropped(client, err)
+		return *outcome_of(err)
+	}
 	return Outcome{}
 }
 

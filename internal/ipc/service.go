@@ -27,4 +27,8 @@ type Service interface {
 	Subscribe() (<-chan events.Event, func())
 
 	Version(ctx context.Context) (Version_result, error)
+
+	Strategy(ctx context.Context) (Strategy, error)
+	Set_strategy(ctx context.Context, strategy Strategy) error
+	Servers(ctx context.Context) (Servers_result, error)
 }

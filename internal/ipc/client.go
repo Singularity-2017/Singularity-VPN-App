@@ -53,6 +53,9 @@ var (
 	Remote_not_signed_in = &Remote_error{Code: Error_not_signed_in}
 	Remote_unauthorized  = &Remote_error{Code: Error_unauthorized}
 	Remote_busy          = &Remote_error{Code: Error_busy}
+
+	Remote_server_unavailable   = &Remote_error{Code: Error_server_unavailable}
+	Remote_no_server_in_country = &Remote_error{Code: Error_no_server_in_country}
 )
 
 // Client speaks the protocol over one connection. It is safe for
@@ -141,6 +144,32 @@ func (c *Client) Sign_out(ctx context.Context) error {
 func (c *Client) Version(ctx context.Context) (Version_result, error) {
 	var result Version_result
 	resp, err := c.call(ctx, Command_version, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Strategy(ctx context.Context) (Strategy, error) {
+	var result Strategy
+	resp, err := c.call(ctx, Command_strategy, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Set_strategy(ctx context.Context, strategy Strategy) error {
+	resp, err := c.call(ctx, Command_set_strategy, strategy)
+	if err != nil {
+		return err
+	}
+	return decode_result(resp, nil)
+}
+
+func (c *Client) Servers(ctx context.Context) (Servers_result, error) {
+	var result Servers_result
+	resp, err := c.call(ctx, Command_servers, nil)
 	if err != nil {
 		return result, err
 	}

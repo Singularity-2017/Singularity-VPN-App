@@ -226,6 +226,26 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 		result, err := h.service.Version(ctx)
 		h.reply(req.Id, result, err)
 
+	case Command_strategy:
+		result, err := h.service.Strategy(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_set_strategy:
+		params, err := decode_params[Strategy](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		h.reply(req.Id, nil, h.service.Set_strategy(ctx, params))
+
+	case Command_servers:
+		result, err := h.service.Servers(ctx)
+		h.reply(req.Id, result, err)
+
 	default:
 		h.write_response(Response{Type: Type_response, Id: req.Id, Ok: false,
 			Error: &Error_body{Code: Error_unknown_command, Message: fmt.Sprintf("unknown command %q", req.Command)}})
@@ -362,6 +382,10 @@ func error_body_for(err error) *Error_body {
 		return &Error_body{Code: Error_unauthorized, Message: err.Error()}
 	case errors.Is(err, Err_busy):
 		return &Error_body{Code: Error_busy, Message: err.Error()}
+	case errors.Is(err, Err_server_unavailable):
+		return &Error_body{Code: Error_server_unavailable, Message: err.Error()}
+	case errors.Is(err, Err_no_server_in_country):
+		return &Error_body{Code: Error_no_server_in_country, Message: err.Error()}
 	default:
 		return &Error_body{Code: Error_internal, Message: err.Error()}
 	}

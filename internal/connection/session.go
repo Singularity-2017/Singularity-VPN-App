@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"time"
+
+	"singularity-vpn-app/internal/api"
 )
 
 // Session is one established tunnel: a switch ends the old one and starts a
@@ -25,6 +27,11 @@ type Session struct {
 	Node_name string
 	Country   string
 	City      string
+
+	// Reason and Goals are the control plane's account of how it chose
+	// this node, under the same condition as the description above.
+	Reason string
+	Goals  []api.Goal_outcome
 }
 
 // session_id_generation_failed is what default_session_id returns when

@@ -61,10 +61,21 @@
 
   <section id="screen-main" class="screen" hidden>
     <div class="server">
-      <div class="server-label">Сервер</div>
-      <div class="chip" id="chip" hidden>
-        <div class="chip-name" id="place"></div>
-        <div class="chip-sub" id="rtt-line" hidden>задержка <span class="num accent" id="rtt"></span></div>
+      <div class="server-head">
+        <span class="server-label">Сервер</span>
+        <button class="switch" id="auto" role="switch" aria-checked="true" title="Сервер выбирается автоматически и меняется, если перестал работать">
+          <span class="knob"></span><span>Авто</span>
+        </button>
+      </div>
+      <button class="chip" id="chip" aria-haspopup="listbox" aria-expanded="false">
+        <span class="chip-name" id="place"></span>
+        <span class="chip-sub" id="rtt-line" hidden>задержка <span class="num accent" id="rtt"></span></span>
+        <span class="chip-sub" id="reason" hidden></span>
+      </button>
+      <div class="pop list" id="servers" role="listbox" aria-label="Серверы" hidden>
+        <div class="pop-title">Серверы</div>
+        <div id="server-list"></div>
+        <div class="pop-note" id="servers-note" hidden></div>
       </div>
       <div class="note" id="note"><span class="dot"></span><span id="note-text"></span></div>
       <div class="details" id="details" hidden>
@@ -85,7 +96,53 @@
       </button>
       <div class="error" id="action-error" role="alert" hidden></div>
     </div>
+
+    <div class="goals">
+      <button class="tile" id="goal-bypass" aria-pressed="false">
+        <span class="tile-name">Обход блокировок</span>
+        <span class="tile-sub" id="sub-bypass" hidden></span>
+      </button>
+      <button class="tile" id="goal-geo" aria-haspopup="listbox" aria-expanded="false">
+        <span class="tile-name">Геолокация</span>
+        <span class="tile-value" id="geo-value"></span>
+        <span class="tile-sub" id="sub-geo" hidden></span>
+      </button>
+      <button class="tile" id="goal-route" aria-pressed="false">
+        <span class="tile-name">Маршрут</span>
+        <span class="tile-value">самый быстрый</span>
+        <span class="tile-sub" id="sub-route" hidden></span>
+      </button>
+      <button class="tile" id="goal-anonymity" aria-haspopup="listbox" aria-expanded="false">
+        <span class="tile-name">Анонимность</span>
+        <span class="tile-value" id="anon-value"></span>
+        <span class="tile-sub" id="sub-anonymity" hidden></span>
+      </button>
+
+      <div class="pop list goal-pop" id="countries" role="listbox" aria-label="Страна" hidden>
+        <div class="pop-title">Страна</div>
+        <div id="country-list"></div>
+        <div class="pop-note" id="countries-note" hidden></div>
+      </div>
+      <div class="pop list goal-pop" id="levels" role="listbox" aria-label="Уровень анонимности" hidden>
+        <div class="pop-title">Анонимность</div>
+        <button class="opt" data-level="">Выкл</button>
+        <button class="opt" data-level="light">Лёгкая <span class="opt-sub">почти не мешает играм</span></button>
+        <button class="opt" data-level="standard">Средняя</button>
+        <button class="opt" data-level="high">Высокая</button>
+        <div class="pop-note">Пока ни один сервер не даёт дополнительной анонимности. Уровень запомнится и начнёт действовать, когда это появится.</div>
+      </div>
+    </div>
   </section>
+
+  <div class="confirm-wrap" id="confirm" hidden>
+    <div class="confirm" role="alertdialog" aria-labelledby="confirm-text">
+      <div id="confirm-text"></div>
+      <div class="confirm-actions">
+        <button class="plain" id="confirm-no">Отмена</button>
+        <button class="primary" id="confirm-yes"></button>
+      </div>
+    </div>
+  </div>
 
   <footer class="foot">
     <button class="corner" id="corner" aria-label="Подробный режим" aria-pressed="false" hidden></button>

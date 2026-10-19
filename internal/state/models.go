@@ -14,5 +14,25 @@ type State struct {
 	Last_node_id     string
 	Last_protocol    string
 	Connect_on_start bool
+	Strategy         Strategy
 	Updated_at       time.Time
+}
+
+// Strategy is what the person said the connection is for. The control
+// plane makes the choice; this is only what it is asked to choose for. The
+// zero value asks for nothing in particular, which is the default: the
+// control plane picks the least loaded server and the protocol that gets
+// through.
+type Strategy struct {
+	// Anonymity is "" (off) or light, standard or high.
+	Anonymity string
+	Bypass    bool
+	// Country is an ISO 3166-1 alpha-2 code to be seen from, or "" for
+	// anywhere.
+	Country string
+	Route   bool
+	// Node_id is a server the person picked by hand, or "" for the control
+	// plane to pick -- which is automatic server selection, and what moves
+	// a connection off a node that dies.
+	Node_id string
 }

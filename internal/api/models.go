@@ -27,6 +27,75 @@ type Recommendation struct {
 	Protocol  string `json:"protocol"`
 
 	Alternatives []Alternative `json:"alternatives"`
+
+	// Reason is how the node was picked -- least_loaded, chosen_node or
+	// lowest_rtt -- and Goals how each goal asked for was applied. Both are
+	// shown, never acted on, and both are absent from a control plane too
+	// old to send them.
+	Reason string         `json:"reason"`
+	Goals  []Goal_outcome `json:"goals"`
+}
+
+// Goal_outcome is the control plane's account of one goal: whether it
+// shaped the recommendation and, when it did not, why.
+type Goal_outcome struct {
+	Goal    string `json:"goal"`
+	Applied bool   `json:"applied"`
+	Why     string `json:"why"`
+	// Compared is, for an applied route goal, how many measured nodes the
+	// pick was made among.
+	Compared int `json:"compared"`
+}
+
+// Recommend_request is what a recommendation is asked for. The zero value
+// asks for nothing in particular, which is what a control plane too old to
+// know about goals answers anyway.
+type Recommend_request struct {
+	Anonymity string // "" off, or light, standard, high
+	Bypass    bool
+	Country   string // with a country, the geo goal
+	Route     bool
+	Client_id string // the connection the route goal measures
+	Node_id   string // a server picked by hand
+}
+
+func (r Recommend_request) query() url.Values {
+	q := url.Values{}
+	if r.Anonymity != "" {
+		q.Add("goal", "anonymity")
+		q.Set("anonymity", r.Anonymity)
+	}
+	if r.Bypass {
+		q.Add("goal", "bypass")
+	}
+	if r.Country != "" {
+		q.Add("goal", "geo")
+		q.Set("country", r.Country)
+	}
+	if r.Route {
+		q.Add("goal", "route")
+		if r.Client_id != "" {
+			q.Set("client_id", r.Client_id)
+		}
+	}
+	if r.Node_id != "" {
+		q.Set("node_id", r.Node_id)
+	}
+	if len(q) == 0 {
+		return nil
+	}
+	return q
+}
+
+// Server is one entry of the server list: what a person picks a server by,
+// and whether it can take a connection now.
+type Server struct {
+	Node_id   string `json:"node_id"`
+	Name      string `json:"name"`    // absent in the response means empty here
+	Country   string `json:"country"` // absent in the response means empty here
+	Region    string `json:"region"`
+	City      string `json:"city"`
+	Available bool   `json:"available"`
 }
 
 // validate lists the fields of a recommendation this client acts on.
@@ -159,15 +228,32 @@ func (c *Client) Mint_device_token(ctx context.Context, session_token, name stri
 // Recommend asks the control plane which node and protocol this client
 // should use. The token may be a session token or a device token; both are
 // sent the same way and this client does not need to tell them apart.
-func (c *Client) Recommend(ctx context.Context, token string) (Recommendation, error) {
+func (c *Client) Recommend(ctx context.Context, token string, request Recommend_request) (Recommendation, error) {
 	var recommendation Recommendation
-	if err := c.do(ctx, "GET", "/api/v1/vpn/recommend", nil, token, nil, &recommendation, true); err != nil {
+	if err := c.do(ctx, "GET", "/api/v1/vpn/recommend", request.query(), token, nil, &recommendation, true); err != nil {
 		return Recommendation{}, err
 	}
 	if err := recommendation.validate(); err != nil {
 		return Recommendation{}, err
 	}
 	return recommendation, nil
+}
+
+// Servers lists the servers this account may be put on. A server without
+// a node_id cannot be picked and is refused as an incomplete response.
+func (c *Client) Servers(ctx context.Context, token string) ([]Server, error) {
+	var response struct {
+		Servers []Server `json:"servers"`
+	}
+	if err := c.do(ctx, "GET", "/api/v1/vpn/servers", nil, token, nil, &response, true); err != nil {
+		return nil, err
+	}
+	for _, s := range response.Servers {
+		if err := check_required("a server", required_field{"node_id", s.Node_id != ""}); err != nil {
+			return nil, err
+		}
+	}
+	return response.Servers, nil
 }
 
 // Create_profile provisions a profile on the control plane. Call it once per

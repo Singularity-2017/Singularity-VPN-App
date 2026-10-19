@@ -67,13 +67,12 @@ type Event struct {
 //
 // Deliberately absent:
 //
-//   - switch -- recovery chooses a different target on its own. A caller
-//     that can name a node and force a move is a bigger surface for no MVP
-//     feature: manual choice of a specific node is not in v1 (design
-//     section 8).
-//   - settings -- Connect_on_start is real and lives in state.State, but
-//     nothing reads it until the installer and the interface exist. A
-//     command whose effect nothing implements is a promise, not a feature.
+//   - switch -- recovery chooses a different target on its own. A person
+//     picks a server through set_strategy instead, which only asks the
+//     control plane for that server: the control plane still decides
+//     whether this account may be put on it.
+//   - settings -- Connect_on_start is set by connect and cleared by
+//     disconnect and sign_out; it is not a separate knob.
 const (
 	Command_status     = "status"
 	Command_connect    = "connect"
@@ -82,7 +81,70 @@ const (
 	Command_sign_out   = "sign_out"
 	Command_subscribe  = "subscribe"
 	Command_version    = "version"
+
+	Command_strategy     = "strategy"
+	Command_set_strategy = "set_strategy"
+	Command_servers      = "servers"
 )
+
+// Strategy is what the connection is for -- see state.Strategy, which it
+// mirrors on the wire. The zero value asks for nothing in particular.
+type Strategy struct {
+	Anonymity string `json:"anonymity,omitempty"` // "" off, or light, standard, high
+	Bypass    bool   `json:"bypass,omitempty"`
+	Country   string `json:"country,omitempty"` // ISO 3166-1 alpha-2, "" for anywhere
+	Route     bool   `json:"route,omitempty"`
+	Node_id   string `json:"node_id,omitempty"` // a server picked by hand, "" for automatic
+}
+
+// Validate refuses an anonymity level that is not one of the three, a
+// country that is not two capital letters, and a node id that is not a
+// plain short token.
+func (s Strategy) Validate() error {
+	switch s.Anonymity {
+	case "", "light", "standard", "high":
+	default:
+		return fmt.Errorf("ipc: strategy: anonymity %q is not light, standard or high", s.Anonymity)
+	}
+	if s.Country != "" {
+		if len(s.Country) != 2 || s.Country[0] < 'A' || s.Country[0] > 'Z' || s.Country[1] < 'A' || s.Country[1] > 'Z' {
+			return fmt.Errorf("ipc: strategy: country %q is not a two-letter code", s.Country)
+		}
+	}
+	if len(s.Node_id) > 64 {
+		return errors.New("ipc: strategy: node_id is too long")
+	}
+	for _, c := range s.Node_id {
+		if !(c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			return fmt.Errorf("ipc: strategy: node_id %q carries a character a node id does not", s.Node_id)
+		}
+	}
+	return nil
+}
+
+// Goal_outcome is the control plane's account of one goal, passed on as it
+// came: whether it shaped the choice of node and, when it did not, why.
+type Goal_outcome struct {
+	Goal     string `json:"goal"`
+	Applied  bool   `json:"applied"`
+	Why      string `json:"why,omitempty"`
+	Compared int    `json:"compared,omitempty"`
+}
+
+// Server is one entry of Servers_result.
+type Server struct {
+	Node_id   string `json:"node_id"`
+	Name      string `json:"name,omitempty"`
+	Country   string `json:"country,omitempty"`
+	Region    string `json:"region,omitempty"`
+	City      string `json:"city,omitempty"`
+	Available bool   `json:"available"`
+}
+
+// Servers_result answers Command_servers.
+type Servers_result struct {
+	Servers []Server `json:"servers"`
+}
 
 // Mode_auto and Mode_manual are the two values Connect_params.Mode may hold
 // on the wire.
@@ -193,6 +255,11 @@ type Status_result struct {
 	Rtt_ms       *float64   `json:"rtt_ms,omitempty"`
 	Loss_percent *float64   `json:"loss_percent,omitempty"`
 	Measured_at  *time.Time `json:"measured_at,omitempty"`
+
+	// Reason and Goals are how the control plane chose this node, under
+	// the same condition as Node_name.
+	Reason string         `json:"reason,omitempty"`
+	Goals  []Goal_outcome `json:"goals,omitempty"`
 }
 
 // Version_result answers Command_version. Every field is omitempty for the
@@ -213,6 +280,9 @@ const (
 	Error_not_signed_in   = "not_signed_in" // no device token stored
 	Error_unauthorized    = "unauthorized"  // the control plane rejected the credentials
 	Error_internal        = "internal"      // anything else
+
+	Error_server_unavailable   = "server_unavailable"   // the chosen server cannot take a connection now
+	Error_no_server_in_country = "no_server_in_country" // no server in the chosen country can
 )
 
 // The sentinel errors a Service implementation returns, so the server can
@@ -231,6 +301,9 @@ var (
 	Err_not_signed_in = errors.New("ipc: no credentials are stored")
 	Err_unauthorized  = errors.New("ipc: the control plane rejected these credentials")
 	Err_busy          = errors.New("ipc: busy with another operation")
+
+	Err_server_unavailable   = errors.New("ipc: the chosen server cannot take a connection right now")
+	Err_no_server_in_country = errors.New("ipc: no server in the chosen country can take a connection right now")
 )
 
 // Max_frame_bytes bounds one line. A caller on the other side of the pipe

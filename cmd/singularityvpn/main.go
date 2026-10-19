@@ -34,7 +34,7 @@ func main() {
 	err = wails.Run(&options.App{
 		Title:     "Singularity VPN",
 		Width:     440,
-		Height:    760,
+		Height:    800,
 		MinWidth:  400,
 		MinHeight: 560,
 		// The window is a view onto the service. Closing it is "put it

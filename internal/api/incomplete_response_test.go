@@ -40,7 +40,7 @@ func call_by_name(t *testing.T, client *Client, method string) error {
 		_, err := client.Mint_device_token(ctx, "session", "laptop")
 		return err
 	case "Recommend":
-		_, err := client.Recommend(ctx, "token")
+		_, err := client.Recommend(ctx, "token", Recommend_request{})
 		return err
 	case "Create_profile":
 		_, err := client.Create_profile(ctx, "token", "wireguard", "node-1", 30)
@@ -145,7 +145,7 @@ func Test_a_refused_answer_carries_no_half_filled_value(t *testing.T) {
 // the control plane repository.
 func Test_a_recommendation_without_a_place_is_still_usable(t *testing.T) {
 	client := serve_data(t, `{"node_id":"node-1","protocol":"wireguard","alternatives":[]}`)
-	recommendation, err := client.Recommend(context.Background(), "token")
+	recommendation, err := client.Recommend(context.Background(), "token", Recommend_request{})
 	if err != nil {
 		t.Fatalf("Recommend: %v", err)
 	}
