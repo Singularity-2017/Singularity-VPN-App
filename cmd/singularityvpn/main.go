@@ -41,11 +41,14 @@ func main() {
 		// away", the way a tray application behaves; the tray's own menu
 		// is how the process ends.
 		HideWindowOnClose: true,
-		BackgroundColour:  &options.RGBA{R: 0x20, G: 0x26, B: 0x2b, A: 0xff},
-		AssetServer:       &assetserver.Options{Assets: assets},
-		OnStartup:         app.startup,
-		OnShutdown:        func(ctx context.Context) { app.shutdown() },
-		Bind:              []interface{}{app},
+		// --tray is how autostart launches it (the Run key svpn-setup
+		// writes): a person logging in did not ask to see a window.
+		StartHidden:      has_flag("--tray"),
+		BackgroundColour: &options.RGBA{R: 0x20, G: 0x26, B: 0x2b, A: 0xff},
+		AssetServer:      &assetserver.Options{Assets: assets},
+		OnStartup:        app.startup,
+		OnShutdown:       func(ctx context.Context) { app.shutdown() },
+		Bind:             []interface{}{app},
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId: "c8f6f2a4-6a43-4b1e-9d55-singularityvpn",
 			// A second launch -- the Start menu, a double click -- means
@@ -61,4 +64,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "singularityvpn: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func has_flag(flag string) bool {
+	for _, a := range os.Args[1:] {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }

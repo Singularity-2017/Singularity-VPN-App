@@ -270,7 +270,33 @@ func (m *Manager) publish(kind events.Kind, data any) {
 func (m *Manager) Connect(ctx context.Context, request Connect_request) error {
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
+	return m.connect_locked(ctx, request)
+}
 
+// Connect_if_wanted connects only if Set_connect_on_start last recorded a
+// yes and nothing has a connection in hand or in flight, deciding and
+// acting under one hold of op_mu. Checked outside the lock, a disconnect
+// pressed between the check and the connect would be overridden: it finds
+// nothing to disconnect, records its no, and the connect goes ahead anyway.
+// It reports whether it attempted anything.
+func (m *Manager) Connect_if_wanted(ctx context.Context, request Connect_request) (bool, error) {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	local, err := m.store.Load()
+	if err != nil {
+		return false, err
+	}
+	if !local.Connect_on_start {
+		return false, nil
+	}
+	if current := m.get_state(); current != State_disconnected && current != State_failed {
+		return false, nil
+	}
+	return true, m.connect_locked(ctx, request)
+}
+
+func (m *Manager) connect_locked(ctx context.Context, request Connect_request) error {
 	current := m.get_state()
 	if current == State_connected {
 		return nil // CLIENT_CORE.md 35: a second Connect does not make a second tunnel
@@ -534,6 +560,41 @@ func (m *Manager) fail(now time.Time, fault *Fault) error {
 // Disconnect stops the current protocol and returns to State_disconnected.
 // CLIENT_CORE.md section 44. Disconnecting when already disconnected is not
 // an error and starts nothing (CLIENT_CORE.md 35).
+// Set_connect_on_start records whether the person wants to be connected,
+// so a reboot -- or a service restart after a crash -- puts them back where
+// they left off. It runs under op_mu because Connect saves the same state:
+// written outside the lock, a "no" recorded while a connect was in flight
+// would be overwritten by that connect's save of the old "yes".
+func (m *Manager) Set_connect_on_start(want bool) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	local, err := m.store.Load()
+	if err != nil {
+		return err
+	}
+	if local.Connect_on_start == want {
+		return nil
+	}
+	local.Connect_on_start = want
+	if err := m.store.Save(local); err != nil {
+		return err
+	}
+	m.local_state = local
+	return nil
+}
+
+// Connect_on_start reports what Set_connect_on_start last recorded.
+func (m *Manager) Connect_on_start() (bool, error) {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+	local, err := m.store.Load()
+	if err != nil {
+		return false, err
+	}
+	return local.Connect_on_start, nil
+}
+
 func (m *Manager) Disconnect(ctx context.Context) error {
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()

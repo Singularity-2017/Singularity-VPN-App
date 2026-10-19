@@ -12,7 +12,11 @@ param(
     # The service, the window that drives it, and the console harness that
     # drives it without a window.
     [string[]]$Target = @("./cmd/svpn-service", "./cmd/singularityvpn", "./cmd/svpn-ctl"),
-    [string]$Out = "dist"
+    [string]$Out = "dist",
+    # Build SingularityVPN-setup.exe: the three programs and wintun.dll
+    # inside one installer. wintun.dll is taken from local/ or from the
+    # output directory, where the stage 3 instructions put it.
+    [switch]$Setup
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,5 +89,26 @@ try {
     }
 } finally {
     Pop-Location
+}
+if ($Setup) {
+    $payload = Join-Path $root "cmd/svpn-setup/payload"
+    New-Item -ItemType Directory -Force -Path $payload | Out-Null
+    foreach ($name in @("svpn-service.exe", "SingularityVPN.exe", "svpn-ctl.exe")) {
+        $from = Join-Path $out_dir $name
+        if (-not (Test-Path $from)) { Write-Error "setup: $name was not built; build all three targets with -Setup" }
+        Copy-Item $from (Join-Path $payload $name) -Force
+    }
+    $wintun = @((Join-Path $root "local/wintun.dll"), (Join-Path $out_dir "wintun.dll")) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $wintun) {
+        Write-Error "setup: wintun.dll not found in local/ or $Out/ -- download the signed release from https://www.wintun.net and put amd64/wintun.dll in local/"
+    }
+    Copy-Item $wintun (Join-Path $payload "wintun.dll") -Force
+    Push-Location $root
+    try {
+        & go build -tags payload -ldflags ($ldflags -join " ") -o (Join-Path $out_dir "SingularityVPN-setup.exe") ./cmd/svpn-setup
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } finally {
+        Pop-Location
+    }
 }
 Write-Host "built into $Out"

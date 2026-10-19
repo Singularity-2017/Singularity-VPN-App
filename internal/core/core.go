@@ -158,15 +158,16 @@ func recovery_config_with_defaults(config recovery.Config) recovery.Config {
 // and log every event at info with its kind, time and session id. That is
 // what gives the service a log worth reading, and it costs one subscriber.
 //
-// Start does not auto-connect. state.State.Connect_on_start exists and is
-// the right switch, but nothing can set it yet -- there is no settings
-// command in the protocol and no installer. A service that connected on its
-// own because of a field nobody can turn off would be worse than one that
-// waits for a person to ask. Stage 5 turns this on.
+// Start runs the monitor and, when the person left the machine connected,
+// connects again: Connect_on_start is set by their connect and cleared only
+// by their disconnect or sign-out, never by the service stopping, so a
+// reboot puts them back where they were (design section 10). A person who
+// pressed disconnect stays disconnected.
 func (a *Application) Start(ctx context.Context) error {
 	go func() {
 		_ = a.manager.Run(ctx)
 	}()
+	go a.resume(ctx)
 
 	channel, unsubscribe := a.bus.Subscribe()
 	go func() {
@@ -230,4 +231,44 @@ func (t *token_source) Token(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("core: reading the device token: %w", err)
 	}
 	return string(value), nil
+}
+
+// resume_delays spaces the connect attempts made at start. The service
+// starts early in boot, often before the network has an address, so the
+// first attempt failing says little; the later ones cover a slow Wi-Fi
+// association without retrying forever on a machine that is simply
+// offline. Recovery takes over once a tunnel is up.
+var resume_delays = []time.Duration{0, 5 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second}
+
+// resume connects at start if the person left the machine connected. The
+// decision -- still wanted, nothing else moved the state machine -- is taken
+// inside the manager under the same lock as the connect, so a disconnect
+// pressed meanwhile wins. It reconnects in auto mode: a node chosen by hand
+// through svpn-ctl is not remembered across a restart.
+func (a *Application) resume(ctx context.Context) {
+	for _, delay := range resume_delays {
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		if signed_in, err := a.signed_in(); err != nil || !signed_in {
+			return
+		}
+		attempted, err := a.manager.Connect_if_wanted(ctx, connection.Connect_request{Mode: connection.Mode_auto})
+		if !attempted || err == nil || ctx.Err() != nil {
+			if err != nil && !attempted {
+				a.logger.Warn("could not read whether a connection is wanted", "err", err)
+			}
+			if attempted && err == nil {
+				a.logger.Info("reconnected at start: the machine was left connected")
+			}
+			return
+		}
+		a.logger.Warn("reconnect at start failed; will try again", "err", err)
+	}
 }

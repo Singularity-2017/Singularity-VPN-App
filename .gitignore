@@ -4,6 +4,7 @@
 
 # build output
 /dist/
+/cmd/svpn-setup/payload/
 *.exe
 *.syso
 

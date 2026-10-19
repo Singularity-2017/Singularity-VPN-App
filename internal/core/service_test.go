@@ -13,7 +13,9 @@ import (
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/connection"
 	"singularity-vpn-app/internal/diagnostics"
+	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
+	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/security"
 )
 
@@ -517,4 +519,120 @@ func Test_an_unrecognised_error_survives_unchanged(t *testing.T) {
 // errors.Is through a chain rather than against a bare sentinel.
 func fmt_errorf_wrapping(target error) error {
 	return fmt.Errorf("core: reading the device token: %w", target)
+}
+
+// --- resuming at start ---------------------------------------------------
+
+// restart builds a fresh Application over the same store, secrets, control
+// plane and tunnel, the way a reboot brings the service back over the same
+// files.
+func restart(t *testing.T, f *fixture) *fixture {
+	t.Helper()
+	registry, err := protocols.New_registry(f.protocol)
+	if err != nil {
+		t.Fatalf("building the protocol registry: %v", err)
+	}
+	bus := events.New_bus(16)
+	app, err := New_application(Dependencies{
+		Control_plane: f.control_plane,
+		Secrets:       f.secrets,
+		Store:         f.store,
+		Protocols:     registry,
+		Prober:        f.prober,
+		Bus:           bus,
+		Device_name:   "test machine",
+	})
+	if err != nil {
+		t.Fatalf("New_application: %v", err)
+	}
+	t.Cleanup(func() { bus.Close() })
+	next := *f
+	next.app = app
+	next.bus = bus
+	return &next
+}
+
+func resume_at_once(t *testing.T) {
+	t.Helper()
+	saved := resume_delays
+	resume_delays = []time.Duration{0}
+	t.Cleanup(func() { resume_delays = saved })
+}
+
+func prepare_reconnect(f *fixture) {
+	f.control_plane.recommendation = api.Recommendation{Node_id: "node-1", Protocol: "wireguard"}
+	f.control_plane.config = api.Vpn_config{Config: "[Interface]\n", Protocol: "wireguard", Expires_at: time.Now().Add(24 * time.Hour)}
+}
+
+func Test_a_machine_left_connected_reconnects_at_start(t *testing.T) {
+	resume_at_once(t)
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+	if err := f.app.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	prepare_reconnect(f)
+	g := restart(t, f)
+	g.app.resume(context.Background())
+
+	if got := g.app.manager.State(); got != connection.State_connected {
+		t.Fatalf("state after a restart of a machine left connected = %q, want connected", got)
+	}
+}
+
+func Test_a_person_who_disconnected_stays_disconnected_at_start(t *testing.T) {
+	resume_at_once(t)
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+	if err := f.app.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	if err := f.app.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	prepare_reconnect(f)
+	g := restart(t, f)
+	g.app.resume(context.Background())
+
+	if got := g.app.manager.State(); got != connection.State_disconnected {
+		t.Fatalf("state after a restart following a disconnect = %q, want disconnected", got)
+	}
+}
+
+func Test_signing_out_withdraws_the_wish_to_be_connected(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+	if err := f.app.Sign_out(context.Background()); err != nil {
+		t.Fatalf("Sign_out: %v", err)
+	}
+	want, err := f.app.manager.Connect_on_start()
+	if err != nil {
+		t.Fatalf("Connect_on_start: %v", err)
+	}
+	if want {
+		t.Fatal("Connect_on_start after sign-out = true, want false: a signed-in person later would be connected without asking")
+	}
+}
+
+// Test_a_connect_before_sign_in_records_no_wish: that connect fails at
+// once, and a wish recorded by it would connect the person at a reboot
+// after they sign in, without their ever having connected.
+func Test_a_connect_before_sign_in_records_no_wish(t *testing.T) {
+	f := new_fixture(t)
+	if err := f.app.Connect(context.Background(), connect_params_auto()); err == nil {
+		t.Fatal("Connect before sign-in = nil error, want a refusal")
+	}
+	sign_in(t, f)
+	want, err := f.app.manager.Connect_on_start()
+	if err != nil {
+		t.Fatalf("Connect_on_start: %v", err)
+	}
+	if want {
+		t.Fatal("Connect_on_start after a refused connect = true, want false")
+	}
 }

@@ -92,6 +92,17 @@ func (a *Application) Connect(ctx context.Context, params ipc.Connect_params) er
 	}
 
 	a.logger.Info("connect requested", "mode", params.Mode, "node_id", params.Node_id, "protocol", params.Protocol)
+	// Recorded before the attempt, not after its success: what the person
+	// asked for is to be connected, and a connect that failed because the
+	// network was down is exactly the one worth repeating at the next start.
+	// Not for someone who is not signed in: their connect fails at once,
+	// and a wish recorded now would connect them at a reboot after they
+	// sign in, without their ever having connected.
+	if signed_in, err := a.signed_in(); err == nil && signed_in {
+		if err := a.manager.Set_connect_on_start(true); err != nil {
+			a.logger.Warn("could not record that a connection is wanted", "err", err)
+		}
+	}
 	return map_error(a.manager.Connect(ctx, connection.Connect_request{
 		Mode:     mode,
 		Node_id:  params.Node_id,
@@ -122,7 +133,19 @@ func connection_mode(mode string) (connection.Mode, error) {
 // Disconnect takes the tunnel down.
 func (a *Application) Disconnect(ctx context.Context) error {
 	a.logger.Info("disconnect requested")
-	return map_error(a.manager.Disconnect(ctx))
+	// A person's disconnect is the one way to say "stay off". The service
+	// stopping for a shutdown goes through Stop, which leaves this alone.
+	// The tunnel comes down regardless; but a "no" that was not recorded
+	// means the next start connects a person who asked to stay off, so it
+	// is reported rather than only logged.
+	wish_err := a.manager.Set_connect_on_start(false)
+	if err := a.manager.Disconnect(ctx); err != nil {
+		return map_error(err)
+	}
+	if wish_err != nil {
+		return fmt.Errorf("core: disconnected, but could not record that no connection is wanted, so the next start may connect again: %w", wish_err)
+	}
+	return nil
 }
 
 // Sign_in exchanges a username and a password for a device token and stores
@@ -193,6 +216,12 @@ func (a *Application) Sign_in(ctx context.Context, params ipc.Sign_in_params) (i
 func (a *Application) Sign_out(ctx context.Context) error {
 	a.logger.Info("sign-out requested")
 
+	if err := a.manager.Set_connect_on_start(false); err != nil {
+		// Refuse before anything is removed: signed out with the wish
+		// still recorded would connect the next person who signs in here
+		// at the next start.
+		return map_error(fmt.Errorf("core: sign-out: recording that no connection is wanted: %w", err))
+	}
 	if err := a.manager.Disconnect(ctx); err != nil {
 		if errors.Is(err, connection.Err_busy) {
 			// Something else is mid-operation, so the tunnel is still
