@@ -9,9 +9,9 @@
 
 [CmdletBinding()]
 param(
-    # The service and the console harness that drives it: one is no use
-    # without the other until the interface exists.
-    [string[]]$Target = @("./cmd/svpn-service", "./cmd/svpn-ctl"),
+    # The service, the window that drives it, and the console harness that
+    # drives it without a window.
+    [string[]]$Target = @("./cmd/svpn-service", "./cmd/singularityvpn", "./cmd/svpn-ctl"),
     [string]$Out = "dist"
 )
 
@@ -66,11 +66,24 @@ if ($control_plane) {
 # so ./cmd/svpn-service meant scripts/cmd/svpn-service to anyone who ran the
 # build from anywhere but the repository root -- which is what double-clicking
 # scripts/build.cmd does.
+# The window is a Wails application: it needs Wails' build tags, the GUI
+# subsystem so no console flashes up behind it, and the name the design gives
+# it. Everything else is a console program and must stay one.
+$gui = "./cmd/singularityvpn"
+$console = @($Target | Where-Object { $_ -ne $gui })
+
 Push-Location $root
 try {
-    & go build -ldflags ($ldflags -join " ") -o $out_dir @Target
+    if ($console.Count -gt 0) {
+        & go build -ldflags ($ldflags -join " ") -o $out_dir @console
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    if ($Target -contains $gui) {
+        $gui_ldflags = @($ldflags) + "-H windowsgui"
+        & go build -tags desktop,production -ldflags ($gui_ldflags -join " ") -o (Join-Path $out_dir "SingularityVPN.exe") $gui
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
 } finally {
     Pop-Location
 }
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "built into $Out"

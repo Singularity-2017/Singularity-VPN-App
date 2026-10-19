@@ -178,6 +178,21 @@ type Status_result struct {
 	Protocol   string     `json:"protocol,omitempty"`
 	Session_id string     `json:"session_id,omitempty"`
 	Since      *time.Time `json:"since,omitempty"`
+
+	// Node_name, Country and City describe the node for a person, and are
+	// present only when the control plane named this node -- see
+	// connection.Session.
+	Node_name string `json:"node_name,omitempty"`
+	Country   string `json:"country,omitempty"`
+	City      string `json:"city,omitempty"`
+
+	// Rtt_ms and Loss_percent come from the last successful probe of this
+	// session, taken at Measured_at. All three are pointers for the same
+	// reason as Since: a session not yet measured has no numbers, and a
+	// zero would read as a perfect connection.
+	Rtt_ms       *float64   `json:"rtt_ms,omitempty"`
+	Loss_percent *float64   `json:"loss_percent,omitempty"`
+	Measured_at  *time.Time `json:"measured_at,omitempty"`
 }
 
 // Version_result answers Command_version. Every field is omitempty for the

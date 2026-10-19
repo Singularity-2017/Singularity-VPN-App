@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Singularity VPN</title>
+<link rel="stylesheet" href="app.css">
+<script src="/wails/ipc.js"></script>
+<script src="/wails/runtime.js"></script>
+</head>
+<body>
+<div class="window" id="window">
+
+  <header class="bar">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M17 5.5C15.6 4.5 13.9 4 12 4 8.7 4 6.5 5.8 6.5 8.2c0 5.3 11 3 11 8.3C17.5 19 15 20 12 20c-2.2 0-4.1-.6-5.5-1.7" stroke="#4be3df" stroke-width="2.6" stroke-linecap="round"/></svg>
+      <span>Singularity VPN</span>
+    </div>
+    <button class="icon" id="menu-button" aria-label="Меню" aria-expanded="false" hidden>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#c9d3da" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+    <div class="pop" id="menu" hidden>
+      <div class="pop-title">Аккаунт</div>
+      <button class="opt" id="sign-out">Выйти из аккаунта</button>
+      <div class="pop-foot" id="version" hidden></div>
+    </div>
+  </header>
+
+  <section id="screen-wait" class="screen center">
+    <div class="muted">Связываемся со службой…</div>
+  </section>
+
+  <section id="screen-service" class="screen center" hidden>
+    <div class="notice">
+      <div class="notice-title">Служба Singularity VPN не запущена</div>
+      <div class="muted">Туннелем управляет служба Windows. Она ставится вместе с приложением и запускается сама; если её нет, переустановите приложение. Окно подключится, как только служба появится.</div>
+    </div>
+  </section>
+
+  <section id="screen-untrusted" class="screen center" hidden>
+    <div class="notice warn">
+      <div class="notice-title">Канал к службе не прошёл проверку</div>
+      <div class="muted">Канал службы занят программой, которая не является службой Singularity VPN. Окно не будет ничего туда отправлять. Перезагрузите компьютер; если не поможет — это повод проверить компьютер на вредоносные программы.</div>
+    </div>
+  </section>
+
+  <section id="screen-signin" class="screen" hidden>
+    <form id="signin" class="signin" autocomplete="on">
+      <div class="signin-title">Вход</div>
+      <div class="muted">Имя и пароль от вашего аккаунта Singularity. Пароль уходит в службу один раз и нигде не сохраняется.</div>
+      <label>Имя пользователя
+        <input id="username" name="username" autocomplete="username" required>
+      </label>
+      <label>Пароль
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div class="error" id="signin-error" role="alert" hidden></div>
+      <button type="submit" class="primary" id="signin-submit">Войти</button>
+    </form>
+  </section>
+
+  <section id="screen-main" class="screen" hidden>
+    <div class="server">
+      <div class="server-label">Сервер</div>
+      <div class="chip" id="chip" hidden>
+        <div class="chip-name" id="place"></div>
+        <div class="chip-sub" id="rtt-line" hidden>задержка <span class="num accent" id="rtt"></span></div>
+      </div>
+      <div class="note" id="note"><span class="dot"></span><span id="note-text"></span></div>
+      <div class="details" id="details" hidden>
+        <div class="row" id="row-node"><span class="l">Узел</span><span id="d-node"></span></div>
+        <div class="row" id="row-protocol"><span class="l">Протокол</span><span id="d-protocol"></span></div>
+        <div class="row" id="row-since"><span class="l">Подключено с</span><span id="d-since"></span></div>
+        <div class="row" id="row-rtt"><span class="l">Задержка через туннель</span><span class="num" id="d-rtt"></span></div>
+        <div class="row" id="row-loss"><span class="l">Неудачных попыток</span><span class="num" id="d-loss"></span></div>
+        <div class="row" id="row-measured"><span class="l">Замер</span><span id="d-measured"></span></div>
+        <div class="hint">Задержка — время TCP-соединения с внешним адресом через туннель, а не ping до сервера. Неудачные попытки — доля из четырёх таких соединений, не потери пакетов.</div>
+      </div>
+    </div>
+
+    <div class="power-wrap">
+      <button class="power" id="power" aria-label="Подключить VPN">
+        <svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>
+        <span id="power-label">Подключиться</span>
+      </button>
+      <div class="error" id="action-error" role="alert" hidden></div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <button class="corner" id="corner" aria-label="Подробный режим" aria-pressed="false" hidden></button>
+  </footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -117,12 +117,23 @@ type Manager struct {
 	session     Session
 	has_session bool
 
+	// sample is the last successful probe of the current session, for a
+	// status query; has_sample is false until one exists, so nothing is
+	// ever reported for a tunnel that has not been measured yet.
+	sample     diagnostics.Sample
+	has_sample bool
+
 	// The rest is only ever touched under op_mu.
 	mode            Mode
 	current         recovery.Target
 	current_config  protocols.Connection_config
 	protocol_handle protocols.Protocol
 	alternatives    []recovery.Target
+
+	// recommended is the control plane's last recommendation, kept so a
+	// session on the node it named can carry that node's description.
+	recommended     api.Recommendation
+	has_recommended bool
 	local_state     state.State
 
 	baseline                 diagnostics.Baseline
@@ -195,10 +206,27 @@ func (m *Manager) get_state() State {
 	return m.state
 }
 
+// Last_sample reports the last successful probe of the current session.
+// A new session starts with none.
+func (m *Manager) Last_sample() (diagnostics.Sample, bool) {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return m.sample, m.has_sample
+}
+
 func (m *Manager) set_session(session Session, ok bool) {
 	m.state_mu.Lock()
 	m.session = session
 	m.has_session = ok
+	m.sample = diagnostics.Sample{}
+	m.has_sample = false
+	m.state_mu.Unlock()
+}
+
+func (m *Manager) set_sample(sample diagnostics.Sample) {
+	m.state_mu.Lock()
+	m.sample = sample
+	m.has_sample = true
 	m.state_mu.Unlock()
 }
 
@@ -363,6 +391,8 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 		return recovery.Target{}, classify_control_plane_error("recommend", err)
 	}
 	m.alternatives = alternatives_from(recommendation.Alternatives)
+	m.recommended = recommendation
+	m.has_recommended = true
 	return recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}, nil
 }
 
@@ -444,7 +474,13 @@ func (m *Manager) new_session(ctx context.Context, now time.Time, target recover
 		_ = protocol.Disconnect(ctx)
 		return Session{}, &Fault{Kind: Fault_platform, Op: "connect", Err: errors.New("connection: the session id generator did not produce a usable id")}
 	}
-	return Session{Id: id, Node_id: target.Node_id, Protocol: target.Protocol, Started_at: now}, nil
+	session := Session{Id: id, Node_id: target.Node_id, Protocol: target.Protocol, Started_at: now}
+	if m.has_recommended && m.recommended.Node_id == target.Node_id {
+		session.Node_name = m.recommended.Node_name
+		session.Country = m.recommended.Country
+		session.City = m.recommended.City
+	}
+	return session, nil
 }
 
 // settle_connected lands a newly established target in State_connected:
@@ -671,6 +707,7 @@ func (m *Manager) Tick(ctx context.Context, now time.Time) {
 		return
 	}
 	m.consecutive_probe_errors = 0
+	m.set_sample(sample)
 
 	m.baseline.Observe(sample)
 	verdict := diagnostics.Judge(sample, m.baseline, diagnostics.Default_thresholds())

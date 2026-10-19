@@ -16,6 +16,15 @@ type Session struct {
 	Node_id    string
 	Protocol   string
 	Started_at time.Time
+
+	// Node_name, Country and City describe the node for a person. They
+	// are filled only when the control plane's recommendation named this
+	// very node; a switch to an alternative, or a first connect through
+	// Create_profile, has no such description and leaves them empty rather
+	// than guessing one.
+	Node_name string
+	Country   string
+	City      string
 }
 
 // session_id_generation_failed is what default_session_id returns when

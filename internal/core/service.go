@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/buildinfo"
@@ -47,6 +48,21 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 		// the comment on ipc.Status_result for why the field is a pointer.
 		started := session.Started_at
 		result.Since = &started
+	}
+	result.Node_name = session.Node_name
+	result.Country = session.Country
+	result.City = session.City
+
+	// A sample without a round trip -- a prober that confirmed reachability
+	// without timing it -- reports nothing rather than a perfect zero.
+	if sample, ok := a.manager.Last_sample(); ok && sample.Rtt > 0 {
+		rtt := float64(sample.Rtt) / float64(time.Millisecond)
+		loss := sample.Packet_loss * 100
+		result.Rtt_ms = &rtt
+		result.Loss_percent = &loss
+		if taken := sample.Taken_at; !taken.IsZero() {
+			result.Measured_at = &taken
+		}
 	}
 	return result, nil
 }

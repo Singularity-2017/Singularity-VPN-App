@@ -8,9 +8,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/connection"
+	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/security"
 )
@@ -81,6 +83,112 @@ func Test_a_status_reports_the_session_it_has(t *testing.T) {
 	}
 	if got.Since == nil {
 		t.Fatalf("Since is absent while connected, want the moment the session started")
+	}
+}
+
+// reconnect_through_recommend disconnects and connects again: the second
+// connect has a client_id, so it asks Recommend instead of Create_profile.
+func reconnect_through_recommend(t *testing.T, f *fixture, recommendation api.Recommendation) {
+	t.Helper()
+	f.control_plane.recommendation = recommendation
+	f.control_plane.config = api.Vpn_config{Config: "[Interface]\n", Protocol: recommendation.Protocol, Expires_at: time.Now().Add(24 * time.Hour)}
+	if err := f.app.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	if err := f.app.Connect(context.Background(), connect_params_auto()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+}
+
+func Test_a_status_names_the_place_the_control_plane_named(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+	reconnect_through_recommend(t, f, api.Recommendation{
+		Node_id: "node-1", Node_name: "de-fra-2", Country: "Germany", City: "Frankfurt", Protocol: "wireguard",
+	})
+
+	got, err := f.app.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if got.Node_name != "de-fra-2" || got.Country != "Germany" || got.City != "Frankfurt" {
+		t.Fatalf("Status() place = %q/%q/%q, want the recommendation's description of the node", got.Node_name, got.Country, got.City)
+	}
+}
+
+// Test_a_node_the_recommendation_did_not_name_has_no_place: the manager
+// remembers the last recommendation, and a session on any other node --
+// a manual choice here, an alternative after a switch -- must not borrow
+// its description, or a person would see a place they are not connected
+// to.
+func Test_a_node_the_recommendation_did_not_name_has_no_place(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+	reconnect_through_recommend(t, f, api.Recommendation{Node_id: "node-9", Country: "Netherlands", City: "Amsterdam", Protocol: "wireguard"})
+	if err := f.app.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	manual := ipc.Connect_params{Mode: ipc.Mode_manual, Node_id: "node-1", Protocol: "wireguard"}
+	if err := f.app.Connect(context.Background(), manual); err != nil {
+		t.Fatalf("Connect manual: %v", err)
+	}
+
+	got, err := f.app.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if got.Node_name != "" || got.Country != "" || got.City != "" {
+		t.Fatalf("Status() place = %q/%q/%q, want none for a node no recommendation described", got.Node_name, got.Country, got.City)
+	}
+}
+
+func Test_a_status_carries_no_numbers_until_the_session_is_measured(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+
+	got, err := f.app.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if got.Rtt_ms != nil || got.Loss_percent != nil || got.Measured_at != nil {
+		t.Fatalf("Status() before any probe = rtt %v loss %v at %v, want all absent", got.Rtt_ms, got.Loss_percent, got.Measured_at)
+	}
+}
+
+func Test_a_status_reports_the_last_measurement(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	connect(t, f)
+	taken := time.Now()
+	f.prober.sample = diagnostics.Sample{Rtt: 44 * time.Millisecond, Packet_loss: 0.25, Internet_ok: true, Tunnel_up: true, Dns_ok: true, Taken_at: taken}
+	f.app.Recheck(context.Background())
+
+	got, err := f.app.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if got.Rtt_ms == nil || *got.Rtt_ms != 44 {
+		t.Fatalf("Rtt_ms = %v, want 44", got.Rtt_ms)
+	}
+	if got.Loss_percent == nil || *got.Loss_percent != 25 {
+		t.Fatalf("Loss_percent = %v, want 25", got.Loss_percent)
+	}
+	if got.Measured_at == nil || !got.Measured_at.Equal(taken) {
+		t.Fatalf("Measured_at = %v, want %v", got.Measured_at, taken)
+	}
+
+	// A new session starts unmeasured: the old node's numbers are not this
+	// node's.
+	reconnect_through_recommend(t, f, api.Recommendation{Node_id: "node-2", Protocol: "wireguard"})
+	got, err = f.app.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if got.Rtt_ms != nil {
+		t.Fatalf("Rtt_ms after a new session = %v, want absent until it is measured", *got.Rtt_ms)
 	}
 }
 
