@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"unsafe"
 
@@ -105,12 +106,13 @@ func (a *Address) Set_interface(index, sub_index uint32) {
 }
 
 // Socket is what the flow and socket layers report about the socket an
-// event belongs to. The addresses are left out until stage 9b reads them
-// and checks their encoding on a real machine.
+// event belongs to.
 type Socket struct {
 	Endpoint_id        uint64
 	Parent_endpoint_id uint64
 	Process_id         uint32
+	Local_address      netip.Addr
+	Remote_address     netip.Addr
 	Local_port         uint16
 	Remote_port        uint16
 	Protocol           uint8 // IANA number: 6 TCP, 17 UDP
@@ -123,10 +125,24 @@ func (a *Address) Socket() Socket {
 		Endpoint_id:        binary.LittleEndian.Uint64(u[0:8]),
 		Parent_endpoint_id: binary.LittleEndian.Uint64(u[8:16]),
 		Process_id:         binary.LittleEndian.Uint32(u[16:20]),
+		Local_address:      decode_address(u[20:36]),
+		Remote_address:     decode_address(u[36:52]),
 		Local_port:         binary.LittleEndian.Uint16(u[52:54]),
 		Remote_port:        binary.LittleEndian.Uint16(u[54:56]),
 		Protocol:           u[56],
 	}
+}
+
+// decode_address reads WinDivert's UINT32[4] address: four host-order
+// words, least significant first, so the 16 bytes are the IPv6 address
+// reversed. An IPv4 address is stored IPv4-mapped (::ffff:a.b.c.d) and
+// comes back as plain IPv4.
+func decode_address(field []byte) netip.Addr {
+	var bytes [16]byte
+	for i := range bytes {
+		bytes[i] = field[15-i]
+	}
+	return netip.AddrFrom16(bytes).Unmap()
 }
 
 // Library is a loaded WinDivert.dll.

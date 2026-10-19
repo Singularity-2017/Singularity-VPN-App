@@ -76,3 +76,16 @@ func Test_an_unknown_game_is_an_error(t *testing.T) {
 		t.Fatal("Plan_for accepted a game the catalog does not know")
 	}
 }
+
+func Test_a_process_is_matched_to_its_game_by_image(t *testing.T) {
+	catalog, err := Load_catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if game, ok := catalog.By_image("tslgame.EXE"); !ok || game.Id != "pubg" {
+		t.Fatalf("By_image(tslgame.EXE) = %+v, %v; want pubg", game, ok)
+	}
+	if _, ok := catalog.By_image("chrome.exe"); ok {
+		t.Fatal("a browser was matched to a game")
+	}
+}

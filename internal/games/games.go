@@ -79,6 +79,20 @@ func (c Catalog) Find(id string) (Game, bool) {
 	return Game{}, false
 }
 
+// By_image returns the game whose process group includes the executable
+// named image, compared case-insensitively. Load_catalog has already
+// refused an image claimed by two games, so the answer is unique.
+func (c Catalog) By_image(image string) (Game, bool) {
+	for _, game := range c {
+		for _, candidate := range game.Images {
+			if strings.EqualFold(candidate, image) {
+				return game, true
+			}
+		}
+	}
+	return Game{}, false
+}
+
 // Plan is how the traffic of the selected games is carried.
 type Plan struct {
 	// Driver says whether the packet driver may be loaded. False means it
