@@ -243,6 +243,16 @@ func (a *Application) Sign_out(ctx context.Context) error {
 		a.logger.Warn("disconnect during sign-out reported a problem", "error", err.Error())
 	}
 
+	// A server picked by hand is one this account may use; the next
+	// account to sign in here may not, and would be refused on every
+	// connect. The goals themselves are this machine's and stay.
+	if strategy, err := a.manager.Strategy(); err == nil && strategy.Node_id != "" {
+		strategy.Node_id = ""
+		if err := a.manager.Set_strategy(strategy); err != nil {
+			a.logger.Warn("could not forget the server picked by hand", "err", err)
+		}
+	}
+
 	if err := a.secrets.Delete(security.Key_device_token); err != nil {
 		return fmt.Errorf("core: removing the device token: %w", err)
 	}

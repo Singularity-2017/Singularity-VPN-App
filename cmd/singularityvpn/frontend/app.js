@@ -42,6 +42,8 @@
   let servers = null;  // the last server list; null until fetched
   let busy = false;
   let loading_strategy = false;
+  let strategy_unsupported = false; // a service too old to know the command
+  let list_request = 0; // the newest list fill; an older answer is dropped
   let expanded = load_expanded();
   const region_names = make_region_names();
 
@@ -125,7 +127,7 @@
     if (!status) { show_screen("screen-wait"); return; }
     if (!status.signed_in) { show_screen("screen-signin"); return; }
     show_screen("screen-main");
-    if (strategy === null) load_strategy();
+    if (strategy === null && !strategy_unsupported) load_strategy();
 
     const st = status.state;
     const up = st === "connected" || st === "degraded";
@@ -135,14 +137,20 @@
 
     // Server: what it is connected to; otherwise what was picked; otherwise
     // that the choice is automatic.
+    // Until the strategy is known nothing claims to be automatic or not:
+    // drawing a default would state something the service never said.
     const auto_switch = $("auto");
+    auto_switch.hidden = strategy === null;
     auto_switch.setAttribute("aria-checked", auto ? "true" : "false");
+    document.querySelector(".goals").hidden = strategy === null;
     let where = status.session_id ? place_of(status.country, status.city, status.node_name || status.node_id) : "";
     if (!where && !auto) {
       const picked = server_by_id(s.node_id);
       where = picked ? (picked.name || place_of(picked.country, picked.city, "")) : s.node_id;
     }
-    set_text("place", where || "Выбирается автоматически");
+    if (!where && strategy !== null) where = "Выбирается автоматически";
+    $("chip").hidden = !where;
+    set_text("place", where);
     $("rtt-line").hidden = !(up && status.rtt_ms !== undefined);
     set_text("rtt", ms(status.rtt_ms));
     const reason = status.session_id && status.reason ? reason_text[status.reason] || "" : "";
@@ -216,7 +224,8 @@
     if (loading_strategy) return;
     loading_strategy = true;
     let answer = null;
-    try { answer = await backend().Strategy(); } finally { loading_strategy = false; }
+    try { answer = await backend().Strategy(); } catch (e) { answer = null; } finally { loading_strategy = false; }
+    if (answer && answer.error && answer.error.code === "unknown_command") strategy_unsupported = true;
     if (answer && answer.strategy) {
       strategy = answer.strategy;
       if (strategy.node_id && servers === null) load_servers();
@@ -225,9 +234,10 @@
   }
 
   async function load_servers() {
-    const answer = await backend().Servers();
+    let answer;
+    try { answer = await backend().Servers(); } catch (e) { answer = { error: { code: "failed", message: String(e) } }; }
     if (answer && !answer.error) servers = answer.servers || [];
-    return answer;
+    return answer || { error: { code: "failed" } };
   }
 
   function show_error(id, outcome) {
@@ -269,7 +279,7 @@
     if (strategy === null || busy) return;
     const next = Object.assign({}, strategy, edit);
     if (strategy.anonymity === "high" && next.anonymity !== "high") {
-      if (!(await ask("Высокая анонимность будет снята.", "Снять"))) return;
+      if (!(await ask("Снять высокий уровень анонимности?", "Снять"))) return;
     }
     close_pops();
     busy = true;
@@ -289,7 +299,7 @@
     const st = view.status.state;
     const turning_off = st === "connected" || st === "degraded" || st === "connecting" || st === "switching";
     if (turning_off && strategy && strategy.anonymity === "high") {
-      if (!(await ask("Защита пропадёт: трафик пойдёт напрямую, мимо VPN.", "Отключить"))) return;
+      if (!(await ask("Отключить VPN? Трафик пойдёт напрямую.", "Отключить"))) return;
     }
     busy = true;
     show_error("action-error", null);
@@ -310,7 +320,9 @@
     const note = $("servers-note");
     note.hidden = false;
     note.textContent = "Загружаем список…";
+    const request = ++list_request;
     const answer = await load_servers();
+    if (request !== list_request) return;
     if (answer.error) {
       note.textContent = "Список не загрузился: " + (answer.error.message || answer.error.code);
       return;
@@ -318,6 +330,7 @@
     note.hidden = servers.length > 0;
     note.textContent = "Серверов нет.";
     const list = $("server-list");
+    list.textContent = "";
     for (const server of servers) {
       const b = document.createElement("button");
       b.className = "opt server-opt";
@@ -357,12 +370,15 @@
     const note = $("countries-note");
     note.hidden = false;
     note.textContent = "Загружаем…";
+    const request = ++list_request;
     const answer = await load_servers();
+    if (request !== list_request) return;
     if (answer.error) {
       note.textContent = "Список не загрузился: " + (answer.error.message || answer.error.code);
       return;
     }
     note.hidden = true;
+    list.textContent = "";
     // Only countries some server is in: a country with none cannot be
     // asked for and would only produce a refusal.
     const countries = new Map();

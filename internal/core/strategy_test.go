@@ -65,3 +65,19 @@ func Test_the_server_list_needs_a_signed_in_device_and_passes_through(t *testing
 		t.Fatalf("Servers() = %+v, %v", got, err)
 	}
 }
+
+// A server picked by hand is the signed-out account's; the next account
+// may not be allowed on it. The goals belong to the machine and stay.
+func Test_sign_out_forgets_the_server_picked_by_hand_and_keeps_the_goals(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	if err := f.app.Set_strategy(context.Background(), ipc.Strategy{Bypass: true, Node_id: "node-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.Sign_out(context.Background()); err != nil {
+		t.Fatalf("Sign_out() error = %v", err)
+	}
+	if got, _ := f.app.Strategy(context.Background()); got.Node_id != "" || !got.Bypass {
+		t.Fatalf("strategy after sign-out = %+v; want the server forgotten and bypass kept", got)
+	}
+}

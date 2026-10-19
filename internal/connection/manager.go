@@ -317,6 +317,10 @@ func (m *Manager) connect_locked(ctx context.Context, request Connect_request) e
 	m.policy.Reset() // a person asked for this connect: the budget and cooldowns start over
 	m.set_state(State_connecting)
 	m.publish(events.Kind_connection_started, nil)
+	// Only a recommendation asked for during this connect may describe
+	// the session it produces; one left over from an earlier connect says
+	// how some other choice was made.
+	m.has_recommended = false
 
 	token, err := m.token.Token(connect_ctx)
 	if err != nil {
@@ -416,7 +420,7 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 	if err != nil {
 		return recovery.Target{}, classify_control_plane_error("recommend", err)
 	}
-	m.alternatives = alternatives_from(recommendation.Alternatives)
+	m.alternatives = m.pinned_to_node(alternatives_from(recommendation.Alternatives))
 	m.recommended = recommendation
 	m.has_recommended = true
 	return recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}, nil
@@ -439,14 +443,14 @@ func (m *Manager) recommend_request() api.Recommend_request {
 // create_profile provisions a new client_id. Manual mode passes the
 // person's chosen node and protocol through to Create_profile; auto mode
 // leaves both empty so the server picks, matching api.Client.Create_profile
-// -- unless the strategy names a country or a server, which the server's
-// own pick at provisioning would ignore: then the recommendation is asked
-// first and its node is the one provisioned on.
+// -- unless a strategy is set, which the server's own pick at provisioning
+// would ignore: then the recommendation is asked first and its node and
+// protocol are the ones provisioned with.
 func (m *Manager) create_profile(ctx context.Context, token string, request Connect_request) (recovery.Target, api.Vpn_config, *Fault) {
 	protocol, node_id := "", ""
 	if request.Mode == Mode_manual {
 		protocol, node_id = request.Protocol, request.Node_id
-	} else if s := m.local_state.Strategy; s.Country != "" || s.Node_id != "" {
+	} else if m.local_state.Strategy != (state.Strategy{}) {
 		target, fault := m.choose_target(ctx, token, request)
 		if fault != nil {
 			return recovery.Target{}, api.Vpn_config{}, fault
@@ -464,10 +468,28 @@ func (m *Manager) create_profile(ctx context.Context, token string, request Conn
 		return recovery.Target{}, api.Vpn_config{}, &Fault{Kind: Fault_configuration, Op: "create_profile", Err: serr}
 	}
 
-	m.alternatives = alternatives_from(profile.Alternatives)
+	m.alternatives = m.pinned_to_node(alternatives_from(profile.Alternatives))
 	target := recovery.Target{Node_id: profile.Node_id, Protocol: profile.Protocol}
 	config := api.Vpn_config{Config: profile.Config, Protocol: profile.Protocol, Expires_at: profile.Expires_at}
 	return target, config, nil
+}
+
+// pinned_to_node keeps, when the person picked a server by hand, only the
+// alternatives on that server: another protocol on it is still the server
+// they chose, another server is not. Automatic server choice is what moves
+// a connection to another node.
+func (m *Manager) pinned_to_node(list []recovery.Target) []recovery.Target {
+	pinned := m.local_state.Strategy.Node_id
+	if pinned == "" {
+		return list
+	}
+	kept := list[:0:0]
+	for _, t := range list {
+		if t.Node_id == pinned {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 func alternatives_from(list []api.Alternative) []recovery.Target {
@@ -629,9 +651,11 @@ func (m *Manager) Set_strategy(strategy state.Strategy) error {
 }
 
 // Strategy reports what Set_strategy last recorded.
+//
+// It does not take op_mu: the store serialises its own reads and writes,
+// and a window asking what the strategy is must not wait behind a connect
+// that may take a minute.
 func (m *Manager) Strategy() (state.Strategy, error) {
-	m.op_mu.Lock()
-	defer m.op_mu.Unlock()
 	local, err := m.store.Load()
 	if err != nil {
 		return state.Strategy{}, err
@@ -660,12 +684,44 @@ func (m *Manager) Apply_strategy(ctx context.Context) error {
 		return fault
 	}
 	if target == m.current {
+		// Same node, new account of why: the session must not keep saying
+		// it was picked by hand after the person turned automatic back on.
+		m.state_mu.Lock()
+		m.session.Reason = m.recommended.Reason
+		m.session.Goals = append([]api.Goal_outcome(nil), m.recommended.Goals...)
+		m.state_mu.Unlock()
 		return nil
 	}
+
+	// A goal changed by a person starts the recovery budget over, as a
+	// connect does: it is not a failure, and it must neither spend the
+	// budget Tick relies on nor be refused as flapping.
+	m.policy.Reset()
+	previous := m.current
 	now := m.now()
 	m.set_state(State_switching)
 	m.publish(events.Kind_switch_started, target)
-	return m.switch_loop(ctx, now, target)
+	err = m.switch_loop(ctx, now, target)
+	if err == nil || m.get_state() != State_failed {
+		return err
+	}
+
+	// The switch tears the old tunnel down before building the new one, so
+	// a new target that never came up has left the person with nothing --
+	// for having touched a goal. Go back to where they were, and report
+	// why the move failed.
+	config, cerr := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, previous.Protocol, previous.Node_id)
+	if cerr != nil {
+		return err
+	}
+	m.policy.Reset()
+	m.has_recommended = false
+	m.set_state(State_connecting)
+	m.publish(events.Kind_connection_started, nil)
+	if rerr := m.connect_loop(ctx, m.now(), token, previous, config); rerr != nil {
+		return rerr
+	}
+	return err
 }
 
 // Connect_on_start reports what Set_connect_on_start last recorded.
