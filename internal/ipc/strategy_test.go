@@ -2,7 +2,9 @@ package ipc
 
 import (
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 )
 
 func Test_a_strategy_with_a_value_the_service_would_not_ask_for_is_refused(t *testing.T) {
@@ -51,5 +53,45 @@ func Test_a_server_that_cannot_be_used_is_reported_as_such(t *testing.T) {
 	service.servers = Servers_result{Servers: []Server{{Node_id: "node-2", Name: "Germany 1", Available: true}}}
 	if got, err := client.Servers(with_timeout(t)); err != nil || len(got.Servers) != 1 || got.Servers[0].Name != "Germany 1" {
 		t.Fatalf("Servers() = %+v, %v", got, err)
+	}
+}
+
+func Test_an_analysis_round_trips_and_is_absent_until_there_is_one(t *testing.T) {
+	service := new_fake_service()
+	client, _ := serve_pair(t, service)
+
+	if got, err := client.Analysis(with_timeout(t)); err != nil || got.Present || got.Result != nil {
+		t.Fatalf("Analysis() before any run = %+v, %v; want nothing present", got, err)
+	}
+
+	want := Analysis_result{
+		Measured_at: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC),
+		Country:     "RU",
+		Control:     "ok",
+		Checks: []Reach_check{
+			{Key: "bank_ru", Label: "Bank", Host: "bank.example", Control: true, Dns: "open", Tcp: "open", Tls: "open", Verdict: "open"},
+			{Key: "web_youtube", Label: "YouTube", Host: "www.youtube.com", Dns: "open", Tcp: "open", Tls: "blocked",
+				Failure: "reset", Verdict: "blocked", Method: "tls"},
+		},
+	}
+	service.analyze_result = want
+	got, err := client.Analyze(with_timeout(t))
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Analyze() = %+v, %v; want %+v", got, err, want)
+	}
+
+	service.analysis = Last_analysis{Present: true, Result: &want}
+	last, err := client.Analysis(with_timeout(t))
+	if err != nil || !last.Present || last.Result == nil || !reflect.DeepEqual(*last.Result, want) {
+		t.Fatalf("Analysis() = %+v, %v; want the result as kept", last, err)
+	}
+}
+
+func Test_an_analysis_refused_because_the_tunnel_is_up_says_so(t *testing.T) {
+	service := new_fake_service()
+	service.analyze_err = Err_tunnel_up
+	client, _ := serve_pair(t, service)
+	if _, err := client.Analyze(with_timeout(t)); !errors.Is(err, Remote_tunnel_up) {
+		t.Fatalf("Analyze() error = %v, want tunnel_up", err)
 	}
 }

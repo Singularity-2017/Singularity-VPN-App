@@ -54,6 +54,8 @@ var (
 	Remote_unauthorized  = &Remote_error{Code: Error_unauthorized}
 	Remote_busy          = &Remote_error{Code: Error_busy}
 
+	Remote_tunnel_up = &Remote_error{Code: Error_tunnel_up}
+
 	Remote_server_unavailable   = &Remote_error{Code: Error_server_unavailable}
 	Remote_no_server_in_country = &Remote_error{Code: Error_no_server_in_country}
 )
@@ -170,6 +172,24 @@ func (c *Client) Set_strategy(ctx context.Context, strategy Strategy) error {
 func (c *Client) Servers(ctx context.Context) (Servers_result, error) {
 	var result Servers_result
 	resp, err := c.call(ctx, Command_servers, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Analyze(ctx context.Context) (Analysis_result, error) {
+	var result Analysis_result
+	resp, err := c.call(ctx, Command_analyze, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Analysis(ctx context.Context) (Last_analysis, error) {
+	var result Last_analysis
+	resp, err := c.call(ctx, Command_analysis, nil)
 	if err != nil {
 		return result, err
 	}

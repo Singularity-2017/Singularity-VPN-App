@@ -246,6 +246,14 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 		result, err := h.service.Servers(ctx)
 		h.reply(req.Id, result, err)
 
+	case Command_analyze:
+		result, err := h.service.Analyze(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_analysis:
+		result, err := h.service.Analysis(ctx)
+		h.reply(req.Id, result, err)
+
 	default:
 		h.write_response(Response{Type: Type_response, Id: req.Id, Ok: false,
 			Error: &Error_body{Code: Error_unknown_command, Message: fmt.Sprintf("unknown command %q", req.Command)}})
@@ -382,6 +390,8 @@ func error_body_for(err error) *Error_body {
 		return &Error_body{Code: Error_unauthorized, Message: err.Error()}
 	case errors.Is(err, Err_busy):
 		return &Error_body{Code: Error_busy, Message: err.Error()}
+	case errors.Is(err, Err_tunnel_up):
+		return &Error_body{Code: Error_tunnel_up, Message: err.Error()}
 	case errors.Is(err, Err_server_unavailable):
 		return &Error_body{Code: Error_server_unavailable, Message: err.Error()}
 	case errors.Is(err, Err_no_server_in_country):

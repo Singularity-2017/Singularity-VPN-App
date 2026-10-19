@@ -31,4 +31,7 @@ type Service interface {
 	Strategy(ctx context.Context) (Strategy, error)
 	Set_strategy(ctx context.Context, strategy Strategy) error
 	Servers(ctx context.Context) (Servers_result, error)
+
+	Analyze(ctx context.Context) (Analysis_result, error)
+	Analysis(ctx context.Context) (Last_analysis, error)
 }

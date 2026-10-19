@@ -1020,3 +1020,24 @@ func Test_a_manager_built_without_a_config_gets_usable_intervals(t *testing.T) {
 		t.Fatalf("Max_switch_attempts = %d: recovery would give up before trying", manager.config.Recovery.Max_switch_attempts)
 	}
 }
+
+func Test_every_state_change_is_counted_and_a_no_op_is_not(t *testing.T) {
+	env := new_test_env(t)
+	manager := env.build()
+
+	if got := manager.Transitions(); got != 0 {
+		t.Fatalf("Transitions() on a new manager = %d, want 0", got)
+	}
+	if err := manager.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
+	}
+	if got := manager.Transitions(); got != 0 {
+		t.Fatalf("Transitions() after a disconnect that changed nothing = %d, want 0", got)
+	}
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	if got := manager.Transitions(); got != 2 { // disconnected -> connecting -> connected
+		t.Fatalf("Transitions() after a connect = %d, want 2", got)
+	}
+}

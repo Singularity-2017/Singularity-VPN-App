@@ -98,6 +98,25 @@ type Server struct {
 	Available bool   `json:"available"`
 }
 
+// Reach_target is one entry of the reachability catalog: a host the device
+// probes directly to learn what the network under it blocks. A target with
+// a Country is a control inside that jurisdiction -- the control plane
+// hands it only to callers from there.
+type Reach_target struct {
+	Key     string `json:"key"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Country string `json:"country"` // absent in the response means empty here: not a control
+	Label   string `json:"label"`
+}
+
+// Reach_catalog is what the control plane hands out to probe. Country is the
+// caller's own country, empty when the control plane does not know it.
+type Reach_catalog struct {
+	Country string         `json:"country"`
+	Targets []Reach_target `json:"targets"`
+}
+
 // validate lists the fields of a recommendation this client acts on.
 // node_name, country, region and city are deliberately not among them: they
 // are shown to a person rather than acted on, and the server omits region
@@ -254,6 +273,27 @@ func (c *Client) Servers(ctx context.Context, token string) ([]Server, error) {
 		}
 	}
 	return response.Servers, nil
+}
+
+// Reach_targets fetches the catalog of hosts to probe. A target without a
+// key, a host or a usable port cannot be probed or reported on and is
+// refused as an incomplete response, the way Servers refuses a server
+// without a node_id.
+func (c *Client) Reach_targets(ctx context.Context, token string) (Reach_catalog, error) {
+	var catalog Reach_catalog
+	if err := c.do(ctx, "GET", "/api/v1/reach/targets", nil, token, nil, &catalog, true); err != nil {
+		return Reach_catalog{}, err
+	}
+	for _, t := range catalog.Targets {
+		if err := check_required("a reach target",
+			required_field{"key", t.Key != ""},
+			required_field{"host", t.Host != ""},
+			required_field{"port", t.Port > 0 && t.Port <= 65535},
+		); err != nil {
+			return Reach_catalog{}, err
+		}
+	}
+	return catalog, nil
 }
 
 // Create_profile provisions a profile on the control plane. Call it once per

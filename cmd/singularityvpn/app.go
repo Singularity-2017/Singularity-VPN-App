@@ -183,6 +183,46 @@ func (a *App) Servers() Servers_view {
 	return view
 }
 
+// Analysis_view is an analysis of the network under the device, or why
+// there is none. Result is absent when the service has not measured yet.
+type Analysis_view struct {
+	Result *ipc.Analysis_result `json:"result,omitempty"`
+	Error  *Outcome             `json:"error,omitempty"`
+}
+
+// Analyze asks the service to measure now. It is refused while a tunnel is
+// up, and can take as long as the probes do.
+func (a *App) Analyze() Analysis_view {
+	var view Analysis_view
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		result, err := c.Analyze(ctx)
+		if err == nil {
+			view.Result = &result
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
+// Analysis is the last result the service holds, without measuring.
+func (a *App) Analysis() Analysis_view {
+	var view Analysis_view
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		last, err := c.Analysis(ctx)
+		if err == nil && last.Present {
+			view.Result = last.Result
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
 // Version is the service's version. Fields the build did not supply are
 // absent, and the page prints nothing for them.
 func (a *App) Version() ipc.Version_result {

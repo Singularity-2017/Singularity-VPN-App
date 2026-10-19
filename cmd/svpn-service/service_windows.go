@@ -23,6 +23,7 @@ import (
 	"singularity-vpn-app/internal/platform"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/protocols/wireguard"
+	"singularity-vpn-app/internal/reach"
 	"singularity-vpn-app/internal/security"
 	"singularity-vpn-app/internal/state"
 )
@@ -323,6 +324,7 @@ func build_application(p paths, logger *slog.Logger) (*core.Application, error) 
 		Store:         store,
 		Protocols:     registry,
 		Prober:        prober,
+		Reach_prober:  reach.New_prober(reach.System_network{}),
 		Bus:           events.New_bus(0),
 		Device_name:   device_name(),
 		Logger:        logger,

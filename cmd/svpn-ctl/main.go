@@ -70,6 +70,12 @@ func main() {
 			fmt.Println("signed out; the device token was removed from this machine.")
 			return nil
 		}
+	case "analyze":
+		no_args(command, args)
+		run = run_analyze
+	case "analysis":
+		no_args(command, args)
+		run = run_analysis
 	case "events":
 		no_args(command, args)
 		run = run_events
@@ -102,6 +108,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  svpn-ctl connect                       the service chooses the node")
 	fmt.Fprintln(os.Stderr, "  svpn-ctl connect --node <id> --protocol <name>")
 	fmt.Fprintln(os.Stderr, "  svpn-ctl disconnect")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl analyze                       probe what the network blocks, directly; needs the tunnel down")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl analysis                      the last result, without probing")
 	fmt.Fprintln(os.Stderr, "  svpn-ctl events                        print events until Ctrl+C")
 }
 
@@ -184,6 +192,55 @@ func run_version(ctx context.Context, client *ipc.Client) error {
 		fmt.Printf("built:    %s\n", version.Built)
 	}
 	return nil
+}
+
+func run_analyze(ctx context.Context, client *ipc.Client) error {
+	ctx, cancel := with_timeout(ctx)
+	defer cancel()
+	result, err := client.Analyze(ctx)
+	if err != nil {
+		return err
+	}
+	print_analysis(result)
+	return nil
+}
+
+func run_analysis(ctx context.Context, client *ipc.Client) error {
+	ctx, cancel := with_timeout(ctx)
+	defer cancel()
+	last, err := client.Analysis(ctx)
+	if err != nil {
+		return err
+	}
+	if !last.Present || last.Result == nil {
+		fmt.Println("no analysis yet; run: svpn-ctl analyze")
+		return nil
+	}
+	print_analysis(*last.Result)
+	return nil
+}
+
+// print_analysis prints one line per target. Fields the service did not
+// report are not printed.
+func print_analysis(result ipc.Analysis_result) {
+	fmt.Printf("measured:  %s\n", result.Measured_at.Local().Format(time.DateTime))
+	if result.Country != "" {
+		fmt.Printf("country:   %s\n", result.Country)
+	}
+	fmt.Printf("control:   %s\n", result.Control)
+	for _, c := range result.Checks {
+		line := fmt.Sprintf("%-14s %-10s dns=%s tcp=%s tls=%s", c.Key, c.Verdict, c.Dns, c.Tcp, c.Tls)
+		if c.Method != "" {
+			line += "  method=" + c.Method
+		}
+		if c.Failure != "" {
+			line += "  failure=" + c.Failure
+		}
+		if c.Control {
+			line += "  (control)"
+		}
+		fmt.Println(line)
+	}
 }
 
 func parse_connect(args []string) func(ctx context.Context, client *ipc.Client) error {

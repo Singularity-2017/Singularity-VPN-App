@@ -28,6 +28,9 @@ type fake_service struct {
 	set_strategy_err error
 	servers          Servers_result
 	servers_err      error
+	analyze_result   Analysis_result
+	analyze_err      error
+	analysis         Last_analysis
 
 	// calls_mu guards connect_calls. Connect runs on the server's dispatch
 	// goroutine while the test goroutine watches for it to arrive, so
@@ -128,6 +131,14 @@ func (f *fake_service) Set_strategy(ctx context.Context, strategy Strategy) erro
 
 func (f *fake_service) Servers(ctx context.Context) (Servers_result, error) {
 	return f.servers, f.servers_err
+}
+
+func (f *fake_service) Analyze(ctx context.Context) (Analysis_result, error) {
+	return f.analyze_result, f.analyze_err
+}
+
+func (f *fake_service) Analysis(ctx context.Context) (Last_analysis, error) {
+	return f.analysis, nil
 }
 
 // new_fake_service returns a fake_service with its bus ready, so a test
@@ -336,6 +347,7 @@ func Test_a_service_error_becomes_its_code(t *testing.T) {
 		{"not_signed_in", fmt.Errorf("wrapped: %w", Err_not_signed_in), Error_not_signed_in},
 		{"unauthorized", fmt.Errorf("wrapped: %w", Err_unauthorized), Error_unauthorized},
 		{"busy", fmt.Errorf("wrapped: %w", Err_busy), Error_busy},
+		{"tunnel_up", fmt.Errorf("wrapped: %w", Err_tunnel_up), Error_tunnel_up},
 		{"unrecognised", other, Error_internal},
 	}
 

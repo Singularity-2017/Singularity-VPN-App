@@ -12,6 +12,7 @@ import (
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/protocols"
+	"singularity-vpn-app/internal/reach"
 	"singularity-vpn-app/internal/recovery"
 	"singularity-vpn-app/internal/security"
 )
@@ -33,6 +34,14 @@ type Control_plane interface {
 	Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error)
 	Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (api.Vpn_config, error)
 	Servers(ctx context.Context, token string) ([]api.Server, error)
+	Reach_targets(ctx context.Context, token string) (api.Reach_catalog, error)
+}
+
+// Reach_prober probes the catalog of targets directly and reports how far
+// each got. *reach.Prober satisfies it; a test hands in a fake and touches
+// no network.
+type Reach_prober interface {
+	Probe(ctx context.Context, targets []reach.Target) ([]reach.Result, error)
 }
 
 // Dependencies is everything the application needs and nothing it invents,
@@ -47,6 +56,7 @@ type Dependencies struct {
 	Store         connection.State_store
 	Protocols     protocols.Manager
 	Prober        diagnostics.Prober
+	Reach_prober  Reach_prober
 	Bus           *events.Bus
 	Config        connection.Config
 	Device_name   string       // what a minted device token is called on the account
@@ -66,6 +76,9 @@ type Application struct {
 	device_name   string
 	logger        *slog.Logger
 	now           func() time.Time
+
+	reach_prober Reach_prober
+	analysis     analysis_cache
 }
 
 // New_application builds an Application, refusing a Dependencies missing
@@ -86,6 +99,8 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		return nil, fmt.Errorf("core: Dependencies.Protocols is required")
 	case dependencies.Prober == nil:
 		return nil, fmt.Errorf("core: Dependencies.Prober is required")
+	case dependencies.Reach_prober == nil:
+		return nil, fmt.Errorf("core: Dependencies.Reach_prober is required")
 	case dependencies.Bus == nil:
 		return nil, fmt.Errorf("core: Dependencies.Bus is required")
 	case dependencies.Device_name == "":
@@ -125,6 +140,7 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		device_name:   dependencies.Device_name,
 		logger:        logger,
 		now:           now,
+		reach_prober:  dependencies.Reach_prober,
 	}, nil
 }
 

@@ -29,6 +29,9 @@
     chosen_node: "выбран вами",
     lowest_rtt: "самый быстрый канал"
   };
+  const verdict_text = { open: "открыт", no_answer: "не отвечает", no_network: "не отвечает" };
+  const method_text = { dns: "блок по DNS", tcp: "блок по IP", tls: "блок по SNI" };
+  const analysis_max_age_ms = 6 * 60 * 60 * 1000;
   const why_text = {
     not_supported: "серверы пока этого не дают",
     no_reach_evidence: "о вашей сети пока нет данных",
@@ -44,6 +47,9 @@
   let loading_strategy = false;
   let strategy_unsupported = false; // a service too old to know the command
   let list_request = 0; // the newest list fill; an older answer is dropped
+  let analysis = null;  // the last block analysis; null until there is one
+  let analysis_request = 0; // the newest analysis call; an older answer is dropped
+  let main_active = false;  // the main screen is showing; set on the way in
   let expanded = load_expanded();
   const region_names = make_region_names();
 
@@ -65,6 +71,7 @@
   function show_screen(id) {
     for (const s of screens) $(s).hidden = s !== id;
     const main = id === "screen-main";
+    if (!main) main_active = false;
     $("corner").hidden = !main;
     $("menu-button").hidden = !(main || id === "screen-signin") || !(view && view.status && view.status.signed_in);
     if (!main) close_pops();
@@ -127,6 +134,7 @@
     if (!status) { show_screen("screen-wait"); return; }
     if (!status.signed_in) { show_screen("screen-signin"); return; }
     show_screen("screen-main");
+    if (!main_active) { main_active = true; load_analysis(); }
     if (strategy === null && !strategy_unsupported) load_strategy();
 
     const st = status.state;
@@ -178,6 +186,7 @@
     row("measured", local_time(status.measured_at));
 
     render_goals(status, s);
+    render_blocks();
 
     $("window").classList.toggle("expanded", expanded);
     const corner = $("corner");
@@ -209,6 +218,70 @@
       el.textContent = text;
       el.classList.toggle("ok", !!(applied && applied.applied));
     }
+  }
+
+  // render_blocks draws the blocks line from the last analysis. Light mode
+  // shows it only when something was found; the detailed mode also says when
+  // nothing was, and opens one row per target under the line. With no
+  // analysis -- or no targets in it -- nothing is drawn, never a placeholder.
+  function render_blocks() {
+    const el = $("blocks");
+    const checks = analysis && analysis.checks ? analysis.checks : [];
+    if (checks.length === 0) { el.hidden = true; return; }
+    const blocked = checks.filter((c) => c.verdict === "blocked");
+    let text = "";
+    if (blocked.length > 0) text = "Блокируются: " + blocked.map((c) => c.label || c.host).join(", ");
+    else if (analysis.control === "failed") text = "Сайты внутри страны не отвечают — похоже, нет сети или сбой у провайдера. VPN тут не поможет.";
+    else if (expanded) text = "Блокировок не найдено";
+    el.hidden = !text;
+    if (!text) return;
+    set_text("blocks-line", text);
+    $("blocks-line").classList.toggle("clear", blocked.length === 0 && analysis.control !== "failed");
+
+    $("blocks-details").hidden = !expanded;
+    if (!expanded) return;
+    const rows = $("blocks-rows");
+    rows.textContent = "";
+    for (const c of checks) {
+      const r = document.createElement("div");
+      r.className = "row";
+      const l = document.createElement("span");
+      l.className = "l";
+      l.textContent = c.label || c.host;
+      const v = document.createElement("span");
+      v.textContent = c.verdict === "blocked" ? (method_text[c.method] || "заблокирован") : (verdict_text[c.verdict] || "");
+      if (c.verdict !== "open") v.className = "bad";
+      r.append(l, v);
+      rows.append(r);
+    }
+    let hint = "Проверено: DNS, соединение и TLS-рукопожатие напрямую, без VPN. Не проверялось: обрыв после 16–20 КБ, белые списки подсетей.";
+    if (analysis.control === "absent") hint += " Без контрольных сайтов внутри страны отказ нельзя уверенно назвать блокировкой.";
+    set_text("blocks-hint", hint);
+    const measured = local_time(analysis.measured_at);
+    $("row-blocks-measured").hidden = !measured;
+    set_text("d-blocks-measured", measured);
+  }
+
+  // load_analysis runs when the main screen comes up: it reads what the
+  // service holds and, if there is nothing or it is old and no connection
+  // is up, asks for one measurement in the background. Any error leaves the
+  // line hidden. A newer call makes an older answer irrelevant.
+  async function load_analysis() {
+    const request = ++analysis_request;
+    let answer;
+    try { answer = await backend().Analysis(); } catch (e) { answer = { error: { code: "failed" } }; }
+    if (request !== analysis_request) return;
+    analysis = answer && !answer.error && answer.result ? answer.result : null;
+    render();
+    if (answer && answer.error) return;
+
+    const measured = analysis ? new Date(analysis.measured_at).getTime() : NaN;
+    const fresh = !isNaN(measured) && Date.now() - measured < analysis_max_age_ms;
+    if (fresh || !view || !view.status || view.status.state !== "disconnected") return;
+    try { answer = await backend().Analyze(); } catch (e) { answer = { error: { code: "failed" } }; }
+    if (request !== analysis_request) return;
+    analysis = answer && !answer.error && answer.result ? answer.result : null;
+    render();
   }
 
   async function refresh() {

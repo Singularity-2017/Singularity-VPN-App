@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,5 +67,47 @@ func Test_the_server_list_is_read_and_a_server_without_an_id_refused(t *testing.
 	}
 	if _, err := serve_data(t, `{"servers":[{"name":"nameless id"}]}`).Servers(context.Background(), "tok"); err == nil {
 		t.Fatal("a server with no node_id was accepted; it could never be picked")
+	}
+}
+
+func Test_the_reach_catalog_is_read_and_an_incomplete_target_refused(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		write_success(w, `{"country":"RU","targets":[
+			{"key":"bank_ru","host":"sberbank.ru","port":443,"country":"RU","label":"Sber"},
+			{"key":"web_youtube","host":"www.youtube.com","port":443,"label":"YouTube"}]}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := New(Config{Base_url: server.URL, Sleep: no_sleep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := client.Reach_targets(context.Background(), "tok")
+	if err != nil || path != "/api/v1/reach/targets" {
+		t.Fatalf("Reach_targets = %+v, %v (asked %q)", catalog, err, path)
+	}
+	if catalog.Country != "RU" || len(catalog.Targets) != 2 ||
+		catalog.Targets[0] != (Reach_target{Key: "bank_ru", Host: "sberbank.ru", Port: 443, Country: "RU", Label: "Sber"}) ||
+		catalog.Targets[1].Country != "" || catalog.Targets[1].Host != "www.youtube.com" {
+		t.Fatalf("Reach_targets = %+v; want both targets, as sent", catalog)
+	}
+
+	unknown, err := serve_data(t, `{"targets":[{"key":"web_youtube","host":"www.youtube.com","port":443}]}`).Reach_targets(context.Background(), "tok")
+	if err != nil || unknown.Country != "" {
+		t.Fatalf("a catalog without a country = %+v, %v; want usable, with no country invented", unknown, err)
+	}
+
+	for _, body := range []string{
+		`{"targets":[{"host":"a.example","port":443}]}`,
+		`{"targets":[{"key":"a","port":443}]}`,
+		`{"targets":[{"key":"a","host":"a.example"}]}`,
+		`{"targets":[{"key":"a","host":"a.example","port":0}]}`,
+		`{"targets":[{"key":"a","host":"a.example","port":70000}]}`,
+		`{"targets":[{"key":"ok","host":"b.example","port":443},{"key":"a","host":"","port":443}]}`,
+	} {
+		if _, err := serve_data(t, body).Reach_targets(context.Background(), "tok"); !errors.Is(err, Err_incomplete_response) {
+			t.Errorf("Reach_targets(%s) error = %v; want an incomplete response", body, err)
+		}
 	}
 }

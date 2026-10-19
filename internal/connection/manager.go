@@ -114,6 +114,7 @@ type Manager struct {
 	// up to Connect_timeout to finish.
 	state_mu    sync.RWMutex
 	state       State
+	transitions uint64 // how many times state has changed; see Transitions
 	session     Session
 	has_session bool
 
@@ -193,6 +194,16 @@ func (m *Manager) State() State {
 	return m.state
 }
 
+// Transitions counts every change of state since the manager was built. A
+// caller that must know whether the connection moved while it worked reads
+// it before and after: equal means no state change happened in between,
+// even one that went there and back.
+func (m *Manager) Transitions() uint64 {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return m.transitions
+}
+
 // Session reports the current session, if any, the same way State does.
 func (m *Manager) Session() (Session, bool) {
 	m.state_mu.RLock()
@@ -250,6 +261,7 @@ func (m *Manager) set_state(to State) {
 		return // a no-op self-transition changes nothing and emits nothing
 	}
 	m.state = to
+	m.transitions++
 	m.state_mu.Unlock()
 	m.publish(events.Kind_state_changed, State_change{From: from, To: to})
 }

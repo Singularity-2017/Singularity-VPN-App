@@ -15,6 +15,7 @@ import (
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/protocols"
+	"singularity-vpn-app/internal/reach"
 	"singularity-vpn-app/internal/recovery"
 	"singularity-vpn-app/internal/security"
 	"singularity-vpn-app/internal/state"
@@ -32,6 +33,9 @@ type fake_control_plane struct {
 	recommend_requests []api.Recommend_request
 	servers            []api.Server
 	servers_err        error
+	catalog            api.Reach_catalog
+	catalog_err        error
+	catalog_calls      atomic.Int32
 
 	login_token string
 	login_err   error
@@ -74,6 +78,11 @@ func (f *fake_control_plane) Recommend(ctx context.Context, token string, reques
 
 func (f *fake_control_plane) Servers(ctx context.Context, token string) ([]api.Server, error) {
 	return f.servers, f.servers_err
+}
+
+func (f *fake_control_plane) Reach_targets(ctx context.Context, token string) (api.Reach_catalog, error) {
+	f.catalog_calls.Add(1)
+	return f.catalog, f.catalog_err
 }
 
 func (f *fake_control_plane) Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error) {
@@ -151,6 +160,32 @@ func (p *fake_prober) Probe(ctx context.Context) (diagnostics.Sample, error) {
 	return p.sample, p.err
 }
 
+// fake_reach_prober answers a probe with a scripted result and records what
+// it was asked. If enter is set it announces each arrival, and if release is
+// set it waits there until the test lets it go.
+type fake_reach_prober struct {
+	results []reach.Result
+	err     error
+	calls   atomic.Int32
+	enter   chan struct{}
+	release chan struct{}
+}
+
+func (p *fake_reach_prober) Probe(ctx context.Context, targets []reach.Target) ([]reach.Result, error) {
+	p.calls.Add(1)
+	if p.enter != nil {
+		p.enter <- struct{}{}
+	}
+	if p.release != nil {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return p.results, p.err
+}
+
 // memory_state_store is connection.State_store over a value in memory.
 type memory_state_store struct {
 	mu       sync.Mutex
@@ -190,6 +225,7 @@ type fixture struct {
 	store         *memory_state_store
 	protocol      *fake_protocol
 	prober        *fake_prober
+	reach_prober  *fake_reach_prober
 	bus           *events.Bus
 }
 
@@ -212,6 +248,7 @@ func new_fixture(t *testing.T) *fixture {
 		store:         &memory_state_store{},
 		protocol:      protocol,
 		prober:        &fake_prober{sample: diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Dns_ok: true, Rtt: 10 * time.Millisecond}},
+		reach_prober:  &fake_reach_prober{},
 		bus:           events.New_bus(16),
 	}
 
@@ -221,6 +258,7 @@ func new_fixture(t *testing.T) *fixture {
 		Store:         f.store,
 		Protocols:     registry,
 		Prober:        f.prober,
+		Reach_prober:  f.reach_prober,
 		Bus:           f.bus,
 		Device_name:   "test machine",
 	})
@@ -240,6 +278,7 @@ func base_dependencies() Dependencies {
 		Store:         &memory_state_store{},
 		Protocols:     registry,
 		Prober:        &fake_prober{},
+		Reach_prober:  &fake_reach_prober{},
 		Bus:           events.New_bus(1),
 		Device_name:   "test machine",
 	}
@@ -257,6 +296,7 @@ func Test_the_application_refuses_missing_dependencies(t *testing.T) {
 		{"Store", func(d *Dependencies) { d.Store = nil }},
 		{"Protocols", func(d *Dependencies) { d.Protocols = nil }},
 		{"Prober", func(d *Dependencies) { d.Prober = nil }},
+		{"Reach_prober", func(d *Dependencies) { d.Reach_prober = nil }},
 		{"Bus", func(d *Dependencies) { d.Bus = nil }},
 		{"Device_name", func(d *Dependencies) { d.Device_name = "" }},
 	}

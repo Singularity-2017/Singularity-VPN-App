@@ -539,6 +539,7 @@ func restart(t *testing.T, f *fixture) *fixture {
 		Store:         f.store,
 		Protocols:     registry,
 		Prober:        f.prober,
+		Reach_prober:  f.reach_prober,
 		Bus:           bus,
 		Device_name:   "test machine",
 	})

@@ -85,6 +85,9 @@ const (
 	Command_strategy     = "strategy"
 	Command_set_strategy = "set_strategy"
 	Command_servers      = "servers"
+
+	Command_analyze  = "analyze"
+	Command_analysis = "analysis"
 )
 
 // Strategy is what the connection is for -- see state.Strategy, which it
@@ -144,6 +147,47 @@ type Server struct {
 // Servers_result answers Command_servers.
 type Servers_result struct {
 	Servers []Server `json:"servers"`
+}
+
+// Reach_check is one probed target in an Analysis_result: how far each of
+// the three steps got, and what that comes to. Dns, Tcp and Tls are
+// "open", "blocked" or "not_tested"; Failure names how the step that failed
+// failed (no_address, refused, timeout, reset, bad_certificate) and is
+// absent when none did. Verdict is "open", "blocked", "no_network" or
+// "no_answer", and Method -- "dns", "tcp" or "tls" -- is present only on a
+// blocked one. Control marks a host inside the caller's own country, which
+// is never called blocked.
+type Reach_check struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Host    string `json:"host"`
+	Control bool   `json:"control"`
+	Dns     string `json:"dns"`
+	Tcp     string `json:"tcp"`
+	Tls     string `json:"tls"`
+	Failure string `json:"failure,omitempty"`
+	Verdict string `json:"verdict"`
+	Method  string `json:"method,omitempty"`
+}
+
+// Analysis_result answers Command_analyze: what the network under the
+// device blocks, measured directly with the tunnel down. Control is "ok",
+// "failed" or "absent": whether hosts inside the caller's own country
+// answered, which is what makes a failure elsewhere a block rather than a
+// dead network.
+type Analysis_result struct {
+	Measured_at time.Time     `json:"measured_at"`
+	Country     string        `json:"country,omitempty"`
+	Control     string        `json:"control"`
+	Checks      []Reach_check `json:"checks"`
+}
+
+// Last_analysis answers Command_analysis: the last result, without probing.
+// Present is false when the service has none -- it is kept in memory only,
+// so a restart forgets it -- and Result is then absent rather than empty.
+type Last_analysis struct {
+	Present bool             `json:"present"`
+	Result  *Analysis_result `json:"result,omitempty"`
 }
 
 // Mode_auto and Mode_manual are the two values Connect_params.Mode may hold
@@ -281,6 +325,7 @@ const (
 	Error_unauthorized    = "unauthorized"  // the control plane rejected the credentials
 	Error_internal        = "internal"      // anything else
 
+	Error_tunnel_up            = "tunnel_up"            // the analysis needs the tunnel down, or the connection moved while it ran
 	Error_server_unavailable   = "server_unavailable"   // the chosen server cannot take a connection now
 	Error_no_server_in_country = "no_server_in_country" // no server in the chosen country can
 )
@@ -301,6 +346,8 @@ var (
 	Err_not_signed_in = errors.New("ipc: no credentials are stored")
 	Err_unauthorized  = errors.New("ipc: the control plane rejected these credentials")
 	Err_busy          = errors.New("ipc: busy with another operation")
+
+	Err_tunnel_up = errors.New("ipc: a connection is up or was changing, so a direct measurement would measure the tunnel")
 
 	Err_server_unavailable   = errors.New("ipc: the chosen server cannot take a connection right now")
 	Err_no_server_in_country = errors.New("ipc: no server in the chosen country can take a connection right now")

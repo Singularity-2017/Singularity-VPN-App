@@ -165,6 +165,10 @@ button { cursor: pointer; }
 .confirm-actions .primary { padding: 0 18px; }
 .plain { min-height: 46px; padding: 0 16px; border: 1px solid var(--line); border-radius: 12px; background: transparent; }
 .tile-sub.ok { color: var(--accent); }
+.blocks { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
+.blocks-line { font-size: 12px; color: var(--warn); line-height: 1.4; }
+.blocks-line.clear { color: var(--muted); }
+.blocks .row .bad { color: var(--warn); }
 .window.expanded { gap: 16px; }
 .window.expanded .screen { gap: 16px; }
 .window.expanded .power { width: 150px; height: 150px; border-width: 6px; gap: 8px; }
