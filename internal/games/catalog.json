@@ -1,0 +1,14 @@
+[
+  {
+    "id": "pubg",
+    "name": "PUBG: BATTLEGROUNDS",
+    "images": ["TslGame.exe", "TslGame_BE.exe", "BEService.exe", "ExecPubg.exe", "zksvc.exe", "TslGame_UC.exe"],
+    "touchy_anticheat": false
+  },
+  {
+    "id": "cod",
+    "name": "Call of Duty",
+    "images": [],
+    "touchy_anticheat": true
+  }
+]
