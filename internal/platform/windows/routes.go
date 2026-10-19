@@ -13,7 +13,10 @@ import (
 // find_best_route wraps winipcfg.GetIPForwardTable2, the only part of
 // pinning the endpoint host route that touches the system. Everything that
 // decides which row wins is pick_route, in plan.go, and is tested there.
-func find_best_route(destination netip.Addr, exclude winipcfg.LUID) (route_row, bool, error) {
+//
+// pinned, when not empty, are pinned rows to leave out as well (see
+// pick_repin_route).
+func find_best_route(destination netip.Addr, exclude winipcfg.LUID, pinned []route_row) (route_row, bool, error) {
 	family := windows.AF_INET
 	if destination.Is6() {
 		family = windows.AF_INET6
@@ -29,6 +32,10 @@ func find_best_route(destination netip.Addr, exclude winipcfg.LUID) (route_row, 
 			destination:    table[i].DestinationPrefix.Prefix(),
 			next_hop:       table[i].NextHop.Addr(),
 		}
+	}
+	if len(pinned) > 0 {
+		row, ok := pick_repin_route(rows, destination, exclude, pinned)
+		return row, ok, nil
 	}
 	row, ok := pick_route(rows, destination, exclude)
 	return row, ok, nil

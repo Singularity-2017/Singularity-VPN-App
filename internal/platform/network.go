@@ -23,4 +23,13 @@ type Network interface {
 	// it is undoing was never done is a teardown that strands a person's
 	// routing table.
 	Clear(ctx context.Context, handle Tunnel_handle) error
+
+	// Repin moves every host route Apply pinned for this handle onto the
+	// path the destination would take now, outside the tunnel. It is for a
+	// network change while the tunnel is up (another adapter, a new
+	// gateway): the new pin is added before the old one is removed, so the
+	// tunnel's own transport is never without a route and never falls into
+	// the tunnel. A handle with no pins is a no-op. If a destination has no
+	// route outside the tunnel the old pin is kept and an error says so.
+	Repin(ctx context.Context, handle Tunnel_handle) error
 }

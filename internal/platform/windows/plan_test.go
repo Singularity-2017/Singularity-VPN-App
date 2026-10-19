@@ -246,3 +246,34 @@ func deref_all(routes []*winipcfg.RouteData) []winipcfg.RouteData {
 	}
 	return out
 }
+
+func Test_pick_repin_route_cases(t *testing.T) {
+	const tunnel winipcfg.LUID = 1
+	const wifi winipcfg.LUID = 2
+	const eth winipcfg.LUID = 3
+	stale := route_row{interface_luid: wifi, destination: prefix(t, "203.0.113.5/32"), next_hop: addr(t, "192.168.1.1")}
+	tunnel_default := route_row{interface_luid: tunnel, destination: prefix(t, "0.0.0.0/0"), next_hop: netip.IPv4Unspecified()}
+	wifi_old := route_row{interface_luid: wifi, destination: prefix(t, "0.0.0.0/0"), next_hop: addr(t, "192.168.1.1")}
+	wifi_new := route_row{interface_luid: wifi, destination: prefix(t, "0.0.0.0/0"), next_hop: addr(t, "10.1.1.1")}
+	eth_default := route_row{interface_luid: eth, destination: prefix(t, "0.0.0.0/0"), next_hop: addr(t, "172.16.0.1")}
+
+	cases := []struct {
+		name  string
+		rows  []route_row
+		want  route_row
+		found bool
+	}{
+		{"unchanged gateway", []route_row{stale, tunnel_default, wifi_old}, wifi_old, true},
+		{"new gateway same adapter", []route_row{stale, tunnel_default, wifi_new}, wifi_new, true},
+		{"other adapter", []route_row{stale, tunnel_default, eth_default}, eth_default, true},
+		{"only the stale pin left", []route_row{stale, tunnel_default}, route_row{}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := pick_repin_route(c.rows, addr(t, "203.0.113.5"), tunnel, []route_row{stale})
+			if ok != c.found || got != c.want {
+				t.Fatalf("pick_repin_route() = %+v, %v; want %+v, %v", got, ok, c.want, c.found)
+			}
+		})
+	}
+}

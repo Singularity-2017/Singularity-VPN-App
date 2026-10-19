@@ -65,6 +65,8 @@ type fake_network struct {
 
 	apply_calls int
 	clear_calls int
+	repin_err   error
+	repin_calls int
 	last_handle platform.Tunnel_handle
 	last_plan   routing.Plan
 }
@@ -80,6 +82,12 @@ func (f *fake_network) Clear(ctx context.Context, handle platform.Tunnel_handle)
 	f.clear_calls++
 	f.last_handle = handle
 	return f.clear_err
+}
+
+func (f *fake_network) Repin(ctx context.Context, handle platform.Tunnel_handle) error {
+	f.repin_calls++
+	f.last_handle = handle
+	return f.repin_err
 }
 
 // --- test helpers ------------------------------------------------------
@@ -408,3 +416,41 @@ func Test_a_disconnected_adapter_reports_no_time_it_has_been_up_since(t *testing
 		t.Fatalf("Status().Since = %v after Disconnect, want the zero time", status.Since)
 	}
 }
+
+// --- Repin -------------------------------------------------------------
+
+func Test_repin_without_a_tunnel_does_nothing(t *testing.T) {
+	fn := &fake_network{}
+	a := new_test_adapter(t, &fake_tunnel{}, &fake_resolver{}, fn)
+
+	if err := a.Repin(context.Background()); err != nil {
+		t.Fatalf("Repin: %v, want nil", err)
+	}
+	if fn.repin_calls != 0 {
+		t.Fatalf("Repin with no tunnel called the network")
+	}
+}
+
+func Test_repin_with_a_tunnel_asks_the_network_for_its_handle(t *testing.T) {
+	ft := &fake_tunnel{handle: 42}
+	fr := &fake_resolver{addr: netip.MustParseAddrPort("203.0.113.5:51080")}
+	fn := &fake_network{}
+	a := new_test_adapter(t, ft, fr, fn)
+	if err := a.Connect(context.Background(), protocols.Connection_config{Data: []byte(full_tunnel_config())}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	if err := a.Repin(context.Background()); err != nil {
+		t.Fatalf("Repin: %v", err)
+	}
+	if fn.repin_calls != 1 || fn.last_handle != 42 {
+		t.Fatalf("repin_calls = %d, handle = %d; want 1 and 42", fn.repin_calls, fn.last_handle)
+	}
+
+	fn.repin_err = errors.New("no route")
+	if err := a.Repin(context.Background()); err == nil {
+		t.Fatalf("Repin: nil, want the network's error")
+	}
+}
+
+var _ protocols.Repinner = (*Adapter)(nil)

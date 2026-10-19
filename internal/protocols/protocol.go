@@ -41,6 +41,13 @@ type Protocol interface {
 	Status() Status
 }
 
+// Repinner is optional: a protocol that pins its own transport route outside
+// the tunnel implements it so the route can follow a network change without
+// the tunnel being torn down. Repin with no tunnel up returns nil.
+type Repinner interface {
+	Repin(ctx context.Context) error
+}
+
 // Manager hands out a Protocol by name, and lists what is available.
 type Manager interface {
 	Get(name string) (Protocol, error)

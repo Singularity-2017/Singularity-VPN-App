@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"singularity-vpn-app/internal/api"
+	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/reach"
 )
@@ -232,5 +233,133 @@ func Test_the_last_analysis_is_absent_until_a_run_finishes_and_is_not_a_probe(t 
 	}
 	if f.reach_prober.calls.Load() != 1 {
 		t.Fatalf("the network was probed %d times; want once", f.reach_prober.calls.Load())
+	}
+}
+
+// wait_for_analysis_event waits for the push a finished background analysis
+// makes, so a test does not read the probe count before the run is done.
+func wait_for_analysis_event(t *testing.T, ch <-chan events.Event) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-ch:
+			if event.Kind == events.Kind_diagnostic_completed {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the background analysis never finished")
+		}
+	}
+}
+
+func Test_a_network_change_with_the_tunnel_down_analyses_once_per_five_minutes(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	with_catalog(f)
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	f.app.now = func() time.Time { return now }
+	ch, unsubscribe := f.bus.Subscribe()
+	defer unsubscribe()
+
+	f.app.Network_changed(context.Background())
+	wait_for_analysis_event(t, ch)
+	if got := f.reach_prober.calls.Load(); got != 1 {
+		t.Fatalf("probes after the first change = %d, want 1", got)
+	}
+	if last, _ := f.app.Analysis(context.Background()); !last.Present {
+		t.Fatal("the background run left no analysis behind")
+	}
+
+	now = now.Add(2 * time.Minute)
+	f.app.Network_changed(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if got := f.reach_prober.calls.Load(); got != 1 {
+		t.Fatalf("probes 2 minutes later = %d, want still 1", got)
+	}
+
+	now = now.Add(4 * time.Minute)
+	f.app.Network_changed(context.Background())
+	wait_for_analysis_event(t, ch)
+	if got := f.reach_prober.calls.Load(); got != 2 {
+		t.Fatalf("probes 6 minutes after the first = %d, want 2", got)
+	}
+}
+
+func Test_a_failed_background_analysis_still_spaces_the_next_one(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	with_catalog(f)
+	f.reach_prober.err = errors.New("no network")
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	f.app.now = func() time.Time { return now }
+
+	f.app.Network_changed(context.Background())
+	deadline := time.Now().Add(2 * time.Second)
+	for f.reach_prober.calls.Load() < 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	now = now.Add(2 * time.Minute)
+	f.app.Network_changed(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if got := f.reach_prober.calls.Load(); got != 1 {
+		t.Fatalf("probes = %d, want 1: a failed run still counts as started", got)
+	}
+}
+
+func Test_a_network_change_without_a_sign_in_analyses_nothing(t *testing.T) {
+	f := new_fixture(t)
+	with_catalog(f)
+
+	f.app.Network_changed(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if got := f.reach_prober.calls.Load(); got != 0 {
+		t.Fatalf("probes = %d, want none without a device token", got)
+	}
+}
+
+func Test_a_network_change_with_the_tunnel_up_takes_the_manager_path_and_does_not_analyse(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	with_catalog(f)
+	connect(t, f)
+	probes := f.prober.calls.Load()
+
+	f.app.Network_changed(context.Background())
+
+	if got := f.prober.calls.Load(); got != probes+1 {
+		t.Fatalf("monitoring probes = %d, want one more than %d", got, probes)
+	}
+	if got := f.reach_prober.calls.Load(); got != 0 {
+		t.Fatalf("the network was analysed %d times through a tunnel", got)
+	}
+}
+
+func Test_a_network_change_right_after_a_disconnect_is_the_tunnel_going_away(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	with_catalog(f)
+	connect(t, f)
+	if err := f.app.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	ch, unsubscribe := f.bus.Subscribe()
+	defer unsubscribe()
+
+	// The adapter's own removal, a moment after the disconnect.
+	f.app.Network_changed(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if got := f.reach_prober.calls.Load(); got != 0 {
+		t.Fatalf("probes right after a disconnect = %d, want none", got)
+	}
+
+	later := f.app.now().Add(network_change_after_disconnect + time.Second)
+	f.app.now = func() time.Time { return later }
+	f.app.Network_changed(context.Background())
+	wait_for_analysis_event(t, ch)
+	if got := f.reach_prober.calls.Load(); got != 1 {
+		t.Fatalf("probes once the disconnect has settled = %d, want 1", got)
 	}
 }

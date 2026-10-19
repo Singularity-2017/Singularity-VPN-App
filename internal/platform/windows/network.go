@@ -75,7 +75,7 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 	// before this adapter existed.
 	var pinned []pinned_route
 	for _, destination := range host_routes_to_pin(plan) {
-		row, ok, err := find_best_route(destination.Addr(), luid)
+		row, ok, err := find_best_route(destination.Addr(), luid, nil)
 		if err != nil {
 			return err
 		}
@@ -143,4 +143,23 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	}
 
 	return errors.Join(errs...)
+}
+
+// Repin moves every host route Apply pinned for this handle onto the path
+// its destination would take now, outside the tunnel. See repin_routes for
+// the order of operations and the failure cases.
+func (n *network) Repin(ctx context.Context, handle platform.Tunnel_handle) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	pins := n.pinned[handle]
+	if len(pins) == 0 {
+		return nil
+	}
+	moved, err := repin_routes(pins, winipcfg.LUID(handle), system_route_ops{})
+	n.pinned[handle] = moved
+	return err
 }

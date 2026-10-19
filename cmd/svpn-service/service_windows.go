@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/debug"
+	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/buildinfo"
@@ -21,6 +22,7 @@ import (
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/platform"
+	winplatform "singularity-vpn-app/internal/platform/windows"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/protocols/wireguard"
 	"singularity-vpn-app/internal/reach"
@@ -32,6 +34,24 @@ const (
 	service_name = "SingularityVPN"
 	adapter_name = "Singularity"
 )
+
+// network_settle is how long after the last notification of a burst a
+// network change is acted on: one real change (a Wi-Fi roam, a cable
+// plugged in) produces dozens of route and interface notifications.
+const network_settle = 3 * time.Second
+
+// is_tunnel_adapter reports whether the interface is the one this service
+// creates. Notifications about it are the service's own routes and addresses
+// being set or taken off, not a change of the network under it. The adapter
+// is found by its name; an interface that cannot be read any more (it is
+// being deleted) is not ours to ignore, and costs at most one debounced pass.
+func is_tunnel_adapter(luid winipcfg.LUID) bool {
+	row, err := luid.Interface()
+	if err != nil {
+		return false
+	}
+	return row.Alias() == adapter_name
+}
 
 // The prober's targets. Both are outside the control plane on purpose: a
 // control plane that is down for maintenance says nothing about whether a
@@ -149,6 +169,11 @@ type running_service struct {
 	served      chan error
 	logger      *slog.Logger
 	log_file    io.Closer
+
+	// network_changes debounces the watcher; stop_watching ends it. Both
+	// are nil when the watcher could not be started.
+	network_changes *debouncer
+	stop_watching   func() error
 }
 
 // update_settle is how long a starting service waits before launching a
@@ -264,14 +289,29 @@ func start(console bool) (*running_service, error) {
 	served := make(chan error, 1)
 	go func() { served <- serve(ctx, listener, application) }()
 
+	network_changes := new_debouncer(network_settle, real_scheduler, func() {
+		logger.Info("network changed; repinning or re-analysing")
+		go application.Network_changed(ctx)
+	})
+	stop_watching, err := winplatform.Watch_network(is_tunnel_adapter, network_changes.Trigger)
+	if err != nil {
+		// Not fatal: the tunnel works without it, it just does not follow
+		// a network change on its own.
+		logger.Warn("not watching network changes", "error", err.Error())
+		network_changes.Stop()
+		network_changes, stop_watching = nil, nil
+	}
+
 	logger.Info("service running", "pipe", ipc.Pipe_name)
 	return &running_service{
-		application: application,
-		ctx:         ctx,
-		cancel:      cancel,
-		served:      served,
-		logger:      logger,
-		log_file:    log_file,
+		network_changes: network_changes,
+		stop_watching:   stop_watching,
+		application:     application,
+		ctx:             ctx,
+		cancel:          cancel,
+		served:          served,
+		logger:          logger,
+		log_file:        log_file,
 	}, nil
 }
 
@@ -367,6 +407,12 @@ func build_attributes() []any {
 // the machine.
 func (r *running_service) stop() error {
 	r.logger.Info("service stopping")
+	if r.stop_watching != nil {
+		if err := r.stop_watching(); err != nil {
+			r.logger.Warn("stopping the network watcher", "error", err.Error())
+		}
+		r.network_changes.Stop()
+	}
 	r.cancel()
 
 	if r.served != nil {

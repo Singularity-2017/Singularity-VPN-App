@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -59,6 +60,9 @@ type Dependencies struct {
 	Now            func() time.Time
 	New_session_id func() string
 	Config         Config
+
+	// Logger receives the outcome of a network change. nil discards.
+	Logger *slog.Logger
 }
 
 // Mode is whether a connect was asked for by the person (with a specific
@@ -102,6 +106,7 @@ type Manager struct {
 	now            func() time.Time
 	new_session_id func() string
 	config         Config
+	logger         *slog.Logger
 
 	// op_mu serializes Connect, Disconnect, Switch and Tick: they mutate
 	// one session and must never interleave. A Tick that arrives while a
@@ -114,7 +119,8 @@ type Manager struct {
 	// up to Connect_timeout to finish.
 	state_mu    sync.RWMutex
 	state       State
-	transitions uint64 // how many times state has changed; see Transitions
+	transitions uint64    // how many times state has changed; see Transitions
+	changed_at  time.Time // when state last changed; see Changed_at
 	session     Session
 	has_session bool
 
@@ -171,7 +177,12 @@ func New_manager(dependencies Dependencies) (*Manager, error) {
 		dependencies.New_session_id = default_session_id
 	}
 
+	if dependencies.Logger == nil {
+		dependencies.Logger = slog.New(slog.DiscardHandler)
+	}
+
 	return &Manager{
+		logger:         dependencies.Logger,
 		control_plane:  dependencies.Control_plane,
 		token:          dependencies.Token,
 		protocols:      dependencies.Protocols,
@@ -202,6 +213,13 @@ func (m *Manager) Transitions() uint64 {
 	m.state_mu.RLock()
 	defer m.state_mu.RUnlock()
 	return m.transitions
+}
+
+// Changed_at is when the state last changed; zero before the first change.
+func (m *Manager) Changed_at() time.Time {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return m.changed_at
 }
 
 // Session reports the current session, if any, the same way State does.
@@ -262,6 +280,7 @@ func (m *Manager) set_state(to State) {
 	}
 	m.state = to
 	m.transitions++
+	m.changed_at = m.now()
 	m.state_mu.Unlock()
 	m.publish(events.Kind_state_changed, State_change{From: from, To: to})
 }
@@ -903,7 +922,39 @@ func (m *Manager) retry_current(ctx context.Context) bool {
 func (m *Manager) Tick(ctx context.Context, now time.Time) {
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
+	m.tick_locked(ctx, now)
+}
 
+// Network_changed reacts to the machine's network changing under a running
+// tunnel: the protocol, when it can (protocols.Repinner), moves its transport
+// route onto the current path without the tunnel being torn down, and then
+// one monitoring pass runs, so a tunnel that still does not work goes through
+// the usual retry and recovery. A repin failure is logged, not fatal: the
+// monitoring pass is what decides whether the tunnel is really broken. With
+// no tunnel up, or one still being established, it does nothing -- a connect
+// in progress resolves and pins on its own.
+func (m *Manager) Network_changed(ctx context.Context, now time.Time) {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	current := m.get_state()
+	if current != State_connected && current != State_degraded {
+		return
+	}
+	// The repin and the pass share one hold of op_mu: Tick takes the same
+	// lock, so the pass is the lock-free body tick_locked.
+	if repinner, ok := m.protocol_handle.(protocols.Repinner); ok {
+		if err := repinner.Repin(ctx); err != nil {
+			m.logger.Warn("network changed; moving the endpoint route failed", "error", err)
+		} else {
+			m.logger.Info("network changed; endpoint route follows the current path")
+		}
+	}
+	m.tick_locked(ctx, now)
+}
+
+// tick_locked is Tick's body; the caller holds op_mu.
+func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 	current := m.get_state()
 	if current != State_connected && current != State_degraded {
 		return // nothing is being monitored outside these two states

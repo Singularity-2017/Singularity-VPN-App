@@ -138,12 +138,31 @@ func (f *fake_protocol) Status() protocols.Status {
 // fake_protocols is a protocols.Manager backed by a fixed set of adapters.
 type fake_protocols struct {
 	by_name map[string]*fake_protocol
+
+	// wrap, when set, decides what Get hands out for an adapter, so a test
+	// can give it optional interfaces such as protocols.Repinner.
+	wrap func(*fake_protocol) protocols.Protocol
+}
+
+// repinning_protocol is a fake_protocol that is also a protocols.Repinner.
+type repinning_protocol struct {
+	*fake_protocol
+	repin_calls int
+	repin_err   error
+}
+
+func (r *repinning_protocol) Repin(ctx context.Context) error {
+	r.repin_calls++
+	return r.repin_err
 }
 
 func (f *fake_protocols) Get(name string) (protocols.Protocol, error) {
 	adapter, ok := f.by_name[name]
 	if !ok {
 		return nil, protocols.Err_unknown_protocol
+	}
+	if f.wrap != nil {
+		return f.wrap(adapter), nil
 	}
 	return adapter, nil
 }
@@ -1039,5 +1058,72 @@ func Test_every_state_change_is_counted_and_a_no_op_is_not(t *testing.T) {
 	}
 	if got := manager.Transitions(); got != 2 { // disconnected -> connecting -> connected
 		t.Fatalf("Transitions() after a connect = %d, want 2", got)
+	}
+}
+
+// --- Network_changed -----------------------------------------------------
+
+func Test_network_changed_on_a_connected_repinner_repins_then_ticks(t *testing.T) {
+	env := new_test_env(t)
+	repinner := &repinning_protocol{fake_protocol: env.protocol}
+	env.protocols.wrap = func(*fake_protocol) protocols.Protocol { return repinner }
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	probes := env.prober.calls
+
+	manager.Network_changed(context.Background(), env.clock.advance(5*time.Second))
+
+	if repinner.repin_calls != 1 {
+		t.Fatalf("Repin called %d times, want 1", repinner.repin_calls)
+	}
+	if env.prober.calls != probes+1 {
+		t.Fatalf("probes = %d, want one monitoring pass (%d)", env.prober.calls, probes+1)
+	}
+}
+
+func Test_network_changed_survives_a_failed_repin_and_still_ticks(t *testing.T) {
+	env := new_test_env(t)
+	repinner := &repinning_protocol{fake_protocol: env.protocol, repin_err: errors.New("no route")}
+	env.protocols.wrap = func(*fake_protocol) protocols.Protocol { return repinner }
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	probes := env.prober.calls
+
+	manager.Network_changed(context.Background(), env.clock.advance(5*time.Second))
+
+	if env.prober.calls != probes+1 {
+		t.Fatalf("probes = %d, want one monitoring pass (%d)", env.prober.calls, probes+1)
+	}
+}
+
+func Test_network_changed_without_a_repinner_only_ticks(t *testing.T) {
+	env := new_test_env(t)
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	probes := env.prober.calls
+
+	manager.Network_changed(context.Background(), env.clock.advance(5*time.Second))
+
+	if env.prober.calls != probes+1 {
+		t.Fatalf("probes = %d, want one monitoring pass (%d)", env.prober.calls, probes+1)
+	}
+}
+
+func Test_network_changed_while_disconnected_does_nothing(t *testing.T) {
+	env := new_test_env(t)
+	repinner := &repinning_protocol{fake_protocol: env.protocol}
+	env.protocols.wrap = func(*fake_protocol) protocols.Protocol { return repinner }
+	manager := env.build()
+
+	manager.Network_changed(context.Background(), env.clock.advance(5*time.Second))
+
+	if repinner.repin_calls != 0 || env.prober.calls != 0 {
+		t.Fatalf("repin = %d, probes = %d; want neither", repinner.repin_calls, env.prober.calls)
 	}
 }

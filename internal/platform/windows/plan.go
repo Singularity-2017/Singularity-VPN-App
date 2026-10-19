@@ -4,6 +4,7 @@ package windows
 
 import (
 	"net/netip"
+	"slices"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
@@ -148,4 +149,20 @@ func pick_route(rows []route_row, destination netip.Addr, exclude winipcfg.LUID)
 		}
 	}
 	return best, found
+}
+
+// pick_repin_route is pick_route for moving existing pins: it also leaves
+// out every pinned row (same interface, same destination, same next hop).
+// Without that, a new gateway on the same adapter would answer with the old
+// /32, which is still in the table and wins by prefix length -- and a pin
+// already moved would answer for the one it replaced.
+func pick_repin_route(rows []route_row, destination netip.Addr, exclude winipcfg.LUID, pinned []route_row) (route_row, bool) {
+	kept := make([]route_row, 0, len(rows))
+	for _, row := range rows {
+		if slices.Contains(pinned, row) {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return pick_route(kept, destination, exclude)
 }

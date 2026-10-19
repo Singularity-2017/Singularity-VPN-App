@@ -284,6 +284,25 @@
     render();
   }
 
+  // reread_analysis picks up a measurement the service took on its own, after
+  // a network change. It only reads -- never Analyze -- and draws only when
+  // the answer is newer than what is shown. A load_analysis that started
+  // meanwhile owns the line, so this answer is dropped under the same guard.
+  async function reread_analysis() {
+    if (!main_active) return;
+    const request = analysis_request;
+    let answer;
+    try { answer = await backend().Analysis(); } catch (e) { return; }
+    if (request !== analysis_request || !main_active) return;
+    if (!answer || answer.error || !answer.result) return;
+    const incoming = new Date(answer.result.measured_at).getTime();
+    if (isNaN(incoming)) return;
+    const shown = analysis ? new Date(analysis.measured_at).getTime() : NaN;
+    if (!isNaN(shown) && incoming <= shown) return;
+    analysis = answer.result;
+    render();
+  }
+
   async function refresh() {
     try {
       view = await backend().Status();
@@ -567,7 +586,7 @@
       }
     });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") close_pops(); });
-    window.runtime.EventsOn("changed", refresh);
+    window.runtime.EventsOn("changed", () => { refresh(); reread_analysis(); });
     // Events cover state changes; the poll picks up new measurements, which
     // the service takes on its own schedule without announcing them.
     setInterval(refresh, 3000);

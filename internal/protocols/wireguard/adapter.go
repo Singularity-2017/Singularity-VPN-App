@@ -251,6 +251,22 @@ func (a *Adapter) Status() protocols.Status {
 	return protocols.Status{Running: a.running, Since: a.since, Detail: a.detail}
 }
 
+// Repin implements protocols.Repinner: it moves the endpoint host route onto
+// the path the network offers now. With no tunnel up there is nothing pinned
+// and it returns nil.
+func (a *Adapter) Repin(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.running {
+		return nil
+	}
+	if err := a.network.Repin(ctx, a.handle); err != nil {
+		return fmt.Errorf("wireguard: repinning the endpoint route: %w", err)
+	}
+	return nil
+}
+
 // Default_resolver resolves an endpoint's "host:port" with the standard
 // library resolver. It is the real implementation of resolver: not
 // Windows-specific, since hostname resolution needs no operating-system

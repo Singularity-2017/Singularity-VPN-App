@@ -2,11 +2,13 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"singularity-vpn-app/internal/connection"
+	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/reach"
 )
@@ -15,6 +17,19 @@ import (
 // run within this long of the last successful one returns it instead of
 // probing again, so a window opened twice in a minute does not probe twice.
 const analysis_reuse = 60 * time.Second
+
+// analysis_network_spacing is the least time between two runs started by a
+// network change, so a flapping link does not turn into a probe storm.
+const analysis_network_spacing = 5 * time.Minute
+
+// network_change_after_disconnect is how long after the connection went
+// down a network change is taken for the tunnel's own adapter going away
+// rather than the network under the machine changing. The adapter, once
+// deleted, can no longer be recognised by name in the notification.
+const network_change_after_disconnect = 15 * time.Second
+
+// err_analysis_spaced says a network-change run was held back by the spacing.
+var err_analysis_spaced = errors.New("core: the last analysis started too recently")
 
 // analysis_run_timeout bounds a whole run -- the catalog fetch and the
 // probes -- on top of the bounds each of them has.
@@ -35,6 +50,10 @@ type analysis_cache struct {
 	last   ipc.Analysis_result
 	has    bool
 	flight *analysis_flight
+
+	// last_started is when the most recent run began, successful or not.
+	// It spaces the runs a network change asks for.
+	last_started time.Time
 }
 
 // Analyze answers Command_analyze: it probes the catalog directly and says
@@ -46,37 +65,13 @@ type analysis_cache struct {
 // when the probes are done, and a result is discarded -- as tunnel_up -- if
 // the counter moved, however briefly the state changed.
 func (a *Application) Analyze(ctx context.Context) (ipc.Analysis_result, error) {
-	token, err := (&token_source{secrets: a.secrets}).Token(ctx)
+	last, flight, err := a.begin_analysis(ctx, 0)
 	if err != nil {
-		return ipc.Analysis_result{}, map_error(err)
+		return ipc.Analysis_result{}, err
 	}
-
-	// The counter is read before the state: a connect that starts between
-	// the two shows in one of them, and one that starts after shows in the
-	// counter when the run ends.
-	before := a.manager.Transitions()
-	if !connection_is_down(a.manager.State()) {
-		return ipc.Analysis_result{}, fmt.Errorf("%w: the connection is %s", ipc.Err_tunnel_up, a.manager.State())
-	}
-
-	cache := &a.analysis
-	cache.mu.Lock()
-	if cache.has {
-		if age := a.now().Sub(cache.last.Measured_at); age >= 0 && age < analysis_reuse {
-			last := cache.last
-			cache.mu.Unlock()
-			return last, nil
-		}
-	}
-	flight := cache.flight
 	if flight == nil {
-		flight = &analysis_flight{done: make(chan struct{})}
-		cache.flight = flight
-		// Detached from this caller: the others waiting on the same run
-		// must not lose it because the first to ask went away.
-		go a.run_analysis(context.WithoutCancel(ctx), token, before, flight)
+		return last, nil
 	}
-	cache.mu.Unlock()
 
 	select {
 	case <-flight.done:
@@ -84,6 +79,97 @@ func (a *Application) Analyze(ctx context.Context) (ipc.Analysis_result, error) 
 	case <-ctx.Done():
 		return ipc.Analysis_result{}, ctx.Err()
 	}
+}
+
+// begin_analysis is the single-flight path every analysis goes through. It
+// returns either a recent result to reuse (flight nil), or the flight to wait
+// on -- started here, or the one already running.
+//
+// spacing, when positive, refuses (errors.Is err_analysis_spaced) to start a
+// new run when the last one started less than spacing ago, whether that run
+// succeeded or failed; a run already in flight is still joined, and a recent
+// result is still reused.
+func (a *Application) begin_analysis(ctx context.Context, spacing time.Duration) (ipc.Analysis_result, *analysis_flight, error) {
+	token, err := (&token_source{secrets: a.secrets}).Token(ctx)
+	if err != nil {
+		return ipc.Analysis_result{}, nil, map_error(err)
+	}
+
+	// The counter is read before the state: a connect that starts between
+	// the two shows in one of them, and one that starts after shows in the
+	// counter when the run ends.
+	before := a.manager.Transitions()
+	if !connection_is_down(a.manager.State()) {
+		return ipc.Analysis_result{}, nil, fmt.Errorf("%w: the connection is %s", ipc.Err_tunnel_up, a.manager.State())
+	}
+
+	cache := &a.analysis
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	now := a.now()
+	if cache.has {
+		if age := now.Sub(cache.last.Measured_at); age >= 0 && age < analysis_reuse {
+			return cache.last, nil, nil
+		}
+	}
+	flight := cache.flight
+	if flight == nil {
+		if spacing > 0 && !cache.last_started.IsZero() && now.Sub(cache.last_started) < spacing {
+			return ipc.Analysis_result{}, nil, err_analysis_spaced
+		}
+		flight = &analysis_flight{done: make(chan struct{})}
+		cache.flight = flight
+		cache.last_started = now
+		// Detached from this caller: the others waiting on the same run
+		// must not lose it because the first to ask went away.
+		go a.run_analysis(context.WithoutCancel(ctx), token, before, flight)
+	}
+	return ipc.Analysis_result{}, flight, nil
+}
+
+// Network_changed reacts to the machine's network changing. With a tunnel up
+// or coming up it repins the transport route and runs one monitoring pass
+// (connection.Manager.Network_changed). With the tunnel down it re-measures
+// what the network blocks, in the background, at most once per
+// analysis_network_spacing, and only for a signed-in device; anything else
+// is logged and dropped. It returns without waiting for the measurement.
+func (a *Application) Network_changed(ctx context.Context) {
+	if ctx.Err() != nil {
+		return // the service is stopping
+	}
+	if !connection_is_down(a.manager.State()) {
+		a.manager.Network_changed(ctx, a.now())
+		return
+	}
+	if since := a.now().Sub(a.manager.Changed_at()); since >= 0 && since < network_change_after_disconnect {
+		a.logger.Info("network changed right after the connection went down; not analysing")
+		return
+	}
+
+	_, flight, err := a.begin_analysis(ctx, analysis_network_spacing)
+	if err != nil {
+		a.logger.Info("network changed; analysis not started", "reason", err.Error())
+		return
+	}
+	if flight == nil {
+		a.logger.Info("network changed; the last analysis is recent enough")
+		return
+	}
+	a.logger.Info("network changed; analysing in the background")
+	go func() {
+		select {
+		case <-flight.done:
+		case <-ctx.Done():
+			return
+		}
+		if flight.err != nil {
+			a.logger.Info("network changed; analysis failed", "error", flight.err)
+			return
+		}
+		// Watchers already re-read on any event; the window asks for the
+		// last analysis when one arrives.
+		a.bus.Publish(events.Event{Kind: events.Kind_diagnostic_completed, At: a.now()})
+	}()
 }
 
 // Analysis answers Command_analysis: the last result, without probing.

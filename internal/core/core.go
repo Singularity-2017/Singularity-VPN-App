@@ -126,6 +126,7 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		Bus:           dependencies.Bus,
 		Now:           now,
 		Config:        dependencies.Config,
+		Logger:        logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("core: building the connection manager: %w", err)
