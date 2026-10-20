@@ -242,6 +242,22 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 		}
 		h.reply(req.Id, nil, h.service.Set_strategy(ctx, params))
 
+	case Command_games:
+		result, err := h.service.Games(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_set_games:
+		params, err := decode_params[Games](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		h.reply(req.Id, nil, h.service.Set_games(ctx, params))
+
 	case Command_servers:
 		result, err := h.service.Servers(ctx)
 		h.reply(req.Id, result, err)

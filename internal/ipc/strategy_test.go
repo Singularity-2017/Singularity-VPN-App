@@ -95,3 +95,16 @@ func Test_an_analysis_refused_because_the_tunnel_is_up_says_so(t *testing.T) {
 		t.Fatalf("Analyze() error = %v, want tunnel_up", err)
 	}
 }
+
+func Test_a_game_list_the_service_would_not_read_is_refused(t *testing.T) {
+	for _, bad := range []Games{{Games: []string{""}}, {Games: []string{"PUBG"}}, {Games: []string{"a b"}}} {
+		if bad.Validate() == nil {
+			t.Errorf("%+v was accepted", bad)
+		}
+	}
+	for _, good := range []Games{{}, {Games: []string{}}, {Games: []string{"pubg", "cs2", "dota_2"}}} {
+		if err := good.Validate(); err != nil {
+			t.Errorf("%+v: %v", good, err)
+		}
+	}
+}

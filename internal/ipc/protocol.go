@@ -85,6 +85,8 @@ const (
 	Command_strategy     = "strategy"
 	Command_set_strategy = "set_strategy"
 	Command_servers      = "servers"
+	Command_games        = "games"
+	Command_set_games    = "set_games"
 
 	Command_analyze  = "analyze"
 	Command_analysis = "analysis"
@@ -120,6 +122,32 @@ func (s Strategy) Validate() error {
 	for _, c := range s.Node_id {
 		if !(c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
 			return fmt.Errorf("ipc: strategy: node_id %q carries a character a node id does not", s.Node_id)
+		}
+	}
+	return nil
+}
+
+// Games are the catalog ids of the games carried through the tunnel. An
+// empty list carries the whole machine, as before any game was chosen.
+type Games struct {
+	Games []string `json:"games"`
+}
+
+// Validate refuses more ids than any catalog has games, and an id that is
+// not a short lower-case token. Whether the catalog knows the id is the
+// service's to say.
+func (g Games) Validate() error {
+	if len(g.Games) > 64 {
+		return errors.New("ipc: games: too many games")
+	}
+	for _, id := range g.Games {
+		if id == "" || len(id) > 32 {
+			return fmt.Errorf("ipc: games: id %q is empty or too long", id)
+		}
+		for _, c := range id {
+			if !(c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z') {
+				return fmt.Errorf("ipc: games: id %q carries a character a game id does not", id)
+			}
 		}
 	}
 	return nil

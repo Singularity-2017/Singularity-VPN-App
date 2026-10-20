@@ -14,6 +14,13 @@ type Tunnel struct {
 	Dns       []netip.Addr
 	Mtu       int
 	Endpoint  netip.AddrPort // where this tunnel's own packets go, resolved
+	// Only, when not nil, is games-only mode: the machine routes just these
+	// destinations into the tunnel instead of Allowed, and keeps its own
+	// resolvers. The games' packets reach the tunnel without the routing
+	// table; what is left here is what the service itself must send
+	// through it, such as the target that proves the tunnel carries
+	// traffic. The peer still accepts every destination in Allowed.
+	Only []netip.Prefix
 }
 
 // Route is one entry the machine's routing table needs.
@@ -67,6 +74,11 @@ func Plan_for(t Tunnel) (Plan, error) {
 		return Plan{}, fmt.Errorf("%w: tunnel endpoint was never resolved to an address", Err_unroutable)
 	}
 
+	claimed, dns := t.Allowed, t.Dns
+	if t.Only != nil {
+		claimed, dns = t.Only, nil
+	}
+
 	full_tunnel := false
 	var routes []Route
 
@@ -82,7 +94,7 @@ func Plan_for(t Tunnel) (Plan, error) {
 	// afterwards -- fails by stranding a person offline with no obvious way
 	// to find out why. This prefers the failure that leaves the machine
 	// working.
-	for _, allowed := range t.Allowed {
+	for _, allowed := range claimed {
 		switch allowed {
 		case ipv4_default:
 			full_tunnel = true
@@ -107,7 +119,7 @@ func Plan_for(t Tunnel) (Plan, error) {
 	// which is fine). The only case that is not fine is the empty one: a
 	// full tunnel with no resolver at all sends every name lookup into a
 	// tunnel with nothing behind it, and nothing resolves.
-	if full_tunnel && len(t.Dns) == 0 {
+	if full_tunnel && len(dns) == 0 {
 		return Plan{}, fmt.Errorf("%w: full tunnel has no DNS resolver, so nothing would resolve", Err_unroutable)
 	}
 
@@ -118,7 +130,7 @@ func Plan_for(t Tunnel) (Plan, error) {
 	// falls inside an allowed prefix -- which for a full tunnel is always
 	// (0.0.0.0/0 or ::/0 contains everything), and for a split tunnel is
 	// exactly the subtle case the endpoint must be excluded from.
-	if endpoint_needs_a_host_route(t.Endpoint, full_tunnel, t.Allowed) {
+	if endpoint_needs_a_host_route(t.Endpoint, full_tunnel, claimed) {
 		bits := 32
 		if t.Endpoint.Addr().Is6() {
 			bits = 128
@@ -130,7 +142,7 @@ func Plan_for(t Tunnel) (Plan, error) {
 	return Plan{
 		Addresses:   t.Addresses,
 		Routes:      routes,
-		Dns:         t.Dns,
+		Dns:         dns,
 		Mtu:         t.Mtu,
 		Full_tunnel: full_tunnel,
 	}, nil

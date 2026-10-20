@@ -26,6 +26,7 @@ type fake_tunnel struct {
 	up_calls         int
 	close_calls      int
 	last_uapi        string
+	stats            Transport_stats
 }
 
 func (f *fake_tunnel) Set_config(uapi string) error {
@@ -46,6 +47,10 @@ func (f *fake_tunnel) Close() error {
 
 func (f *fake_tunnel) Handle() platform.Tunnel_handle {
 	return f.handle
+}
+
+func (f *fake_tunnel) Stats() (Transport_stats, error) {
+	return f.stats, nil
 }
 
 type fake_resolver struct {
@@ -94,7 +99,7 @@ func (f *fake_network) Repin(ctx context.Context, handle platform.Tunnel_handle)
 
 func new_test_adapter(t *testing.T, ft *fake_tunnel, fr *fake_resolver, fn *fake_network) *Adapter {
 	t.Helper()
-	a, err := New_adapter("Singularity-Test", func(name string, mtu int) (tunnel, error) {
+	a, err := New_adapter("Singularity-Test", func(name string, mtu int, wrap device_wrapper) (tunnel, error) {
 		return ft, nil
 	}, fr, fn)
 	if err != nil {
@@ -187,7 +192,7 @@ func Test_connect_parse_failure_returns_before_anything_exists(t *testing.T) {
 	fr := &fake_resolver{addr: netip.MustParseAddrPort("203.0.113.5:51080")}
 	fn := &fake_network{}
 	new_tunnel_calls := 0
-	a, err := New_adapter("Singularity-Test", func(name string, mtu int) (tunnel, error) {
+	a, err := New_adapter("Singularity-Test", func(name string, mtu int, wrap device_wrapper) (tunnel, error) {
 		new_tunnel_calls++
 		return &fake_tunnel{}, nil
 	}, fr, fn)
@@ -208,7 +213,7 @@ func Test_connect_resolve_failure_returns_before_anything_exists(t *testing.T) {
 	new_tunnel_calls := 0
 	fr := &fake_resolver{err: errors.New("boom")}
 	fn := &fake_network{}
-	a, err := New_adapter("Singularity-Test", func(name string, mtu int) (tunnel, error) {
+	a, err := New_adapter("Singularity-Test", func(name string, mtu int, wrap device_wrapper) (tunnel, error) {
 		new_tunnel_calls++
 		return &fake_tunnel{}, nil
 	}, fr, fn)
@@ -229,7 +234,7 @@ func Test_connect_refuses_a_config_with_more_than_one_peer(t *testing.T) {
 	new_tunnel_calls := 0
 	fr := &fake_resolver{addr: netip.MustParseAddrPort("203.0.113.5:51080")}
 	fn := &fake_network{}
-	a, err := New_adapter("Singularity-Test", func(name string, mtu int) (tunnel, error) {
+	a, err := New_adapter("Singularity-Test", func(name string, mtu int, wrap device_wrapper) (tunnel, error) {
 		new_tunnel_calls++
 		return &fake_tunnel{}, nil
 	}, fr, fn)
@@ -270,7 +275,7 @@ func Test_connect_failure_from_step_3_onward_unwinds(t *testing.T) {
 			fr := &fake_resolver{addr: netip.MustParseAddrPort("203.0.113.5:51080")}
 			fn := &fake_network{apply_err: c.apply_err}
 
-			a, err := New_adapter("Singularity-Test", func(name string, mtu int) (tunnel, error) {
+			a, err := New_adapter("Singularity-Test", func(name string, mtu int, wrap device_wrapper) (tunnel, error) {
 				if c.new_tunnel_err != nil {
 					return nil, c.new_tunnel_err
 				}
@@ -373,7 +378,7 @@ func Test_name_returns_wireguard(t *testing.T) {
 }
 
 func Test_new_adapter_refuses_missing_dependencies(t *testing.T) {
-	factory := func(string, int) (tunnel, error) { return nil, nil }
+	factory := func(string, int, device_wrapper) (tunnel, error) { return nil, nil }
 	if _, err := New_adapter("", factory, &fake_resolver{}, &fake_network{}); err == nil {
 		t.Fatalf("New_adapter: want an error for an empty name")
 	}
@@ -454,3 +459,14 @@ func Test_repin_with_a_tunnel_asks_the_network_for_its_handle(t *testing.T) {
 }
 
 var _ protocols.Repinner = (*Adapter)(nil)
+
+func Test_a_transport_report_says_whether_the_node_answered(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	if got := transport_report(Transport_stats{Sent: 1480}, now); got != "no handshake with the node; sent 1480 bytes, received 0" {
+		t.Fatalf("report = %q", got)
+	}
+	got := transport_report(Transport_stats{Last_handshake: now.Add(-3 * time.Second), Sent: 2000, Received: 92}, now)
+	if got != "handshake 3s ago; sent 2000 bytes, received 92" {
+		t.Fatalf("report = %q", got)
+	}
+}

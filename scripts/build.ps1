@@ -13,9 +13,10 @@ param(
     # drives it without a window.
     [string[]]$Target = @("./cmd/svpn-service", "./cmd/singularityvpn", "./cmd/svpn-ctl", "./cmd/svpn-swap"),
     [string]$Out = "dist",
-    # Build SingularityVPN-setup.exe: the three programs and wintun.dll
-    # inside one installer. wintun.dll is taken from local/ or from the
-    # output directory, where the stage 3 instructions put it.
+    # Build SingularityVPN-setup.exe: the programs, wintun.dll and the
+    # WinDivert packet driver inside one installer. wintun.dll is taken
+    # from local/ or from the output directory, where the stage 3
+    # instructions put it; WinDivert from local/windivert/.
     [switch]$Setup
 )
 
@@ -129,6 +130,17 @@ if ($Setup) {
         Write-Error "setup: wintun.dll not found in local/ or $Out/ -- download the signed release from https://www.wintun.net and put amd64/wintun.dll in local/"
     }
     Copy-Item $wintun (Join-Path $payload "wintun.dll") -Force
+    # WinDivert 2.2.2, unmodified, from the release archive
+    # (github.com/basil00/WinDivert/releases/tag/v2.2.2): x64/WinDivert.dll,
+    # x64/WinDivert64.sys and LICENSE, saved as local/windivert/LICENSE.
+    $windivert = Join-Path $root "local/windivert"
+    foreach ($pair in @(@("WinDivert.dll", "WinDivert.dll"), @("WinDivert64.sys", "WinDivert64.sys"), @("LICENSE", "WinDivert-LICENSE.txt"))) {
+        $from = Join-Path $windivert $pair[0]
+        if (-not (Test-Path $from)) {
+            Write-Error "setup: $($pair[0]) not found in local/windivert/ -- unpack the WinDivert 2.2.2 release there: x64/WinDivert.dll, x64/WinDivert64.sys and LICENSE"
+        }
+        Copy-Item $from (Join-Path $payload $pair[1]) -Force
+    }
     Push-Location $root
     try {
         & go build -tags payload -ldflags ($ldflags -join " ") -o (Join-Path $out_dir "SingularityVPN-setup.exe") ./cmd/svpn-setup

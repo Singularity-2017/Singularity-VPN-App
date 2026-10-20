@@ -120,7 +120,13 @@ type envelope_error struct {
 // build_error turns a non-success response into the one error type callers
 // see. A body that did not decode still produces an *Error carrying the
 // status, never a partly filled model.
-func build_error(status int, env envelope, decode_err error) *Error {
+//
+// A body that is not JSON names the status and the content type: an HTML
+// 404 means the address reaches a web server but not the API behind it --
+// usually a base URL missing the path prefix the reverse proxy mounts the
+// API under -- and saying so is the difference between a minute and an
+// evening.
+func build_error(status int, content_type string, env envelope, decode_err error) *Error {
 	api_err := &Error{Status: status}
 	if decode_err == nil && env.Error != nil {
 		api_err.Code = env.Error.Code
@@ -128,7 +134,11 @@ func build_error(status int, env envelope, decode_err error) *Error {
 	}
 	if api_err.Message == "" {
 		if decode_err != nil {
-			api_err.Message = "control plane returned a body that is not valid JSON"
+			if content_type == "" {
+				content_type = "no content type"
+			}
+			api_err.Message = fmt.Sprintf("control plane returned HTTP %d with a body that is not valid JSON (%s); "+
+				"the address may reach a web server but not the API behind it", status, content_type)
 		} else {
 			api_err.Message = http.StatusText(status)
 		}
@@ -227,7 +237,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			return nil
 		}
 
-		api_err := build_error(resp.StatusCode, env, decode_err)
+		api_err := build_error(resp.StatusCode, resp.Header.Get("Content-Type"), env, decode_err)
 		if is_retryable_status(resp.StatusCode) && allow_retry && attempt != attempts-1 {
 			last_err = api_err
 			if sleep_err := c.sleep(ctx, delay); sleep_err != nil {

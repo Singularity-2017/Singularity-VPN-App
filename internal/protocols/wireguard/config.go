@@ -19,6 +19,17 @@ type Tunnel_config struct {
 	Dns         []netip.Addr
 	Mtu         int
 	Peers       []Peer
+	// Obfuscation is the AmneziaWG parameters of the [Interface] section,
+	// in the order the config gave them, keys lower-cased. Empty for plain
+	// WireGuard; the device then speaks plain WireGuard.
+	Obfuscation []Obfuscation_param
+}
+
+// Obfuscation_param is one AmneziaWG parameter, passed to the device as it
+// came. The values are not secret: they shape packets, they do not key them.
+type Obfuscation_param struct {
+	Key   string
+	Value string
 }
 
 // Peer is one [Peer] section of a wg-quick configuration.
@@ -63,22 +74,18 @@ var Err_incomplete_config = errors.New("wireguard: config is incomplete")
 // surprise in a routing configuration.
 var Err_unsupported_directive = errors.New("wireguard: config carries a directive this client will not honour")
 
-// Err_obfuscation_unsupported is what Parse returns for the AmneziaWG
-// obfuscation parameters: Jc, Jmin, Jmax, S1, S2, H1-H4 and I1-I5. The node
-// software this product is built on hands out Amnezia-flavoured configs
-// from a parallel set of templates, so these will be seen -- but they are
-// not part of WireGuard, and the embedded library cannot speak them.
+// Err_obfuscation_unsupported is what Parse returns for an AmneziaWG
+// parameter the embedded library (amneziawg-go, AmneziaWG 1.5) does not
+// speak -- S3 and S4 of a newer protocol version. The parameters it does
+// speak are kept in Tunnel_config.Obfuscation and handed to the device.
 //
 // This is deliberately a different sentinel from Err_unsupported_directive
 // because the consequence is different and the message must be too. These
-// parameters are traffic obfuscation. A client that stripped them and
+// parameters are traffic obfuscation. A client that stripped one and
 // connected anyway would produce a tunnel that either does not come up at
-// all, or -- worse -- comes up carrying recognisable WireGuard traffic for
-// somebody whose reason for using an obfuscated protocol was that
-// recognisable traffic is a problem where they live. "Unknown key Jc" would
-// be the wrong thing to tell that person; the message instead says that
-// this build cannot speak the obfuscated protocol and that this node is
-// offering it.
+// all, or -- worse -- comes up carrying recognisable traffic for somebody
+// whose reason for using an obfuscated protocol was that recognisable
+// traffic is a problem where they live.
 var Err_obfuscation_unsupported = errors.New("wireguard: node offers an obfuscated protocol this build cannot speak")
 
 // required_field and check_required are copied from
@@ -124,14 +131,21 @@ var linux_only_directives = map[string]bool{
 	"fwmark":     true,
 }
 
-// obfuscation_keys are the AmneziaWG parameters. See the comment on
-// Err_obfuscation_unsupported.
+// obfuscation_keys are the AmneziaWG 1.5 parameters amneziawg-go v1.0.4
+// accepts. A true value is a number; false is a packet template passed as
+// text (I1-I5, J1-J3).
 var obfuscation_keys = map[string]bool{
 	"jc": true, "jmin": true, "jmax": true,
 	"s1": true, "s2": true,
 	"h1": true, "h2": true, "h3": true, "h4": true,
-	"i1": true, "i2": true, "i3": true, "i4": true, "i5": true,
+	"i1": false, "i2": false, "i3": false, "i4": false, "i5": false,
+	"j1": false, "j2": false, "j3": false,
+	"itime": true,
 }
+
+// unspoken_obfuscation_keys are AmneziaWG parameters of a newer protocol
+// version than the embedded library speaks.
+var unspoken_obfuscation_keys = map[string]bool{"s3": true, "s4": true}
 
 // raw_interface holds the [Interface] section exactly as text, before any
 // field is parsed into its typed form -- so that a required-field check can
@@ -192,6 +206,7 @@ func Parse(text string) (Tunnel_config, error) {
 	interface_seen := false
 	var iface raw_interface
 	var peers []*raw_peer
+	var obfuscation []Obfuscation_param
 
 	for _, raw_line := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw_line)
@@ -229,9 +244,24 @@ func Parse(text string) (Tunnel_config, error) {
 		value = strings.TrimSpace(value)
 		lower_key := strings.ToLower(key)
 
-		if obfuscation_keys[lower_key] {
-			return Tunnel_config{}, fmt.Errorf("%w: this build cannot speak the obfuscated protocol, and this node is offering it (%s)",
+		if unspoken_obfuscation_keys[lower_key] {
+			return Tunnel_config{}, fmt.Errorf("%w: this node offers a newer AmneziaWG than this build speaks (%s)",
 				Err_obfuscation_unsupported, key)
+		}
+		if numeric, ok := obfuscation_keys[lower_key]; ok {
+			if section != section_interface {
+				return Tunnel_config{}, fmt.Errorf("wireguard: %s belongs in [Interface], not [Peer]", key)
+			}
+			if err := check_obfuscation(lower_key, value, numeric); err != nil {
+				return Tunnel_config{}, err
+			}
+			for _, seen := range obfuscation {
+				if seen.Key == lower_key {
+					return Tunnel_config{}, fmt.Errorf("wireguard: %s appears twice", key)
+				}
+			}
+			obfuscation = append(obfuscation, Obfuscation_param{Key: lower_key, Value: value})
+			continue
 		}
 		if shell_directives[lower_key] || linux_only_directives[lower_key] {
 			return Tunnel_config{}, fmt.Errorf("%w: %s", Err_unsupported_directive, key)
@@ -374,7 +404,24 @@ func Parse(text string) (Tunnel_config, error) {
 		Dns:         dns,
 		Mtu:         mtu,
 		Peers:       built_peers,
+		Obfuscation: obfuscation,
 	}, nil
+}
+
+// check_obfuscation refuses a value the device would refuse later, where
+// the error would no longer name the line: a number that is not one, or an
+// empty template.
+func check_obfuscation(key, value string, numeric bool) error {
+	if numeric {
+		if _, err := strconv.ParseUint(value, 10, 32); err != nil {
+			return fmt.Errorf("wireguard: %s = %q is not a number", key, value)
+		}
+		return nil
+	}
+	if value == "" {
+		return fmt.Errorf("wireguard: %s is empty", key)
+	}
+	return nil
 }
 
 // parse_prefix_list parses every line a key appeared on, each of them a

@@ -265,31 +265,67 @@ func Test_an_unrecognised_key_is_refused_and_named(t *testing.T) {
 	}
 }
 
-// An AmneziaWG config must be refused with Err_obfuscation_unsupported and
-// specifically NOT with Err_unsupported_directive: the two sentinels carry
-// different consequences and a caller must be able to tell them apart.
-func Test_an_amnezia_config_is_refused_with_the_obfuscation_sentinel(t *testing.T) {
-	config := "[Interface]\n" +
+func amnezia_config(extra string) string {
+	return "[Interface]\n" +
 		"PrivateKey = " + private_key_full + "\n" +
 		"Address = 10.0.0.2/32\n" +
 		"DNS = 1.1.1.1, 1.0.0.1\n" +
-		"Jc = 100\n" +
-		"S1 = 0\n" +
-		"H1 = 1\n" +
+		"Jc = 4\n" +
+		"Jmin = 40\n" +
+		"Jmax = 70\n" +
+		"S1 = 15\n" +
+		"H1 = 1234567\n" +
+		extra +
 		"\n" +
 		"[Peer]\n" +
 		"PublicKey = " + public_key_full + "\n" +
-		"PresharedKey = " + preshared_key_full + "\n" +
 		"Endpoint = vpn.example.org:51080\n" +
-		"AllowedIPs = 0.0.0.0/0\n" +
-		"PersistentKeepalive = 15\n"
+		"AllowedIPs = 0.0.0.0/0\n"
+}
 
-	_, err := Parse(config)
-	if !errors.Is(err, Err_obfuscation_unsupported) {
-		t.Fatalf("err = %v, want Err_obfuscation_unsupported", err)
+// An AmneziaWG config parses, and its parameters reach the device as
+// device-level UAPI lines, before the first peer.
+func Test_an_amnezia_config_carries_its_parameters_to_the_device(t *testing.T) {
+	config, err := Parse(amnezia_config("I1 = <b 0xc0ffee>\n"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if errors.Is(err, Err_unsupported_directive) {
-		t.Fatalf("err = %v, must NOT also be Err_unsupported_directive", err)
+	want := []Obfuscation_param{{"jc", "4"}, {"jmin", "40"}, {"jmax", "70"}, {"s1", "15"}, {"h1", "1234567"}, {"i1", "<b 0xc0ffee>"}}
+	if !reflect.DeepEqual(config.Obfuscation, want) {
+		t.Fatalf("obfuscation = %v, want %v", config.Obfuscation, want)
+	}
+	uapi, err := config.Uapi_set([]netip.AddrPort{netip.MustParseAddrPort("203.0.113.5:51080")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jc, peer := strings.Index(uapi, "\njc=4\n"), strings.Index(uapi, "public_key=")
+	if jc < 0 || peer < 0 || jc > peer || !strings.Contains(uapi, "\ni1=<b 0xc0ffee>\n") {
+		t.Fatal("the AmneziaWG parameters are not device-level lines before the peer")
+	}
+}
+
+// A parameter of a newer AmneziaWG than the library speaks must be refused
+// with Err_obfuscation_unsupported and NOT Err_unsupported_directive:
+// stripping it would bring up a tunnel the node does not expect.
+func Test_a_newer_amnezia_parameter_is_refused_with_the_obfuscation_sentinel(t *testing.T) {
+	_, err := Parse(amnezia_config("S3 = 20\n"))
+	if !errors.Is(err, Err_obfuscation_unsupported) || errors.Is(err, Err_unsupported_directive) {
+		t.Fatalf("err = %v, want only Err_obfuscation_unsupported", err)
+	}
+	if !strings.Contains(err.Error(), "S3") {
+		t.Fatalf("err = %q does not name the key", err)
+	}
+}
+
+func Test_a_malformed_amnezia_parameter_is_refused(t *testing.T) {
+	for name, config := range map[string]string{
+		"not a number": amnezia_config("Jc = many\n"),
+		"twice":        amnezia_config("JC = 5\n"),
+		"in the peer":  amnezia_config("") + "S2 = 10\n",
+	} {
+		if _, err := Parse(config); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 

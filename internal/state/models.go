@@ -15,7 +15,10 @@ type State struct {
 	Last_protocol    string
 	Connect_on_start bool
 	Strategy         Strategy
-	Updated_at       time.Time
+	// Games are the catalog ids of the games the person wants carried
+	// through the tunnel, in the order they chose them.
+	Games      []string
+	Updated_at time.Time
 }
 
 // Strategy is what the person said the connection is for. The control

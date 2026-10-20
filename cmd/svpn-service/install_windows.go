@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"singularity-vpn-app/internal/platform/windows/divert"
 )
 
 const (
@@ -205,11 +207,35 @@ func uninstall() {
 
 	paths, _ := service_paths()
 	fmt.Printf("removed the service %s.\n", service_name)
+	if paths.root != "" {
+		remove_packet_driver(paths)
+	}
 	// The data is kept on purpose: the device token and the profile id are
 	// there, and uninstalling to reinstall is not a request to spend
 	// another of the account's profile slots.
 	if paths.root != "" {
 		fmt.Printf("kept %s -- it holds this machine's sign-in and its VPN profile; a reinstall picks them up again.\n", paths.root)
+	}
+}
+
+// remove_packet_driver takes the WinDivert driver off the machine if this
+// program installed it, and leaves one another program installed. The
+// service has stopped, so nothing of ours still holds it open. A failure
+// is a warning: the service itself is already gone.
+func remove_packet_driver(p paths) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "svpn-service uninstall: warning: locating this program to remove the WinDivert driver: %v\n", err)
+		return
+	}
+	removal, err := divert.New_driver(filepath.Join(p.root, "windivert.ours"), filepath.Dir(exe)).Remove()
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "svpn-service uninstall: warning: removing the WinDivert driver: %v\n", err)
+	case removal == divert.Removal_removed:
+		fmt.Println("removed the WinDivert packet driver.")
+	case removal == divert.Removal_foreign:
+		fmt.Println("left the WinDivert packet driver in place: another program installed it.")
 	}
 }
 

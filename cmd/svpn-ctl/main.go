@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"time"
 
 	"singularity-vpn-app/internal/ipc"
@@ -79,6 +81,11 @@ func main() {
 	case "events":
 		no_args(command, args)
 		run = run_events
+	case "games":
+		run = parse_games(args)
+	case "servers":
+		no_args(command, args)
+		run = run_servers
 	default:
 		usage()
 		os.Exit(exit_usage)
@@ -111,6 +118,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  svpn-ctl analyze                       probe what the network blocks, directly; needs the tunnel down")
 	fmt.Fprintln(os.Stderr, "  svpn-ctl analysis                      the last result, without probing")
 	fmt.Fprintln(os.Stderr, "  svpn-ctl events                        print events until Ctrl+C")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl servers                       the servers this account may be put on, with their ids")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl games                         the games carried through the tunnel")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl games <id>...                 carry only these games; a tunnel that is up is rebuilt")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl games --none                  carry the whole machine again")
 }
 
 func usage_error(format string, args ...any) {
@@ -192,6 +203,69 @@ func run_version(ctx context.Context, client *ipc.Client) error {
 		fmt.Printf("built:    %s\n", version.Built)
 	}
 	return nil
+}
+
+func run_servers(ctx context.Context, client *ipc.Client) error {
+	ctx, cancel := with_timeout(ctx)
+	defer cancel()
+	result, err := client.Servers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, server := range result.Servers {
+		state := "available"
+		if !server.Available {
+			state = "unavailable"
+		}
+		place := strings.Join(slices.DeleteFunc([]string{server.Country, server.City}, func(s string) bool { return s == "" }), " ")
+		fmt.Printf("%-38s %-24s %-16s %s\n", server.Node_id, server.Name, place, state)
+	}
+	return nil
+}
+
+// parse_games reads the games command: no arguments shows the choice, ids
+// replace it, --none clears it. The ids themselves are checked by the
+// service against its catalog.
+func parse_games(args []string) func(ctx context.Context, client *ipc.Client) error {
+	if len(args) == 0 {
+		return func(ctx context.Context, client *ipc.Client) error {
+			ctx, cancel := with_timeout(ctx)
+			defer cancel()
+			games, err := client.Games(ctx)
+			if err != nil {
+				return err
+			}
+			if len(games.Games) == 0 {
+				fmt.Println("no games chosen; the tunnel carries the whole machine.")
+				return nil
+			}
+			fmt.Println("games carried through the tunnel:", strings.Join(games.Games, " "))
+			return nil
+		}
+	}
+	ids := args
+	if len(args) == 1 && args[0] == "--none" {
+		ids = []string{}
+	} else {
+		for _, id := range args {
+			if strings.HasPrefix(id, "-") {
+				usage_error("games: unknown option %q", id)
+			}
+		}
+	}
+	return func(ctx context.Context, client *ipc.Client) error {
+		ctx, cancel := with_timeout(ctx)
+		defer cancel()
+		if err := client.Set_games(ctx, ipc.Games{Games: ids}); err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			fmt.Println("no games chosen; the tunnel carries the whole machine.")
+		} else {
+			fmt.Println("games carried through the tunnel:", strings.Join(ids, " "))
+		}
+		return nil
+	}
 }
 
 func run_analyze(ctx context.Context, client *ipc.Client) error {

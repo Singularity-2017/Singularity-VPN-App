@@ -52,5 +52,23 @@ func Outbound_ports_filter(ports []Port) (string, error) {
 	}
 	slices.Sort(terms)
 	terms = slices.Compact(terms)
-	return "outbound and !loopback and ip and (" + strings.Join(terms, " or ") + ")", nil
+	return "outbound and !loopback and ip and " + local_destinations + " and (" + strings.Join(terms, " or ") + ")", nil
+}
+
+// local_destinations keeps a game's traffic to its own network out of the
+// tunnel: LAN play, the router, a NAS, another VPN's peers in the private
+// and shared (CGNAT) ranges, link-local, and multicast and broadcast, none
+// of which the node could deliver. WinDivert does not negate a
+// parenthesised group, so it is written as "outside each range".
+var local_destinations = strings.Join([]string{
+	outside("10.0.0.0", "10.255.255.255"),
+	outside("100.64.0.0", "100.127.255.255"),
+	outside("169.254.0.0", "169.254.255.255"),
+	outside("172.16.0.0", "172.31.255.255"),
+	outside("192.168.0.0", "192.168.255.255"),
+	"ip.DstAddr < 224.0.0.0",
+}, " and ")
+
+func outside(first, last string) string {
+	return "(ip.DstAddr < " + first + " or ip.DstAddr > " + last + ")"
 }

@@ -39,14 +39,16 @@ func Test_a_first_connect_for_a_country_provisions_on_the_recommended_node(t *te
 	}
 }
 
-func Test_a_first_connect_with_no_goals_lets_the_server_pick(t *testing.T) {
+// Provisioning does not know what this build speaks, so even with no goal
+// the recommendation is asked first and its node is provisioned on.
+func Test_a_first_connect_with_no_goals_provisions_on_the_recommendation(t *testing.T) {
 	env := new_test_env(t)
 	manager := env.build()
 	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
 		t.Fatalf("Connect() error = %v", err)
 	}
-	if env.control_plane.recommend_calls != 0 || env.control_plane.create_profile_nodes[0] != "" {
-		t.Fatalf("recommend calls %d, provisioned on %v; want the server's own pick", env.control_plane.recommend_calls, env.control_plane.create_profile_nodes)
+	if env.control_plane.recommend_calls != 1 || env.control_plane.create_profile_nodes[0] != "de-01" {
+		t.Fatalf("recommend calls %d, provisioned on %v; want the recommended node", env.control_plane.recommend_calls, env.control_plane.create_profile_nodes)
 	}
 }
 

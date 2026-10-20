@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/url"
 	"time"
 )
@@ -265,7 +267,16 @@ func (c *Client) Servers(ctx context.Context, token string) ([]Server, error) {
 		Servers []Server `json:"servers"`
 	}
 	if err := c.do(ctx, "GET", "/api/v1/vpn/servers", nil, token, nil, &response, true); err != nil {
-		return nil, err
+		var api_err *Error
+		if !errors.As(err, &api_err) || api_err.Status != http.StatusNotFound {
+			return nil, err
+		}
+		// A control plane older than /vpn/servers lists the same nodes at
+		// /api/v1/nodes, in its own shape.
+		response.Servers, err = c.servers_from_nodes(ctx, token)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for _, s := range response.Servers {
 		if err := check_required("a server", required_field{"node_id", s.Node_id != ""}); err != nil {
@@ -273,6 +284,36 @@ func (c *Client) Servers(ctx context.Context, token string) ([]Server, error) {
 		}
 	}
 	return response.Servers, nil
+}
+
+// servers_from_nodes reads the older /api/v1/nodes listing. Only what a
+// Server carries is kept: the node's address in that listing is not this
+// client's business and is dropped here. A node is available unless the
+// control plane says it is offline.
+func (c *Client) servers_from_nodes(ctx context.Context, token string) ([]Server, error) {
+	var nodes []struct {
+		Id      string  `json:"id"`
+		Name    string  `json:"name"`
+		Country string  `json:"country"`
+		Status  string  `json:"status"`
+		Region  *string `json:"region"`
+		City    *string `json:"city"`
+	}
+	if err := c.do(ctx, "GET", "/api/v1/nodes", nil, token, nil, &nodes, true); err != nil {
+		return nil, err
+	}
+	servers := make([]Server, 0, len(nodes))
+	for _, n := range nodes {
+		server := Server{Node_id: n.Id, Name: n.Name, Country: n.Country, Available: n.Status != "offline"}
+		if n.Region != nil {
+			server.Region = *n.Region
+		}
+		if n.City != nil {
+			server.City = *n.City
+		}
+		servers = append(servers, server)
+	}
+	return servers, nil
 }
 
 // Reach_targets fetches the catalog of hosts to probe. A target without a

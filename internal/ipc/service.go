@@ -32,6 +32,9 @@ type Service interface {
 	Set_strategy(ctx context.Context, strategy Strategy) error
 	Servers(ctx context.Context) (Servers_result, error)
 
+	Games(ctx context.Context) (Games, error)
+	Set_games(ctx context.Context, games Games) error
+
 	Analyze(ctx context.Context) (Analysis_result, error)
 	Analysis(ctx context.Context) (Last_analysis, error)
 }

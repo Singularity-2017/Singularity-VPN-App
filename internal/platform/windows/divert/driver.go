@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // Service_name is the service WinDivert installs its driver as. Every
@@ -14,8 +16,9 @@ const Service_name = "WinDivert"
 
 // service_control is the part of the service control manager Driver uses.
 type service_control interface {
-	// exists says whether the WinDivert service is installed.
-	exists() (bool, error)
+	// image says whether the WinDivert service is installed and, if so,
+	// the driver file it loads.
+	image() (path string, exists bool, err error)
 	// stop_and_delete stops the driver and deletes its service, and
 	// fails if the driver is still loaded afterwards.
 	stop_and_delete() error
@@ -30,6 +33,31 @@ type Driver struct {
 	// marker is a file whose presence records that we installed the
 	// driver. It lives in the service's protected data directory.
 	marker string
+	// dir is where our WinDivert64.sys sits. A marker alone is not proof:
+	// our driver may have been deleted by hand and another program's
+	// installed since, and only the file the service loads tells them
+	// apart.
+	dir string
+}
+
+// exists says whether the WinDivert service is installed, and whether the
+// driver it loads is the file in our directory.
+func (d *Driver) exists() (exists, ours_file bool, err error) {
+	path, exists, err := d.scm.image()
+	if err != nil || !exists {
+		return false, false, err
+	}
+	return true, same_dir(path, d.dir), nil
+}
+
+// same_dir compares the directory of a service's driver path with dir.
+// The service manager may report the path in NT form, \??\C:\...
+func same_dir(path, dir string) bool {
+	for _, prefix := range []string{`\??\`, `\\?\`} {
+		path = strings.TrimPrefix(path, prefix)
+	}
+	path = strings.Trim(path, `"`)
+	return path != "" && dir != "" && strings.EqualFold(filepath.Clean(filepath.Dir(path)), filepath.Clean(dir))
 }
 
 // Removal is what Remove did.
@@ -53,12 +81,12 @@ const (
 // leaves a driver we will still remove rather than one we disown. It
 // reports whether the driver is (or is about to be) ours.
 func (d *Driver) Before_open() (bool, error) {
-	exists, err := d.scm.exists()
+	exists, ours_file, err := d.exists()
 	if err != nil {
 		return false, err
 	}
 	if exists {
-		return d.marked()
+		return d.owned(ours_file)
 	}
 	if err := os.WriteFile(d.marker, []byte(Service_name+" was installed by this program\n"), 0o600); err != nil {
 		return false, fmt.Errorf("divert: recording the driver as ours: %w", err)
@@ -77,7 +105,7 @@ func (d *Driver) Open(open func() error) (ours bool, err error) {
 		return false, err
 	}
 	if open_err := open(); open_err != nil {
-		if exists, err := d.scm.exists(); err == nil && !exists {
+		if exists, _, err := d.exists(); err == nil && !exists {
 			if err := d.unmark(); err != nil {
 				return false, errors.Join(open_err, err)
 			}
@@ -91,11 +119,11 @@ func (d *Driver) Open(open func() error) (ours bool, err error) {
 // be closed first; otherwise the driver cannot unload and Remove fails,
 // keeping the marker so the next attempt still knows the driver is ours.
 func (d *Driver) Remove() (Removal, error) {
-	exists, err := d.scm.exists()
+	exists, ours_file, err := d.exists()
 	if err != nil {
 		return Removal_absent, err
 	}
-	ours, err := d.marked()
+	ours, err := d.owned(ours_file)
 	if err != nil {
 		return Removal_absent, err
 	}
@@ -116,12 +144,27 @@ func (d *Driver) Remove() (Removal, error) {
 // State reports whether the driver is installed and, if so, whether it is
 // ours. It changes nothing.
 func (d *Driver) State() (exists, ours bool, err error) {
-	exists, err = d.scm.exists()
+	exists, ours_file, err := d.exists()
 	if err != nil || !exists {
 		return false, false, err
 	}
-	ours, err = d.marked()
+	ours, err = d.owned(ours_file)
 	return exists, ours, err
+}
+
+// owned decides ownership of an installed driver: marked, and loading our
+// file. A marker beside another program's driver is stale -- ours was
+// removed behind our back -- and is dropped so it can never claim that
+// driver later.
+func (d *Driver) owned(ours_file bool) (bool, error) {
+	marked, err := d.marked()
+	if err != nil || !marked {
+		return false, err
+	}
+	if !ours_file {
+		return false, d.unmark()
+	}
+	return true, nil
 }
 
 func (d *Driver) marked() (bool, error) {

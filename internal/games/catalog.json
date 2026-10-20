@@ -6,6 +6,18 @@
     "touchy_anticheat": false
   },
   {
+    "id": "cs2",
+    "name": "Counter-Strike 2",
+    "images": ["cs2.exe"],
+    "touchy_anticheat": false
+  },
+  {
+    "id": "dota2",
+    "name": "Dota 2",
+    "images": ["dota2.exe"],
+    "touchy_anticheat": false
+  },
+  {
     "id": "cod",
     "name": "Call of Duty",
     "images": [],

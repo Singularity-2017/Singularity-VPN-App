@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -23,6 +25,7 @@ import (
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/platform"
 	winplatform "singularity-vpn-app/internal/platform/windows"
+	"singularity-vpn-app/internal/platform/windows/divert"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/protocols/wireguard"
 	"singularity-vpn-app/internal/reach"
@@ -328,6 +331,27 @@ func serve(ctx context.Context, listener net.Listener, application *core.Applica
 	return err
 }
 
+// enable_games gives the adapter the WinDivert game router. The driver's
+// files sit beside this executable; the marker that records an installed
+// driver as ours lives in the protected data directory, so nobody but an
+// administrator can make the service delete another program's driver. In
+// games-only mode the tunnel carries the probe target too, or the probe
+// would measure the direct path.
+func enable_games(adapter *wireguard.Adapter, p paths, logger *slog.Logger) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	probe, err := netip.ParseAddrPort(probe_dial_target)
+	if err != nil {
+		return fmt.Errorf("the probe target %q is not an address: %w", probe_dial_target, err)
+	}
+	driver := divert.New_driver(filepath.Join(p.root, "windivert.ours"), filepath.Dir(exe))
+	router := divert.New_router(filepath.Dir(exe), driver, logger)
+	adapter.Enable_games(router, []netip.Prefix{netip.PrefixFrom(probe.Addr(), probe.Addr().BitLen())})
+	return nil
+}
+
 func build_application(p paths, logger *slog.Logger) (*core.Application, error) {
 	secrets, err := security.Open_file_store(p.secrets, security.New_dpapi_cipher())
 	if err != nil {
@@ -345,7 +369,10 @@ func build_application(p paths, logger *slog.Logger) (*core.Application, error) 
 	if err != nil {
 		return nil, err
 	}
-	registry, err := protocols.New_registry(adapter)
+	if err := enable_games(adapter, p, logger); err != nil {
+		return nil, err
+	}
+	registry, err := protocols.New_registry(adapter, wireguard.Amnezia{Adapter: adapter})
 	if err != nil {
 		return nil, err
 	}

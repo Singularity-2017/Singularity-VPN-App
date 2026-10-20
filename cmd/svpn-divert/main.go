@@ -82,7 +82,11 @@ func new_driver() (*divert.Driver, error) {
 	if _, err := os.Stat(dir); err != nil {
 		return nil, fmt.Errorf("%s is missing -- install the service first, it creates that directory with the right permissions: %w", dir, err)
 	}
-	return divert.New_driver(filepath.Join(dir, "windivert.ours")), nil
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return divert.New_driver(filepath.Join(dir, "windivert.ours"), filepath.Dir(exe)), nil
 }
 
 // open_sockets opens a socket-layer handle the way the service will, and

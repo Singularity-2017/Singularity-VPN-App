@@ -235,6 +235,9 @@ func new_fixture(t *testing.T) *fixture {
 	control_plane := &fake_control_plane{
 		login_token: "session-token",
 		device:      api.Device{Device_id: "device-1", Device_token: "device-token", Expires_at: time.Now().Add(time.Hour)},
+		// A real control plane always names a node and a protocol; a first
+		// connect asks it before provisioning.
+		recommendation: api.Recommendation{Node_id: "node-1", Protocol: "wireguard"},
 	}
 	protocol := &fake_protocol{name: "wireguard"}
 	registry, err := protocols.New_registry(protocol)

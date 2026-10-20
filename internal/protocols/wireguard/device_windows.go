@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
-	"golang.zx2c4.com/wireguard/conn"
-	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/tun"
+	"github.com/amnezia-vpn/amneziawg-go/conn"
+	"github.com/amnezia-vpn/amneziawg-go/device"
+	"github.com/amnezia-vpn/amneziawg-go/tun"
 
 	"singularity-vpn-app/internal/platform"
 )
@@ -31,18 +33,50 @@ type real_tunnel struct {
 // wireguard-go's verbose level logs handshake detail, which this process
 // must never print regardless of how tempting that is to turn on while
 // debugging a tunnel that will not come up.
-func New_windows_tunnel(name string, mtu int) (tunnel, error) {
+func New_windows_tunnel(name string, mtu int, wrap device_wrapper) (tunnel, error) {
 	tun_device, err := tun.CreateTUN(name, mtu)
 	if err != nil {
 		return nil, wrap_missing_wintun(err)
 	}
 	logger := device.NewLogger(device.LogLevelError, fmt.Sprintf("(%s) ", name))
-	dev := device.NewDevice(tun_device, conn.NewDefaultBind(), logger)
+	carried := tun_device
+	if wrap != nil {
+		carried = wrap(tun_device)
+	}
+	dev := device.NewDevice(carried, conn.NewDefaultBind(), logger)
 	return &real_tunnel{tun_device: tun_device, device: dev}, nil
 }
 
 func (t *real_tunnel) Set_config(uapi string) error {
 	return t.device.IpcSet(uapi)
+}
+
+// Stats reads the peer's counters from the device's UAPI. Only the three
+// keys below are looked at; every other line, the private key among them,
+// is skipped without being kept.
+func (t *real_tunnel) Stats() (Transport_stats, error) {
+	text, err := t.device.IpcGet()
+	if err != nil {
+		return Transport_stats{}, err
+	}
+	var stats Transport_stats
+	for _, line := range strings.Split(text, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "last_handshake_time_sec":
+			if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+				stats.Last_handshake = time.Unix(seconds, 0)
+			}
+		case "tx_bytes":
+			stats.Sent, _ = strconv.ParseUint(value, 10, 64)
+		case "rx_bytes":
+			stats.Received, _ = strconv.ParseUint(value, 10, 64)
+		}
+	}
+	return stats, nil
 }
 
 func (t *real_tunnel) Up() error {

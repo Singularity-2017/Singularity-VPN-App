@@ -10,9 +10,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amnezia-vpn/amneziawg-go/tun"
+
+	"singularity-vpn-app/internal/games"
 	"singularity-vpn-app/internal/platform"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/routing"
+	"singularity-vpn-app/internal/split"
 )
 
 // tunnel is the embedded wireguard-go device, behind the four things this
@@ -26,6 +30,17 @@ type tunnel interface {
 	// returns nothing; its wrapper always reports nil.
 	Close() error
 	Handle() platform.Tunnel_handle
+	// Stats is the peer's transport counters. The real device reads them
+	// from its UAPI and keeps nothing else of what that returns: the same
+	// text carries the private key.
+	Stats() (Transport_stats, error)
+}
+
+// Transport_stats is what the device knows about reaching its peer.
+type Transport_stats struct {
+	Last_handshake time.Time // zero: none yet
+	Sent           uint64
+	Received       uint64
 }
 
 // resolver turns the "host:port" a peer's Endpoint carries into an address.
@@ -43,7 +58,32 @@ type resolver interface {
 // stored dependency, because a tunnel exists only for the lifetime of one
 // connection: New_windows_tunnel is the real one, New_adapter's caller
 // supplies a fake in every test.
-type tunnel_factory func(name string, mtu int) (tunnel, error)
+//
+// wrap, when not nil, is applied to the tun device before wireguard-go is
+// given it: games-only mode puts split_tun between them.
+type tunnel_factory func(name string, mtu int, wrap device_wrapper) (tunnel, error)
+
+type device_wrapper func(tun.Device) tun.Device
+
+// Game_router is the platform's half of games-only mode: it finds the
+// selected games' processes, captures their outbound packets and puts the
+// replies back on the interface they came from. The Windows one sits on
+// the WinDivert driver.
+type Game_router interface {
+	// Start captures the games' packets. Each is passed through splitter
+	// and, when it took it, handed to inject; one it did not take goes
+	// out unchanged. Start returns once capture is running.
+	Start(selected []games.Game, splitter *split.Splitter, inject func(packet []byte) bool) error
+	// Deliver injects a reply splitter has already rewritten, inbound on
+	// origin's interface. It must not keep packet.
+	Deliver(packet []byte, origin split.Origin) bool
+	// Stop ends capture and closes the driver's handles. The driver stays
+	// installed; Remove_driver takes it away.
+	Stop() error
+	// Remove_driver takes the packet driver off the machine if this
+	// program installed it.
+	Remove_driver() error
+}
 
 // Err_already_connected is what Connect returns when the adapter already
 // has a tunnel up. Connect must not touch that tunnel to discover this: the
@@ -74,12 +114,29 @@ type Adapter struct {
 	network    platform.Network
 	clock      func() time.Time
 
+	// router and probe_routes are set by Enable_games; without a router
+	// a games-only connect is refused rather than silently carrying the
+	// whole machine.
+	router       Game_router
+	probe_routes []netip.Prefix
+
 	mu      sync.Mutex
 	running bool
 	since   time.Time
 	detail  string
 	handle  platform.Tunnel_handle
 	device  tunnel
+	routing bool // the router is capturing for this tunnel
+}
+
+// Enable_games gives the adapter the platform's game router and the
+// destinations the service itself sends through the tunnel in games-only
+// mode -- the probe target, without which the probe would measure the
+// direct path and call any tunnel healthy. Call it before the first
+// Connect.
+func (a *Adapter) Enable_games(router Game_router, probe_routes []netip.Prefix) {
+	a.router = router
+	a.probe_routes = probe_routes
 }
 
 // New_adapter builds a WireGuard Adapter over the three seams above plus
@@ -108,6 +165,20 @@ func New_adapter(name string, new_tunnel tunnel_factory, resolve resolver, netwo
 // Name returns "wireguard", the name this adapter is registered under.
 func (a *Adapter) Name() string {
 	return "wireguard"
+}
+
+// Amnezia is the same adapter registered under "amneziawg". The library is
+// amneziawg-go, which speaks plain WireGuard when a config carries no
+// obfuscation parameters and AmneziaWG when it does, so one device, one
+// router and one running state serve both names -- and only one tunnel can
+// ever be up, whichever name brought it.
+type Amnezia struct {
+	*Adapter
+}
+
+// Name returns "amneziawg".
+func (Amnezia) Name() string {
+	return "amneziawg"
 }
 
 // Connect parses config, resolves the peer's endpoint, brings up a tunnel
@@ -151,7 +222,45 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 		return fmt.Errorf("wireguard: resolving peer endpoint: %w", err)
 	}
 
-	device, err := a.new_tunnel(a.name, parsed.Mtu)
+	a.detail = ""
+	if config.Split.Driver_forbidden && a.router != nil {
+		// A game whose anti-cheat reacts to the driver is selected: the
+		// driver goes, and the tunnel carries the whole machine. A
+		// failure here must not keep the person offline, so it is noted
+		// in the detail rather than returned.
+		if err := a.router.Remove_driver(); err != nil {
+			a.detail = fmt.Sprintf("the packet driver could not be removed: %v", err)
+		}
+	}
+
+	games_only := len(config.Split.Games) > 0
+	var splitter *split.Splitter
+	var wrapped *split_tun
+	var wrap device_wrapper
+	if games_only {
+		if a.router == nil {
+			return fmt.Errorf("wireguard: games-only mode needs the packet driver, and this build has none")
+		}
+		tunnel_address, ok := first_ipv4(parsed.Addresses)
+		if !ok {
+			return fmt.Errorf("wireguard: games-only mode needs an IPv4 tunnel address, and the config has none")
+		}
+		splitter = split.New_splitter(tunnel_address, parsed.Mtu)
+		router := a.router
+		wrap = func(inner tun.Device) tun.Device {
+			wrapped = new_split_tun(inner, func(packet []byte) bool {
+				origin, ok := splitter.Inbound(packet)
+				if !ok {
+					return false
+				}
+				router.Deliver(packet, origin)
+				return true
+			})
+			return wrapped
+		}
+	}
+
+	device, err := a.new_tunnel(a.name, parsed.Mtu, wrap)
 	if err != nil {
 		return fmt.Errorf("wireguard: creating tunnel device: %w", err)
 	}
@@ -174,6 +283,7 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 		Dns:       parsed.Dns,
 		Mtu:       parsed.Mtu,
 		Endpoint:  endpoint,
+		Only:      a.only_routes(games_only),
 	})
 	if err != nil {
 		return a.unwind(ctx, device, handle, err)
@@ -187,12 +297,45 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 		return a.unwind(ctx, device, handle, fmt.Errorf("bringing tunnel up: %w", err))
 	}
 
+	if games_only {
+		if wrapped == nil {
+			return a.unwind(ctx, device, handle, errors.New("the tunnel device was built without the games-only wrapper"))
+		}
+		if err := a.router.Start(config.Split.Games, splitter, wrapped.Inject); err != nil {
+			return a.unwind(ctx, device, handle, fmt.Errorf("starting the game router: %w", err))
+		}
+	}
+
 	a.device = device
 	a.handle = handle
 	a.running = true
+	a.routing = games_only
 	a.since = a.clock()
-	a.detail = fmt.Sprintf("connected, %d peer(s)", len(parsed.Peers))
+	switch {
+	case games_only:
+		a.detail = fmt.Sprintf("connected, %d peer(s), games only (%d)", len(parsed.Peers), len(config.Split.Games))
+	case a.detail == "":
+		a.detail = fmt.Sprintf("connected, %d peer(s)", len(parsed.Peers))
+	}
 	return nil
+}
+
+// only_routes is routing.Tunnel.Only for this connect: nil for the whole
+// machine, the probe routes (never nil) in games-only mode.
+func (a *Adapter) only_routes(games_only bool) []netip.Prefix {
+	if !games_only {
+		return nil
+	}
+	return append([]netip.Prefix{}, a.probe_routes...)
+}
+
+func first_ipv4(prefixes []netip.Prefix) (netip.Addr, bool) {
+	for _, prefix := range prefixes {
+		if prefix.Addr().Is4() {
+			return prefix.Addr(), true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 // unwind tears down what Connect built from step 3 onward: platform.Network
@@ -220,10 +363,19 @@ func (a *Adapter) Disconnect(ctx context.Context) error {
 		return nil
 	}
 
+	var stop_err error
+	if a.routing {
+		// Capture stops before the device closes, so no game packet is
+		// handed to a tunnel that is going away.
+		if err := a.router.Stop(); err != nil {
+			stop_err = fmt.Errorf("wireguard: stopping the game router: %w", err)
+		}
+	}
 	clear_err := a.network.Clear(ctx, a.handle)
 	close_err := a.device.Close()
 
 	a.running = false
+	a.routing = false
 	a.device = nil
 	a.handle = 0
 	a.detail = ""
@@ -239,7 +391,7 @@ func (a *Adapter) Disconnect(ctx context.Context) error {
 	if close_err != nil {
 		close_err = fmt.Errorf("wireguard: closing tunnel device: %w", close_err)
 	}
-	return errors.Join(clear_err, close_err)
+	return errors.Join(stop_err, clear_err, close_err)
 }
 
 // Status reports whether the tunnel is running, when it came up, and a
@@ -249,6 +401,29 @@ func (a *Adapter) Status() protocols.Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return protocols.Status{Running: a.running, Since: a.since, Detail: a.detail}
+}
+
+// Transport_report implements protocols.Transport_reporter: whether a
+// handshake with the node happened and how many bytes went each way.
+func (a *Adapter) Transport_report() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.device == nil {
+		return ""
+	}
+	stats, err := a.device.Stats()
+	if err != nil {
+		return ""
+	}
+	return transport_report(stats, a.clock())
+}
+
+func transport_report(stats Transport_stats, now time.Time) string {
+	if stats.Last_handshake.IsZero() {
+		return fmt.Sprintf("no handshake with the node; sent %d bytes, received %d", stats.Sent, stats.Received)
+	}
+	return fmt.Sprintf("handshake %s ago; sent %d bytes, received %d",
+		now.Sub(stats.Last_handshake).Round(time.Second), stats.Sent, stats.Received)
 }
 
 // Repin implements protocols.Repinner: it moves the endpoint host route onto

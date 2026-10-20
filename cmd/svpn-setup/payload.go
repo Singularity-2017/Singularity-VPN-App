@@ -15,10 +15,15 @@ const (
 	ctl_exe     = "svpn-ctl.exe"
 	swap_exe    = "svpn-swap.exe"
 	wintun_dll  = "wintun.dll"
-	uninstaller = "uninstall.exe"
+	// The packet driver for games-only mode, shipped unmodified under the
+	// LGPLv3 with its licence beside it.
+	windivert_dll     = "WinDivert.dll"
+	windivert_sys     = "WinDivert64.sys"
+	windivert_licence = "WinDivert-LICENSE.txt"
+	uninstaller       = "uninstall.exe"
 )
 
-var payload_files = []string{service_exe, window_exe, ctl_exe, swap_exe, wintun_dll}
+var payload_files = []string{service_exe, window_exe, ctl_exe, swap_exe, wintun_dll, windivert_dll, windivert_sys, windivert_licence}
 
 // payload_contents reads every payload file from source, refusing a payload
 // that lacks any of them by name: an installation without wintun.dll

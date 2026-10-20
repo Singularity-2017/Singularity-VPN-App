@@ -25,6 +25,7 @@ type fake_service struct {
 	status_err    error
 
 	strategy         Strategy
+	games            Games
 	set_strategy_err error
 	servers          Servers_result
 	servers_err      error
@@ -127,6 +128,15 @@ func (f *fake_service) Strategy(ctx context.Context) (Strategy, error) {
 func (f *fake_service) Set_strategy(ctx context.Context, strategy Strategy) error {
 	f.strategy = strategy
 	return f.set_strategy_err
+}
+
+func (f *fake_service) Games(ctx context.Context) (Games, error) {
+	return f.games, nil
+}
+
+func (f *fake_service) Set_games(ctx context.Context, games Games) error {
+	f.games = games
+	return nil
 }
 
 func (f *fake_service) Servers(ctx context.Context) (Servers_result, error) {

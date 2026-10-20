@@ -7,7 +7,14 @@ func Test_outbound_ports_filter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "outbound and !loopback and ip and ((tcp and tcp.SrcPort == 50000) or (udp and udp.SrcPort == 7086))"
+	want := "outbound and !loopback and ip and " +
+		"(ip.DstAddr < 10.0.0.0 or ip.DstAddr > 10.255.255.255) and " +
+		"(ip.DstAddr < 100.64.0.0 or ip.DstAddr > 100.127.255.255) and " +
+		"(ip.DstAddr < 169.254.0.0 or ip.DstAddr > 169.254.255.255) and " +
+		"(ip.DstAddr < 172.16.0.0 or ip.DstAddr > 172.31.255.255) and " +
+		"(ip.DstAddr < 192.168.0.0 or ip.DstAddr > 192.168.255.255) and " +
+		"ip.DstAddr < 224.0.0.0 and " +
+		"((tcp and tcp.SrcPort == 50000) or (udp and udp.SrcPort == 7086))"
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}

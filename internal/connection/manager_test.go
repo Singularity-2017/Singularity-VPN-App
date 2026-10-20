@@ -45,6 +45,9 @@ type fake_control_plane struct {
 	recommend_requests []api.Recommend_request
 
 	create_profile_calls int
+	// asked_protocols is every protocol a profile or config was asked
+	// for, in order.
+	asked_protocols      []string
 	create_profile_nodes []string
 
 	create_profile_result api.Profile
@@ -65,12 +68,14 @@ func (f *fake_control_plane) Recommend(ctx context.Context, token string, reques
 func (f *fake_control_plane) Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error) {
 	f.create_profile_calls++
 	f.create_profile_nodes = append(f.create_profile_nodes, node_id)
+	f.asked_protocols = append(f.asked_protocols, protocol)
 	return f.create_profile_result, f.create_profile_err
 }
 
 func (f *fake_control_plane) Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (api.Vpn_config, error) {
 	index := f.fetch_config_calls
 	f.fetch_config_calls++
+	f.asked_protocols = append(f.asked_protocols, protocol)
 	if index < len(f.fetch_config_sequence) {
 		response := f.fetch_config_sequence[index]
 		return response.config, response.err

@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
+	"singularity-vpn-app/internal/games"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/recovery"
 	"singularity-vpn-app/internal/state"
@@ -451,10 +455,76 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 	if err != nil {
 		return recovery.Target{}, classify_control_plane_error("recommend", err)
 	}
-	m.alternatives = m.pinned_to_node(alternatives_from(recommendation.Alternatives))
+	target, fault := m.spoken_target(recommendation)
+	if fault != nil {
+		return recovery.Target{}, fault
+	}
+	m.alternatives = m.spoken(m.pinned_to_node(alternatives_from(recommendation.Alternatives)))
 	m.recommended = recommendation
 	m.has_recommended = true
-	return recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}, nil
+	return target, nil
+}
+
+// spoken_target is the recommendation if this build has an adapter for its
+// protocol, otherwise the first of its alternatives that this build can
+// speak and that the control plane has not seen freeze on this network.
+// The control plane recommends by what reaches the node from here -- on a
+// path that throttles plain WireGuard that is a protocol this build may not
+// have yet -- and it cannot be told what the client speaks. Choosing among
+// what it offered keeps the choice its own. An alternative it reports as
+// frozen connects and then stops passing traffic; bringing it up would only
+// end in a failed verification, so it is refused here with the reason.
+func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Target, *Fault) {
+	states := make([]string, 0, len(recommendation.Alternatives))
+	for _, alt := range recommendation.Alternatives {
+		states = append(states, alt.Protocol+"@"+alt.Node+"="+alt.State)
+	}
+	m.logger.Info("control plane recommendation", "node_id", recommendation.Node_id,
+		"protocol", recommendation.Protocol, "reason", recommendation.Reason, "alternatives", strings.Join(states, " "))
+
+	recommended := recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}
+	if len(m.spoken(m.pinned_to_node([]recovery.Target{recommended}))) == 1 {
+		return recommended, nil
+	}
+	frozen := []string{}
+	for _, alt := range recommendation.Alternatives {
+		target := recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol}
+		if len(m.spoken(m.pinned_to_node([]recovery.Target{target}))) == 0 {
+			continue
+		}
+		if alt.State == state_frozen {
+			frozen = append(frozen, alt.Protocol)
+			continue
+		}
+		m.logger.Info("using an offered alternative this build speaks", "node_id", target.Node_id, "protocol", target.Protocol, "state", alt.State)
+		return target, nil
+	}
+	if len(frozen) > 0 {
+		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
+			Err: fmt.Errorf("connection: the control plane recommends %s for this network and has seen %s freeze on it (it connects, then stops passing traffic); this build speaks no protocol that gets through yet",
+				recommendation.Protocol, strings.Join(slices.Compact(frozen), ", "))}
+	}
+	names := []string{recommendation.Protocol}
+	for _, alt := range recommendation.Alternatives {
+		names = append(names, alt.Protocol)
+	}
+	return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
+		Err: fmt.Errorf("connection: the control plane offered %s, and this build speaks none of them", strings.Join(slices.Compact(names), ", "))}
+}
+
+// state_frozen is the control plane's reach verdict for a protocol that
+// connects from this network and then stops passing traffic.
+const state_frozen = "frozen"
+
+// spoken keeps the targets whose protocol this build has an adapter for.
+func (m *Manager) spoken(targets []recovery.Target) []recovery.Target {
+	kept := targets[:0:0]
+	for _, target := range targets {
+		if _, err := m.protocols.Get(target.Protocol); err == nil {
+			kept = append(kept, target)
+		}
+	}
+	return kept
 }
 
 // recommend_request is what the control plane is asked for: the stored
@@ -473,15 +543,16 @@ func (m *Manager) recommend_request() api.Recommend_request {
 
 // create_profile provisions a new client_id. Manual mode passes the
 // person's chosen node and protocol through to Create_profile; auto mode
-// leaves both empty so the server picks, matching api.Client.Create_profile
-// -- unless a strategy is set, which the server's own pick at provisioning
-// would ignore: then the recommendation is asked first and its node and
-// protocol are the ones provisioned with.
+// asks the recommendation first and provisions with its node and a
+// protocol this build speaks. Leaving both empty for the server to pick
+// was the earlier rule, and it broke where the server's pick was a
+// protocol this build has no adapter for: provisioning does not know what
+// the client speaks, and it ignores a strategy too.
 func (m *Manager) create_profile(ctx context.Context, token string, request Connect_request) (recovery.Target, api.Vpn_config, *Fault) {
 	protocol, node_id := "", ""
 	if request.Mode == Mode_manual {
 		protocol, node_id = request.Protocol, request.Node_id
-	} else if m.local_state.Strategy != (state.Strategy{}) {
+	} else {
 		target, fault := m.choose_target(ctx, token, request)
 		if fault != nil {
 			return recovery.Target{}, api.Vpn_config{}, fault
@@ -542,7 +613,7 @@ func (m *Manager) establish(ctx context.Context, target recovery.Target, config 
 		return nil, classify_protocol_lookup_error("connect", err)
 	}
 
-	connect_config := protocols.Connection_config{Node_id: target.Node_id, Protocol: target.Protocol, Data: []byte(config.Config)}
+	connect_config := m.connection_config(target, config)
 
 	connect_ctx := ctx
 	var cancel context.CancelFunc
@@ -558,6 +629,15 @@ func (m *Manager) establish(ctx context.Context, target recovery.Target, config 
 	}
 
 	if err := diagnostics.Verify(ctx, m.prober); err != nil {
+		// Whether the transport reached the node at all is the first
+		// thing anyone asks of a tunnel that is up and carries nothing;
+		// read it before the tunnel is taken down.
+		if reporter, ok := protocol.(protocols.Transport_reporter); ok {
+			if report := reporter.Transport_report(); report != "" {
+				m.logger.Warn("verification failed", "node_id", target.Node_id, "protocol", target.Protocol, "transport", report)
+				err = fmt.Errorf("%w (%s)", err, report)
+			}
+		}
 		_ = protocol.Disconnect(ctx)
 		return nil, classify_verify_error("connect", err)
 	}
@@ -601,7 +681,7 @@ func (m *Manager) settle_connected(ctx context.Context, now time.Time, target re
 
 	m.protocol_handle = protocol
 	m.current = target
-	m.current_config = protocols.Connection_config{Node_id: target.Node_id, Protocol: target.Protocol, Data: []byte(config.Config)}
+	m.current_config = m.connection_config(target, config)
 	m.set_session(session, true)
 	m.baseline = diagnostics.Baseline{}
 	m.degraded_since_set = false
@@ -679,6 +759,105 @@ func (m *Manager) Set_strategy(strategy state.Strategy) error {
 	}
 	m.local_state = local
 	return nil
+}
+
+// connection_config is what a protocol is handed for target: the node's
+// config and what the tunnel is to carry.
+func (m *Manager) connection_config(target recovery.Target, config api.Vpn_config) protocols.Connection_config {
+	return protocols.Connection_config{
+		Node_id:  target.Node_id,
+		Protocol: target.Protocol,
+		Data:     []byte(config.Config),
+		Split:    split_for(m.local_state),
+	}
+}
+
+// split_for decides what the tunnel carries. Games chosen alone put only
+// those games through it. A goal that is about the whole machine --
+// anonymity, or getting past blocks -- keeps the whole machine in the
+// tunnel, games included: a browser left outside would defeat it. A game
+// whose anti-cheat reacts to the packet driver does the same and takes the
+// driver off the machine. A selection the catalog cannot read falls back
+// to the whole machine rather than to nothing.
+func split_for(local state.State) protocols.Split {
+	if len(local.Games) == 0 {
+		return protocols.Split{}
+	}
+	catalog, err := games.Load_catalog()
+	if err != nil {
+		return protocols.Split{}
+	}
+	plan, err := games.Plan_for(local.Games, catalog)
+	if err != nil {
+		return protocols.Split{}
+	}
+	if !plan.Driver {
+		return protocols.Split{Driver_forbidden: true}
+	}
+	if local.Strategy.Anonymity != "" || local.Strategy.Bypass {
+		return protocols.Split{}
+	}
+	return protocols.Split{Games: plan.Per_process}
+}
+
+// Set_games records which games the person wants carried. An id the
+// catalog does not know is refused before anything is saved.
+func (m *Manager) Set_games(ids []string) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	catalog, err := games.Load_catalog()
+	if err != nil {
+		return err
+	}
+	if _, err := games.Plan_for(ids, catalog); err != nil {
+		return &Fault{Kind: Fault_configuration, Op: "set_games", Err: err}
+	}
+	local, err := m.store.Load()
+	if err != nil {
+		return err
+	}
+	local.Games = slices.Clone(ids)
+	if err := m.store.Save(local); err != nil {
+		return err
+	}
+	m.local_state = local
+	return nil
+}
+
+// Games reports what Set_games last recorded. Like Strategy, it does not
+// wait behind a connect.
+func (m *Manager) Games() ([]string, error) {
+	local, err := m.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	return local.Games, nil
+}
+
+// Apply_games rebuilds a tunnel that is up when what it carries has
+// changed -- the same node, the same config, a different split. The mode
+// cannot change under a running tunnel: games-only has no default route
+// and a wrapped device, the whole machine has both. A rebuild that does
+// not come back is handed to recovery like any other lost tunnel.
+func (m *Manager) Apply_games(ctx context.Context) error {
+	m.op_mu.Lock()
+	defer m.op_mu.Unlock()
+
+	current := m.get_state()
+	if current != State_connected && current != State_degraded {
+		return nil
+	}
+	split := split_for(m.local_state)
+	if reflect.DeepEqual(split, m.current_config.Split) {
+		return nil
+	}
+	m.current_config.Split = split
+	if m.retry_current(ctx) {
+		return nil
+	}
+	m.handle_lost(ctx, m.now())
+	return &Fault{Kind: Fault_protocol_connection, Op: "apply_games", Err: errors.New("connection: the tunnel did not come back after changing what it carries")}
 }
 
 // Strategy reports what Set_strategy last recorded.

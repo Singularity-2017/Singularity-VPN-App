@@ -268,3 +268,38 @@ func Test_a_tunnel_whose_endpoint_was_never_resolved_is_refused(t *testing.T) {
 		}
 	}
 }
+
+func Test_games_only_routes_just_what_it_names_and_keeps_the_machines_dns(t *testing.T) {
+	plan, err := Plan_for(Tunnel{
+		Addresses: []netip.Prefix{prefix(t, "10.66.0.2/32")},
+		Allowed:   []netip.Prefix{prefix(t, "0.0.0.0/0"), prefix(t, "::/0")},
+		Dns:       []netip.Addr{addr(t, "10.66.0.1")},
+		Mtu:       1420,
+		Endpoint:  addr_port(t, "198.51.100.7:51820"),
+		Only:      []netip.Prefix{prefix(t, "1.1.1.1/32")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Plan{
+		Addresses: []netip.Prefix{prefix(t, "10.66.0.2/32")},
+		Routes:    []Route{{Destination: prefix(t, "1.1.1.1/32"), Through_tunnel: true}},
+		Mtu:       1420,
+	}
+	if !reflect.DeepEqual(plan, want) {
+		t.Fatalf("plan = %+v\nwant   %+v", plan, want)
+	}
+}
+
+func Test_games_only_with_nothing_named_routes_nothing(t *testing.T) {
+	plan, err := Plan_for(Tunnel{
+		Addresses: []netip.Prefix{prefix(t, "10.66.0.2/32")},
+		Allowed:   []netip.Prefix{prefix(t, "0.0.0.0/0")},
+		Mtu:       1420,
+		Endpoint:  addr_port(t, "198.51.100.7:51820"),
+		Only:      []netip.Prefix{},
+	})
+	if err != nil || len(plan.Routes) != 0 || plan.Full_tunnel {
+		t.Fatalf("plan = %+v, %v; want no routes", plan, err)
+	}
+}

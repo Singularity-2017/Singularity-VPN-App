@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func Test_missing_file_returns_the_zero_state(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load on a missing file returned an error: %v", err)
 	}
-	if got != (State{}) {
+	if !reflect.DeepEqual(got, State{}) {
 		t.Fatalf("Load on a missing file returned %+v, want the zero value", got)
 	}
 }
@@ -72,7 +73,7 @@ func Test_corrupt_file_returns_err_corrupt(t *testing.T) {
 	if !errors.Is(err, Err_corrupt) {
 		t.Fatalf("Load on a corrupt file returned %v, want Err_corrupt", err)
 	}
-	if got != (State{}) {
+	if !reflect.DeepEqual(got, State{}) {
 		t.Fatalf("Load on a corrupt file returned %+v, want the zero value", got)
 	}
 
@@ -97,7 +98,7 @@ func Test_future_version_returns_err_future_version(t *testing.T) {
 	if !errors.Is(err, Err_future_version) {
 		t.Fatalf("Load on a future-version file returned %v, want Err_future_version", err)
 	}
-	if got != (State{}) {
+	if !reflect.DeepEqual(got, State{}) {
 		t.Fatalf("Load on a future-version file returned %+v, want the zero value", got)
 	}
 }

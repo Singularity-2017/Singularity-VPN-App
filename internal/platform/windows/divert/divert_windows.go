@@ -94,6 +94,13 @@ func (a *Address) Set_outbound(outbound bool) {
 	}
 }
 
+// Set_checksums_valid marks the IPv4, TCP and UDP checksums as computed
+// (bits 21-23), for a packet this program built or rewrote with correct
+// sums.
+func (a *Address) Set_checksums_valid() {
+	a.bits |= 1<<21 | 1<<22 | 1<<23
+}
+
 // Interface is the network layer's interface and sub-interface index.
 func (a *Address) Interface() (index, sub_index uint32) {
 	return binary.LittleEndian.Uint32(a.union[0:4]), binary.LittleEndian.Uint32(a.union[4:8])
@@ -254,6 +261,18 @@ func (h *Handle) Shutdown() error {
 	const shutdown_both = 3
 	if ok, _, err := h.library.shutdown.Call(h.handle, shutdown_both); ok == 0 {
 		return fmt.Errorf("divert: shutting down: %w", err)
+	}
+	return nil
+}
+
+// Shutdown_receive stops new packets being queued to the handle while
+// those already queued can still be received; Recv fails with
+// ERROR_NO_DATA once they are gone. A capture handle being replaced is
+// retired this way, so no packet it already took is lost.
+func (h *Handle) Shutdown_receive() error {
+	const shutdown_recv = 1
+	if ok, _, err := h.library.shutdown.Call(h.handle, shutdown_recv); ok == 0 {
+		return fmt.Errorf("divert: shutting down receive: %w", err)
 	}
 	return nil
 }

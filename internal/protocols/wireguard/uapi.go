@@ -34,6 +34,11 @@ func (t Tunnel_config) Uapi_set(endpoints []netip.AddrPort) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%s\n", t.Private_key.Hex())
 	b.WriteString("replace_peers=true\n")
+	// AmneziaWG parameters are device-level lines and so come before the
+	// first public_key; amneziawg-go reads them under the same names.
+	for _, param := range t.Obfuscation {
+		fmt.Fprintf(&b, "%s=%s\n", param.Key, param.Value)
+	}
 
 	for i, peer := range t.Peers {
 		fmt.Fprintf(&b, "public_key=%s\n", peer.Public_key.Hex())

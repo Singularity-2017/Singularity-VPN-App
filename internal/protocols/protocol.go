@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"singularity-vpn-app/internal/games"
 )
 
 // Connection_config is what a protocol needs to bring up a tunnel. Data is
@@ -14,6 +16,19 @@ type Connection_config struct {
 	Node_id  string
 	Protocol string
 	Data     []byte
+	Split    Split
+}
+
+// Split says what the tunnel carries. The zero value is the whole machine,
+// with the packet driver left as it is.
+type Split struct {
+	// Games, when not empty, puts the tunnel in games-only mode: only these
+	// games' processes go through it, everything else goes direct.
+	Games []games.Game
+	// Driver_forbidden says a selected game's anti-cheat reacts to the
+	// packet driver: it must be taken off the machine, and the tunnel
+	// carries the whole machine instead.
+	Driver_forbidden bool
 }
 
 // String prints the node, the protocol and the length of Data, and nothing
@@ -46,6 +61,15 @@ type Protocol interface {
 // the tunnel being torn down. Repin with no tunnel up returns nil.
 type Repinner interface {
 	Repin(ctx context.Context) error
+}
+
+// Transport_reporter is implemented by a protocol that can say whether its
+// transport reached the far end at all -- a handshake, bytes each way --
+// so a failed verification can tell "nothing reaches the node" from "the
+// node answers but traffic does not get through". The report names no
+// key, no address and nothing else secret.
+type Transport_reporter interface {
+	Transport_report() string
 }
 
 // Manager hands out a Protocol by name, and lists what is available.

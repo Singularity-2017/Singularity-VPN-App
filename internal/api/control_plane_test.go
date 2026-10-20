@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -302,5 +303,75 @@ func Test_mint_device_token_is_never_retried(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("fake was called %d times, want exactly 1 -- a retry here leaves a live token nobody holds", got)
+	}
+}
+
+// The control plane sits behind a reverse proxy that mounts it under a
+// path prefix. A base URL carrying that prefix must keep it in every
+// request; a request that loses it reaches the proxy's own 404 page.
+func Test_a_base_url_path_prefix_is_kept(t *testing.T) {
+	var got_path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got_path = r.URL.Path
+		write_success(w, `{"token":"tok"}`)
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Base_url: server.URL + "/vpn", Sleep: no_sleep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Login(context.Background(), "u", "p"); err != nil {
+		t.Fatal(err)
+	}
+	if got_path != "/vpn/api/v1/auth/login" {
+		t.Fatalf("request path = %q; want the prefix kept", got_path)
+	}
+}
+
+// What a proxy answers for a path it does not route: an HTML page. The
+// error must say which status and what kind of body came back.
+func Test_an_html_page_instead_of_the_api_is_named_as_such(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<html><head><title>404 Not Found</title></head></html>"))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Base_url: server.URL, Sleep: no_sleep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Login(context.Background(), "u", "p")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 404") || !strings.Contains(err.Error(), "text/html") {
+		t.Fatalf("error = %v; want it to name HTTP 404 and text/html", err)
+	}
+}
+
+// A control plane older than /vpn/servers lists its nodes at /api/v1/nodes.
+// The node's address in that listing is not carried over.
+func Test_servers_fall_back_to_the_older_node_listing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/vpn/servers":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"error":{"code":"NOT_FOUND","message":"not found"}}`))
+		case "/api/v1/nodes":
+			write_success(w, `[{"id":"n-1","ip":"192.0.2.9","name":"Germany","country":"DE","status":"online","city":"Frankfurt"},{"id":"n-2","name":"Old","country":"DE","status":"offline"}]`)
+		}
+	}))
+	defer server.Close()
+	client, err := New(Config{Base_url: server.URL, Sleep: no_sleep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Servers(context.Background(), "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != (Server{Node_id: "n-1", Name: "Germany", Country: "DE", City: "Frankfurt", Available: true}) || got[1].Available {
+		t.Fatalf("servers = %+v", got)
 	}
 }

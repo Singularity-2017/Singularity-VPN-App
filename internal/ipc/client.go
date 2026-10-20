@@ -169,6 +169,23 @@ func (c *Client) Set_strategy(ctx context.Context, strategy Strategy) error {
 	return decode_result(resp, nil)
 }
 
+func (c *Client) Games(ctx context.Context) (Games, error) {
+	var result Games
+	resp, err := c.call(ctx, Command_games, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Set_games(ctx context.Context, games Games) error {
+	resp, err := c.call(ctx, Command_set_games, games)
+	if err != nil {
+		return err
+	}
+	return decode_result(resp, nil)
+}
+
 func (c *Client) Servers(ctx context.Context) (Servers_result, error) {
 	var result Servers_result
 	resp, err := c.call(ctx, Command_servers, nil)

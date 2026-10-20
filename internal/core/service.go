@@ -316,7 +316,38 @@ func (a *Application) Set_strategy(ctx context.Context, strategy ipc.Strategy) e
 	}); err != nil {
 		return map_error(err)
 	}
-	return map_error(a.manager.Apply_strategy(ctx))
+	if err := a.manager.Apply_strategy(ctx); err != nil {
+		return map_error(err)
+	}
+	// A goal about the whole machine -- anonymity, getting past blocks --
+	// moves a games-only tunnel to carrying everything, and turning it off
+	// moves it back. Apply_strategy only changes the node.
+	return map_error(a.manager.Apply_games(ctx))
+}
+
+// Games answers Command_games: the games carried through the tunnel, as
+// last recorded.
+func (a *Application) Games(ctx context.Context) (ipc.Games, error) {
+	ids, err := a.manager.Games()
+	if err != nil {
+		return ipc.Games{}, map_error(err)
+	}
+	return ipc.Games{Games: append([]string{}, ids...)}, nil
+}
+
+// Set_games answers Command_set_games: it records the games and, if a
+// tunnel is up and what it carries has changed, rebuilds it on the same
+// node. As with a strategy, a choice recorded but not applied is reported
+// as the failure to apply it; the record stands.
+func (a *Application) Set_games(ctx context.Context, games ipc.Games) error {
+	if err := games.Validate(); err != nil {
+		return err
+	}
+	a.logger.Info("games set", "games", games.Games)
+	if err := a.manager.Set_games(games.Games); err != nil {
+		return map_error(err)
+	}
+	return map_error(a.manager.Apply_games(ctx))
 }
 
 // Servers answers Command_servers: the servers this account may be put on,

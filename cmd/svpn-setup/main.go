@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"singularity-vpn-app/internal/buildinfo"
+	"singularity-vpn-app/internal/platform/windows/divert"
 )
 
 const elevated_flag = "--elevated"
@@ -166,9 +168,19 @@ func install() error {
 		}()
 	}
 
+	release_old_driver(dir, files[windivert_sys])
+
 	var total int64
 	for _, name := range payload_files {
-		if err := write_replacing(filepath.Join(dir, name), files[name]); err != nil {
+		path := filepath.Join(dir, name)
+		// A loaded WinDivert driver keeps its file open after the service
+		// stops; the same version already in place is left as it is
+		// rather than failing the install over it.
+		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, files[name]) {
+			total += int64(len(files[name]))
+			continue
+		}
+		if err := write_replacing(path, files[name]); err != nil {
 			return fmt.Errorf("writing %s: %w", name, err)
 		}
 		total += int64(len(files[name]))
@@ -293,4 +305,23 @@ func uninstall(purge bool) error {
 		step("вход и VPN-профиль оставлены в %s — повторная установка их подхватит", data)
 	}
 	return nil
+}
+
+// release_old_driver takes our WinDivert driver off the machine when this
+// setup carries a different WinDivert64.sys: a loaded driver keeps its
+// file open, and the new one could not be written over it. The service
+// installs the new driver again the next time games are routed. A driver
+// another program installed is not ours to remove and is left alone.
+func release_old_driver(dir string, sys []byte) {
+	existing, err := os.ReadFile(filepath.Join(dir, windivert_sys))
+	if err != nil || bytes.Equal(existing, sys) {
+		return
+	}
+	data, err := data_dir()
+	if err != nil {
+		return
+	}
+	if _, err := divert.New_driver(filepath.Join(data, "windivert.ours"), dir).Remove(); err != nil {
+		warn("  старый драйвер WinDivert не снят: %v", err)
+	}
 }
