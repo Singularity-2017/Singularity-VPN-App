@@ -73,7 +73,17 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 	// after SetRoutes on purpose: find_best_route excludes the tunnel's own
 	// LUID, so it answers with the route the endpoint would have taken
 	// before this adapter existed.
+	// Recorded on every way out, not only on success: a pin added before a
+	// later step failed is still in the table, and Clear can only take off
+	// what it was told about.
 	var pinned []pinned_route
+	defer func() {
+		if len(pinned) > 0 {
+			n.mu.Lock()
+			n.pinned[handle] = pinned
+			n.mu.Unlock()
+		}
+	}()
 	for _, destination := range host_routes_to_pin(plan) {
 		row, ok, err := find_best_route(destination.Addr(), luid, nil)
 		if err != nil {
@@ -82,7 +92,7 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 		if !ok {
 			return fmt.Errorf("platform/windows: no route to %s outside the tunnel, so its own transport has nowhere to go", destination)
 		}
-		if err := row.interface_luid.AddRoute(destination, row.next_hop, 0); err != nil {
+		if err := add_host_route(row.interface_luid, destination, row.next_hop); err != nil {
 			return fmt.Errorf("platform/windows: pinning endpoint host route %s: %w", destination, err)
 		}
 		pinned = append(pinned, pinned_route{
@@ -96,12 +106,6 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 		if err := luid.SetDNS(family, plan.Dns, nil); err != nil {
 			return fmt.Errorf("platform/windows: setting DNS: %w", err)
 		}
-	}
-
-	if len(pinned) > 0 {
-		n.mu.Lock()
-		n.pinned[handle] = pinned
-		n.mu.Unlock()
 	}
 
 	return nil

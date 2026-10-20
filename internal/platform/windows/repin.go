@@ -29,7 +29,19 @@ func (system_route_ops) best_route(destination netip.Addr, tunnel winipcfg.LUID,
 }
 
 func (system_route_ops) add_route(interface_luid winipcfg.LUID, destination netip.Prefix, next_hop netip.Addr) error {
-	return interface_luid.AddRoute(destination, next_hop, 0)
+	return add_host_route(interface_luid, destination, next_hop)
+}
+
+// add_host_route treats the very route already in the table as added: one
+// left behind by a session that ended badly is exactly the pin wanted, and
+// taking it on means Clear removes it this time, where refusing would block
+// every connect until a reboot.
+func add_host_route(interface_luid winipcfg.LUID, destination netip.Prefix, next_hop netip.Addr) error {
+	err := interface_luid.AddRoute(destination, next_hop, 0)
+	if errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
+		return nil
+	}
+	return err
 }
 
 // delete_route treats a route that is already gone as removed: when an
