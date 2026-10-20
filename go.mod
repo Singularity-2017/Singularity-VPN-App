@@ -3,7 +3,7 @@ module singularity-vpn-app
 go 1.25.0
 
 require (
-	fyne.io/systray v1.11.0
+	fyne.io/systray v1.12.2
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/wailsapp/wails/v2 v2.10.2
 	golang.org/x/sys v0.43.0

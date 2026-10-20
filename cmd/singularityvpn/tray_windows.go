@@ -37,6 +37,9 @@ func start_tray(app *App) *tray {
 func (t *tray) on_ready() {
 	systray.SetIcon(icon_ico(false))
 	systray.SetTooltip("Singularity VPN")
+	// A left click opens the window, a right click the menu. The handler
+	// runs on the tray's message loop, so the window is shown off it.
+	systray.SetOnTapped(func() { go t.app.show() })
 
 	open := systray.AddMenuItem("Открыть", "Показать окно")
 	t.toggle = systray.AddMenuItem("Подключить", "")
