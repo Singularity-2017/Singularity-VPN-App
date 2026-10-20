@@ -2,6 +2,7 @@ package connection
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -74,5 +75,43 @@ func Test_a_frozen_alternative_is_refused_with_the_reason(t *testing.T) {
 	}
 	if len(env.control_plane.asked_protocols) != 0 || env.protocol.connect_calls != 0 {
 		t.Fatal("a tunnel was provisioned or brought up for a protocol known to freeze")
+	}
+}
+
+// A goal change asks again; the control plane still recommends a protocol
+// this build lacks. The tunnel is up on an offered alternative -- the one
+// recovery reached after the first guess froze -- so it stays, instead of
+// being torn down for the first alternative in the list.
+func Test_a_goal_change_keeps_a_tunnel_up_on_an_offered_alternative(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	amnezia := &fake_protocol{name: "amneziawg"}
+	env.protocols.by_name["amneziawg"] = amnezia
+	offer := api.Recommendation{
+		Node_id:  "de-01",
+		Protocol: "openvpn",
+		Alternatives: []api.Alternative{
+			{Node: "de-01", Protocol: "wireguard", State: "unknown"},
+			{Node: "de-01", Protocol: "amneziawg", State: "unknown"},
+		},
+	}
+	env.control_plane.recommend_result = offer
+	wireguard := env.protocols.by_name["wireguard"]
+	wireguard.connect_err = errors.New("verification: nothing is reachable")
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if manager.current.Protocol != "amneziawg" {
+		t.Fatalf("connected with %q; the test needs amneziawg", manager.current.Protocol)
+	}
+	calls := amnezia.connect_calls
+	wireguard.connect_err = nil // a switch to it would now succeed, and show
+	if err := manager.Apply_strategy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if manager.current.Protocol != "amneziawg" || amnezia.connect_calls != calls || amnezia.disconnect_calls != 0 {
+		t.Fatalf("now on %q, amneziawg connects %d -> %d, disconnects %d; want the tunnel left alone",
+			manager.current.Protocol, calls, amnezia.connect_calls, amnezia.disconnect_calls)
 	}
 }

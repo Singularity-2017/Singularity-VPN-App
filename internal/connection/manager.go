@@ -486,6 +486,17 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 	if len(m.spoken(m.pinned_to_node([]recovery.Target{recommended}))) == 1 {
 		return recommended, nil
 	}
+	// The recommendation is a protocol this build does not speak, so any
+	// offered alternative is a guess. A tunnel that is up on one of them is
+	// better than a guess: switching to the first alternative would tear
+	// down a working connection for a goal it already meets.
+	if current := m.get_state(); current == State_connected || current == State_degraded {
+		for _, alt := range recommendation.Alternatives {
+			if alt.State != state_frozen && alt.Node == m.current.Node_id && alt.Protocol == m.current.Protocol {
+				return m.current, nil
+			}
+		}
+	}
 	frozen := []string{}
 	for _, alt := range recommendation.Alternatives {
 		target := recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol}
