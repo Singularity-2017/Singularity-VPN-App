@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"singularity-vpn-app/internal/api"
@@ -105,6 +106,25 @@ func Test_a_server_picked_by_hand_keeps_recovery_on_that_server(t *testing.T) {
 		if alt.Node_id != "de-01" {
 			t.Fatalf("alternatives %+v include another server while one is picked by hand", manager.alternatives)
 		}
+	}
+}
+
+// A control plane older than node_id answers for its own pick. The fault
+// must say that, not that the protocols are unknown to this build.
+func Test_a_control_plane_that_ignores_the_picked_server_is_named_as_the_cause(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01"}
+	env.control_plane.recommend_result = api.Recommendation{Node_id: "nl-02", Protocol: "openvpn", Alternatives: []api.Alternative{
+		{Node: "nl-02", Protocol: "wireguard"},
+	}}
+	manager := env.build()
+	err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto})
+	if err == nil || !strings.Contains(err.Error(), "answered with nl-02 instead") {
+		t.Fatalf("Connect() error = %v; want the control plane named as ignoring the picked server", err)
+	}
+	if env.control_plane.create_profile_calls != 0 || env.control_plane.fetch_config_calls != 0 {
+		t.Fatal("a connection was set up on a server nobody picked")
 	}
 }
 

@@ -118,6 +118,13 @@ type Manager struct {
 	// nothing to monitor yet.
 	op_mu sync.Mutex
 
+	// abandon cancels the connect holding op_mu, if one is. A person's
+	// disconnect must not queue behind a connect that is waiting out a
+	// control plane that does not answer; it has its own lock because the
+	// whole point is to reach it while op_mu is held.
+	abandon_mu sync.Mutex
+	abandon    context.CancelFunc
+
 	// state_mu guards only state and session, so State() and Session() can
 	// answer a status query without waiting for a Connect that might take
 	// up to Connect_timeout to finish.
@@ -346,6 +353,12 @@ func (m *Manager) connect_locked(ctx context.Context, request Connect_request) e
 		connect_ctx, cancel = context.WithTimeout(ctx, m.config.Connect_timeout)
 		defer cancel()
 	}
+	connect_ctx, abandon := context.WithCancel(connect_ctx)
+	m.set_abandon(abandon)
+	defer func() {
+		m.set_abandon(nil)
+		abandon()
+	}()
 
 	now := m.now()
 	m.mode = request.Mode
@@ -482,6 +495,19 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 	m.logger.Info("control plane recommendation", "node_id", recommendation.Node_id,
 		"protocol", recommendation.Protocol, "reason", recommendation.Reason, "alternatives", strings.Join(states, " "))
 
+	// A control plane that ignores the server picked by hand answers for
+	// another one; none of its offers is on the picked server, and saying
+	// "speaks none of them" would blame the protocols for it.
+	if pinned := m.local_state.Strategy.Node_id; pinned != "" && recommendation.Node_id != pinned {
+		on_pinned := false
+		for _, alt := range recommendation.Alternatives {
+			on_pinned = on_pinned || alt.Node == pinned
+		}
+		if !on_pinned {
+			return recovery.Target{}, &Fault{Kind: Fault_recommendation, Op: "connect",
+				Err: fmt.Errorf("connection: the picked server %s was asked for, and the control plane answered with %s instead; a control plane that does not know node_id is older than this build", pinned, recommendation.Node_id)}
+		}
+	}
 	recommended := recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}
 	if len(m.spoken(m.pinned_to_node([]recovery.Target{recommended}))) == 1 {
 		return recommended, nil
@@ -735,6 +761,11 @@ func (m *Manager) fail(now time.Time, fault *Fault) error {
 // written outside the lock, a "no" recorded while a connect was in flight
 // would be overwritten by that connect's save of the old "yes".
 func (m *Manager) Set_connect_on_start(want bool) error {
+	if !want {
+		// "Stay off" is said with a disconnect; it must not wait out the
+		// connect it is about to undo.
+		m.abandon_connect()
+	}
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -957,6 +988,7 @@ func (m *Manager) Connect_on_start() (bool, error) {
 }
 
 func (m *Manager) Disconnect(ctx context.Context) error {
+	m.abandon_connect()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -964,11 +996,14 @@ func (m *Manager) Disconnect(ctx context.Context) error {
 	if current == State_disconnected {
 		return nil
 	}
-	if !Allowed(current, State_disconnecting) {
-		return Err_busy
+	// A failed connect has nothing up to take down: it goes straight to
+	// disconnected, which is what the person asked for, not a refusal.
+	if current != State_failed {
+		if !Allowed(current, State_disconnecting) {
+			return Err_busy
+		}
+		m.set_state(State_disconnecting)
 	}
-
-	m.set_state(State_disconnecting)
 
 	var fault *Fault
 	if m.protocol_handle != nil {
@@ -989,6 +1024,22 @@ func (m *Manager) Disconnect(ctx context.Context) error {
 		return fault
 	}
 	return nil
+}
+
+func (m *Manager) set_abandon(abandon context.CancelFunc) {
+	m.abandon_mu.Lock()
+	m.abandon = abandon
+	m.abandon_mu.Unlock()
+}
+
+// abandon_connect cancels a connect in progress, if there is one.
+func (m *Manager) abandon_connect() {
+	m.abandon_mu.Lock()
+	abandon := m.abandon
+	m.abandon_mu.Unlock()
+	if abandon != nil {
+		abandon()
+	}
 }
 
 func (m *Manager) clear_session() {

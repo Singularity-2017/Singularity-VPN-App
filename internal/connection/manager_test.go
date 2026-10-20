@@ -43,6 +43,10 @@ type fake_control_plane struct {
 	recommend_err    error
 
 	recommend_requests []api.Recommend_request
+	// recommend_hang, when set, makes Recommend announce itself on the
+	// channel and then answer only when its context ends: a control
+	// plane that does not respond.
+	recommend_hang chan struct{}
 
 	create_profile_calls int
 	// asked_protocols is every protocol a profile or config was asked
@@ -62,6 +66,11 @@ type fake_control_plane struct {
 func (f *fake_control_plane) Recommend(ctx context.Context, token string, request api.Recommend_request) (api.Recommendation, error) {
 	f.recommend_calls++
 	f.recommend_requests = append(f.recommend_requests, request)
+	if f.recommend_hang != nil {
+		f.recommend_hang <- struct{}{}
+		<-ctx.Done()
+		return api.Recommendation{}, ctx.Err()
+	}
 	return f.recommend_result, f.recommend_err
 }
 
@@ -653,6 +662,59 @@ func Test_disconnect_when_disconnected_is_not_an_error(t *testing.T) {
 	}
 	if env.protocol.disconnect_calls != 0 {
 		t.Fatalf("protocol Disconnect() was called %d times, want 0", env.protocol.disconnect_calls)
+	}
+}
+
+// A control plane that does not answer holds a connect for its whole
+// timeout. Disconnect -- and the "stay off" said with it -- must cut that
+// short, not queue behind it.
+func Test_disconnect_abandons_a_connect_waiting_on_the_control_plane(t *testing.T) {
+	env := new_test_env(t)
+	env.control_plane.recommend_hang = make(chan struct{})
+	manager := env.build()
+
+	connected := make(chan error, 1)
+	go func() { connected <- manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}) }()
+	<-env.control_plane.recommend_hang
+
+	done := make(chan error, 2)
+	go func() {
+		done <- manager.Set_connect_on_start(false)
+		done <- manager.Disconnect(context.Background())
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("call %d error = %v, want nil", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("disconnect waited for the connect instead of abandoning it")
+		}
+	}
+	if err := <-connected; err == nil {
+		t.Fatal("the abandoned Connect() reported success")
+	}
+	if manager.State() != State_disconnected {
+		t.Fatalf("State() = %v, want State_disconnected", manager.State())
+	}
+}
+
+func Test_disconnect_after_a_failed_connect_is_not_refused(t *testing.T) {
+	env := new_test_env(t)
+	env.control_plane.recommend_err = errors.New("control plane down")
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err == nil {
+		t.Fatal("Connect() error = nil, want the control plane's failure")
+	}
+	if manager.State() != State_failed {
+		t.Fatalf("State() after the failed connect = %v, want State_failed", manager.State())
+	}
+	if err := manager.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect() error = %v, want nil", err)
+	}
+	if manager.State() != State_disconnected {
+		t.Fatalf("State() = %v, want State_disconnected", manager.State())
 	}
 }
 
