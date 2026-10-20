@@ -124,11 +124,18 @@ button { cursor: pointer; }
   border-color: var(--accent); color: var(--accent);
   box-shadow: 0 0 0 1px rgba(75,227,223,.4), 0 0 36px rgba(75,227,223,.55), 0 0 90px rgba(75,227,223,.25), inset 0 0 24px rgba(75,227,223,.15);
 }
-.power.busy { border-color: var(--accent); color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+/* In progress is not connected: the ring stays grey and unlit, and an arc
+   runs round it. Only a tunnel that is up lights the whole ring. */
+.power { position: relative; --ring: 7px; }
+.power.busy::before {
+  content: ""; position: absolute; inset: calc(-1 * var(--ring)); border-radius: 50%;
+  border: var(--ring) solid transparent; border-top-color: var(--accent);
+  animation: spin 1.1s linear infinite;
+}
 .power.trouble { border-color: var(--warn); color: var(--warn); box-shadow: 0 0 36px rgba(240,180,90,.35); }
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 14px rgba(75,227,223,.25); }
-  50% { box-shadow: 0 0 40px rgba(75,227,223,.6); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .power.busy::before { animation: none; border-right-color: var(--accent); }
 }
 
 .foot { display: flex; justify-content: flex-end; margin: auto -22px 0 0; height: 44px; }
@@ -171,7 +178,7 @@ button { cursor: pointer; }
 .blocks .row .bad { color: var(--warn); }
 .window.expanded { gap: 16px; }
 .window.expanded .screen { gap: 16px; }
-.window.expanded .power { width: 150px; height: 150px; border-width: 6px; gap: 8px; }
+.window.expanded .power { width: 150px; height: 150px; border-width: 6px; --ring: 6px; gap: 8px; }
 .window.expanded .power svg { width: 40px; height: 40px; }
 .window.expanded .power span { font-size: 15px; }
 .window.expanded .power-wrap { padding: 0 0 6px; }
