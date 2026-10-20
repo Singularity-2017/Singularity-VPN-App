@@ -90,6 +90,8 @@
     if (present) set_text("d-" + name, value);
   }
 
+  const protocol_names = { wireguard: "WireGuard", amneziawg: "AmneziaWG", openvpn: "OpenVPN" };
+
   function place_of(country, city, name) {
     const c = country_name(country);
     if (c && city) return c + " · " + city;
@@ -159,7 +161,14 @@
     if (!where && strategy !== null) where = "Выбирается автоматически";
     $("chip").hidden = !where;
     set_text("place", where);
-    $("rtt-line").hidden = !(up && status.rtt_ms !== undefined);
+    // The protocol sits on the server chip, in both modes: which way the
+    // tunnel goes is part of what it is connected to.
+    const protocol = status.session_id ? protocol_names[status.protocol] || status.protocol || "" : "";
+    const has_rtt = up && status.rtt_ms !== undefined;
+    $("link-line").hidden = !(protocol || has_rtt);
+    set_text("protocol", protocol);
+    $("rtt-line").hidden = !has_rtt;
+    $("rtt-sep").hidden = !protocol;
     set_text("rtt", ms(status.rtt_ms));
     const reason = status.session_id && status.reason ? reason_text[status.reason] || "" : "";
     $("reason").hidden = !(expanded && reason);
@@ -179,7 +188,6 @@
     const has_session = !!status.session_id;
     $("details").hidden = !(expanded && has_session);
     row("node", status.node_name || status.node_id);
-    row("protocol", status.protocol);
     row("since", local_time(status.since));
     row("rtt", ms(status.rtt_ms));
     row("loss", status.loss_percent === undefined ? "" : Math.round(status.loss_percent) + "%");

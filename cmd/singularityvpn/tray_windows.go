@@ -91,6 +91,9 @@ func (t *tray) show_status(status *ipc.Status_result) {
 			if place := place_of(status); place != "" {
 				tooltip += ": " + place
 			}
+			if name := protocol_names[status.Protocol]; name != "" {
+				tooltip += " (" + name + ")"
+			}
 		case "connecting", "switching":
 			connected, offer = true, "Отключить"
 			tooltip = "Singularity VPN — подключение…"
@@ -117,6 +120,10 @@ func (t *tray) show_status(status *ipc.Status_result) {
 		t.toggle.Enable()
 	}
 }
+
+// protocol_names spells the protocols the way their authors do, as the
+// window does.
+var protocol_names = map[string]string{"wireguard": "WireGuard", "amneziawg": "AmneziaWG", "openvpn": "OpenVPN"}
 
 // place_of names the node as the control plane described it, or nothing.
 func place_of(status *ipc.Status_result) string {
