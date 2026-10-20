@@ -118,7 +118,7 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	luid := winipcfg.LUID(handle)
 	var errs []error
 
-	if err := luid.FlushRoutes(windows.AF_UNSPEC); err != nil {
+	if err := flush_routes(luid); err != nil {
 		errs = append(errs, fmt.Errorf("platform/windows: flushing routes: %w", err))
 	}
 	if err := luid.FlushIPAddresses(windows.AF_UNSPEC); err != nil {
@@ -137,11 +137,34 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	n.mu.Unlock()
 
 	for _, route := range pinned {
-		if err := route.interface_luid.DeleteRoute(route.destination, route.next_hop); err != nil {
+		if err := route.interface_luid.DeleteRoute(route.destination, route.next_hop); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
 			errs = append(errs, fmt.Errorf("platform/windows: removing pinned host route %s: %w", route.destination, err))
 		}
 	}
 
+	return errors.Join(errs...)
+}
+
+// flush_routes deletes every route on luid. It is winipcfg's FlushRoutes
+// except that a route already gone when its turn comes counts as removed:
+// the table is a snapshot, and Windows deletes some routes itself when
+// another goes -- the on-link and broadcast routes of an address, an
+// interface's IPv6 link-local routes. "Element not found" there is the
+// goal reached, not a failure to report to the person disconnecting.
+func flush_routes(luid winipcfg.LUID) error {
+	rows, err := winipcfg.GetIPForwardTable2(windows.AF_UNSPEC)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for i := range rows {
+		if rows[i].InterfaceLUID != luid {
+			continue
+		}
+		if err := rows[i].Delete(); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
 }
 
