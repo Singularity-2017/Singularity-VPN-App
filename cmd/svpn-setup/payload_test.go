@@ -11,7 +11,36 @@ func full_payload() fstest.MapFS {
 	for _, name := range payload_files {
 		fs[name] = &fstest.MapFile{Data: []byte("content of " + name)}
 	}
+	for _, name := range []string{"openvpn/openvpn.exe", "openvpn/LICENSE", "openvpn/libssl-3-x64.dll"} {
+		fs[name] = &fstest.MapFile{Data: []byte("content of " + name)}
+	}
 	return fs
+}
+
+func Test_the_whole_openvpn_directory_is_installed_after_the_fixed_files(t *testing.T) {
+	got, err := payload_contents(full_payload())
+	if err != nil {
+		t.Fatalf("payload_contents = %v", err)
+	}
+	order := install_order(got)
+	want_tail := []string{"openvpn/LICENSE", "openvpn/libssl-3-x64.dll", "openvpn/openvpn.exe"}
+	if len(order) != len(payload_files)+len(want_tail) || order[0] != service_exe {
+		t.Fatalf("install_order = %v, want the fixed files then the openvpn directory", order)
+	}
+	for i, name := range want_tail {
+		if order[len(payload_files)+i] != name {
+			t.Fatalf("install_order = %v, want %v at the end", order, want_tail)
+		}
+	}
+}
+
+func Test_a_payload_without_openvpn_is_refused_by_name(t *testing.T) {
+	fs := full_payload()
+	delete(fs, "openvpn/openvpn.exe")
+	_, err := payload_contents(fs)
+	if err == nil || !strings.Contains(err.Error(), "openvpn/openvpn.exe") {
+		t.Fatalf("payload_contents without openvpn.exe = %v, want a refusal naming it", err)
+	}
 }
 
 func Test_a_complete_payload_is_read_whole(t *testing.T) {
@@ -19,8 +48,8 @@ func Test_a_complete_payload_is_read_whole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("payload_contents = %v, want nil", err)
 	}
-	if len(got) != len(payload_files) {
-		t.Fatalf("payload_contents returned %d files, want %d", len(got), len(payload_files))
+	if len(got) != len(payload_files)+3 {
+		t.Fatalf("payload_contents returned %d files, want %d", len(got), len(payload_files)+3)
 	}
 }
 

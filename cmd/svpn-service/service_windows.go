@@ -28,6 +28,7 @@ import (
 	winplatform "singularity-vpn-app/internal/platform/windows"
 	"singularity-vpn-app/internal/platform/windows/divert"
 	"singularity-vpn-app/internal/protocols"
+	"singularity-vpn-app/internal/protocols/openvpn"
 	"singularity-vpn-app/internal/protocols/wireguard"
 	"singularity-vpn-app/internal/reach"
 	"singularity-vpn-app/internal/security"
@@ -37,6 +38,10 @@ import (
 const (
 	service_name = "SingularityVPN"
 	adapter_name = "Singularity"
+	// openvpn_adapter_name is the wintun adapter openvpn.exe runs on. It is
+	// not the WireGuard one: each protocol owns its adapter, and only one of
+	// them exists while a tunnel is up.
+	openvpn_adapter_name = "Singularity OpenVPN"
 )
 
 // network_settle is how long after the last notification of a burst a
@@ -44,7 +49,7 @@ const (
 // plugged in) produces dozens of route and interface notifications.
 const network_settle = 3 * time.Second
 
-// is_tunnel_adapter reports whether the interface is the one this service
+// is_tunnel_adapter reports whether the interface is one this service
 // creates. Notifications about it are the service's own routes and addresses
 // being set or taken off, not a change of the network under it. The adapter
 // is found by its name; an interface that cannot be read any more (it is
@@ -54,7 +59,8 @@ func is_tunnel_adapter(luid winipcfg.LUID) bool {
 	if err != nil {
 		return false
 	}
-	return row.Alias() == adapter_name
+	alias := row.Alias()
+	return alias == adapter_name || alias == openvpn_adapter_name
 }
 
 // The prober's targets. Both are outside the control plane on purpose: a
@@ -359,6 +365,24 @@ func enable_games(adapter *wireguard.Adapter, p paths, logger *slog.Logger) erro
 	return nil
 }
 
+// openvpn_adapter is the OpenVPN protocol over the openvpn.exe installed
+// beside this executable, in openvpn\. Without it -- a build made before
+// OpenVPN was bundled -- the protocol is simply not offered, and the state
+// machine moves to an alternative this build has, which is what a missing
+// protocol has always meant here.
+func openvpn_adapter(p paths, logger *slog.Logger) *openvpn.Adapter {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	path := filepath.Join(filepath.Dir(exe), "openvpn", "openvpn.exe")
+	if _, err := os.Stat(path); err != nil {
+		logger.Info("openvpn.exe is not installed; OpenVPN is not offered", "path", path)
+		return nil
+	}
+	return openvpn.New_windows_adapter(path, openvpn_adapter_name, filepath.Join(p.root, "openvpn.ovpn"), logger)
+}
+
 // journal_size is how many operations the window can read back: a few
 // sessions' worth of connects, switches and failures.
 const journal_size = 300
@@ -383,12 +407,18 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 	if err := enable_games(adapter, p, logger); err != nil {
 		return nil, err
 	}
-	registry, err := protocols.New_registry(adapter, wireguard.Amnezia{Adapter: adapter})
+	adapters := []protocols.Protocol{adapter, wireguard.Amnezia{Adapter: adapter}}
+	tunnel_up := func() bool { return adapter.Status().Running }
+	if ovpn := openvpn_adapter(p, logger); ovpn != nil {
+		adapters = append(adapters, ovpn)
+		tunnel_up = func() bool { return adapter.Status().Running || ovpn.Status().Running }
+	}
+	registry, err := protocols.New_registry(adapters...)
 	if err != nil {
 		return nil, err
 	}
 	prober, err := platform.New_network_prober(platform.Prober_config{
-		Tunnel_up:   func() bool { return adapter.Status().Running },
+		Tunnel_up:   tunnel_up,
 		Dns_name:    probe_dns_name,
 		Dial_target: probe_dial_target,
 		// A tunnel that carries only part of the traffic drops the
@@ -406,7 +436,7 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Protocols:     registry,
 		Prober:        prober,
 		Reach_prober:  reach.New_prober(reach.System_network{}),
-		Pinger:        winplatform.New_pinger(adapter_name),
+		Pinger:        winplatform.New_pinger(adapter_name, openvpn_adapter_name),
 		Game_pinger:   adapter,
 		Bus:           events.New_bus(0),
 		Device_name:   device_name(),

@@ -91,14 +91,14 @@ type address_row struct {
 
 // pinger is platform.Pinger over the ICMP helper API.
 type pinger struct {
-	tunnel_alias string
+	tunnel_aliases []string
 }
 
 // New_pinger returns a platform.Pinger that sends its echoes outside the
-// tunnel adapter named tunnel_alias, whether or not that adapter exists at
-// the moment.
-func New_pinger(tunnel_alias string) platform.Pinger {
-	return &pinger{tunnel_alias: tunnel_alias}
+// tunnel adapters named tunnel_aliases -- one per protocol, at most one of
+// them up -- whether or not any of them exists at the moment.
+func New_pinger(tunnel_aliases ...string) platform.Pinger {
+	return &pinger{tunnel_aliases: tunnel_aliases}
 }
 
 // Ping sends one echo to destination and returns how long the answer took.
@@ -185,9 +185,9 @@ func (p *pinger) source_address(destination netip.Addr) (netip.Addr, error) {
 	return source, nil
 }
 
-// tunnel_luid reads the LUID of the tunnel adapter by its name, the way the
-// service recognises it elsewhere. No adapter by that name -- no tunnel is
-// up, or has ever been created -- is not an error: the zero LUID that comes
+// tunnel_luid reads the LUID of whichever tunnel adapter exists, by name,
+// the way the service recognises it elsewhere. No adapter by any of the
+// names -- no tunnel is up, or has ever been created -- is not an error: the zero LUID that comes
 // back belongs to no interface, so excluding it excludes nothing.
 func (p *pinger) tunnel_luid() (winipcfg.LUID, error) {
 	table, err := winipcfg.GetIfTable2Ex(winipcfg.MibIfEntryNormalWithoutStatistics)
@@ -198,8 +198,12 @@ func (p *pinger) tunnel_luid() (winipcfg.LUID, error) {
 	for i := range table {
 		rows[i] = interface_row{luid: table[i].InterfaceLUID, alias: table[i].Alias()}
 	}
-	luid, _ := pick_interface_by_alias(rows, p.tunnel_alias)
-	return luid, nil
+	for _, alias := range p.tunnel_aliases {
+		if luid, ok := pick_interface_by_alias(rows, alias); ok {
+			return luid, nil
+		}
+	}
+	return 0, nil
 }
 
 // pick_interface_by_alias finds the interface called alias. An empty alias

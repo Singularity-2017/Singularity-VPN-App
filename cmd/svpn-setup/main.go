@@ -171,8 +171,19 @@ func install() error {
 	release_old_driver(dir, files[windivert_sys])
 
 	var total int64
-	for _, name := range payload_files {
-		path := filepath.Join(dir, name)
+	for _, name := range install_order(files) {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if sub := filepath.Dir(path); sub != dir {
+			// It inherits the install directory's entries; its owner is
+			// set like a file's, so the user who ran setup does not own
+			// a directory the service loads code from.
+			if err := os.MkdirAll(sub, 0o755); err != nil {
+				return fmt.Errorf("creating the directory for %s: %w", name, err)
+			}
+			if err := own_by_administrators(sub); err != nil {
+				return fmt.Errorf("setting the owner of %s: %w", sub, err)
+			}
+		}
 		// A loaded WinDivert driver keeps its file open after the service
 		// stops; the same version already in place is left as it is
 		// rather than failing the install over it.
@@ -184,6 +195,18 @@ func install() error {
 			return fmt.Errorf("writing %s: %w", name, err)
 		}
 		total += int64(len(files[name]))
+	}
+	// A file of an older OpenVPN release that this one does not have --
+	// a DLL renamed between versions -- would otherwise stay beside the
+	// new openvpn.exe for good.
+	if entries, err := os.ReadDir(filepath.Join(dir, openvpn_dir)); err == nil {
+		for _, entry := range entries {
+			if _, ours := files[openvpn_dir+"/"+entry.Name()]; !ours {
+				if err := os.RemoveAll(filepath.Join(dir, openvpn_dir, entry.Name())); err != nil {
+					warn("  %s не удалён: %v", filepath.Join(openvpn_dir, entry.Name()), err)
+				}
+			}
+		}
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -284,6 +307,9 @@ func uninstall(purge bool) error {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			warn("  %s не удалён: %v", name, err)
 		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, openvpn_dir)); err != nil {
+		warn("  %s не удалён: %v", openvpn_dir, err)
 	}
 	if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		// The running uninstaller is still in it; Windows removes the

@@ -13,10 +13,11 @@ param(
     # drives it without a window.
     [string[]]$Target = @("./cmd/svpn-service", "./cmd/singularityvpn", "./cmd/svpn-ctl", "./cmd/svpn-swap"),
     [string]$Out = "dist",
-    # Build SingularityVPN-setup.exe: the programs, wintun.dll and the
-    # WinDivert packet driver inside one installer. wintun.dll is taken
-    # from local/ or from the output directory, where the stage 3
-    # instructions put it; WinDivert from local/windivert/.
+    # Build SingularityVPN-setup.exe: the programs, wintun.dll, the
+    # WinDivert packet driver and openvpn.exe inside one installer.
+    # wintun.dll is taken from local/ or from the output directory, where
+    # the stage 3 instructions put it; WinDivert from local/windivert/;
+    # OpenVPN from local/openvpn/.
     [switch]$Setup
 )
 
@@ -141,6 +142,22 @@ if ($Setup) {
         }
         Copy-Item $from (Join-Path $payload $pair[1]) -Force
     }
+    # OpenVPN 2.6, unmodified: openvpn.exe and every DLL from the bin
+    # directory of the official MSI, unpacked without installing
+    # (msiexec /a <msi> /qb TARGETDIR=<dir>), and its licence saved as
+    # local/openvpn/LICENSE. 2.6 is the last line that runs on wintun, the
+    # one driver this installer carries. Everything in local/openvpn/ goes
+    # in, so the DLL names of a given release need no list here.
+    $openvpn = Join-Path $root "local/openvpn"
+    foreach ($name in @("openvpn.exe", "LICENSE")) {
+        if (-not (Test-Path (Join-Path $openvpn $name))) {
+            Write-Error "setup: $name not found in local/openvpn/ -- unpack the OpenVPN 2.6 MSI (msiexec /a ... TARGETDIR=...) and copy bin/openvpn.exe, bin/*.dll and the licence (as LICENSE) there"
+        }
+    }
+    $openvpn_payload = Join-Path $payload "openvpn"
+    if (Test-Path $openvpn_payload) { Remove-Item -Recurse -Force $openvpn_payload }
+    New-Item -ItemType Directory -Force -Path $openvpn_payload | Out-Null
+    Get-ChildItem $openvpn -File | Copy-Item -Destination $openvpn_payload -Force
     Push-Location $root
     try {
         & go build -tags payload -ldflags ($ldflags -join " ") -o (Join-Path $out_dir "SingularityVPN-setup.exe") ./cmd/svpn-setup

@@ -72,6 +72,14 @@ type Transport_reporter interface {
 	Transport_report() string
 }
 
+// Connect_budgeter is implemented by a protocol whose Connect needs longer
+// than the state machine's default per-protocol limit: one that tries
+// several transports in turn before any of them answers. The whole connect
+// keeps its own limit; this only lifts the per-protocol one.
+type Connect_budgeter interface {
+	Connect_budget() time.Duration
+}
+
 // Manager hands out a Protocol by name, and lists what is available.
 type Manager interface {
 	Get(name string) (Protocol, error)

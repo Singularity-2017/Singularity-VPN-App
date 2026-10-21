@@ -670,8 +670,20 @@ func alternatives_from(list []api.Alternative) []recovery.Target {
 	return targets
 }
 
+// protocol_timeout is how long protocol may take to connect: the
+// configured limit, or the protocol's own budget when it names a longer
+// one. The whole connect's limit still bounds both.
+func protocol_timeout(configured time.Duration, protocol protocols.Protocol) time.Duration {
+	if budgeter, ok := protocol.(protocols.Connect_budgeter); ok && configured > 0 {
+		if budget := budgeter.Connect_budget(); budget > configured {
+			return budget
+		}
+	}
+	return configured
+}
+
 // establish gets the named protocol adapter, connects it within
-// Protocol_timeout, and verifies the tunnel actually carries traffic. A
+// Protocol_timeout (or the protocol's own longer budget), and verifies the tunnel actually carries traffic. A
 // protocol that started is not a connection: on a failed verification, the
 // protocol is disconnected before returning, so a half-established tunnel
 // is never left behind with nothing watching it.
@@ -685,8 +697,8 @@ func (m *Manager) establish(ctx context.Context, target recovery.Target, config 
 
 	connect_ctx := ctx
 	var cancel context.CancelFunc
-	if m.config.Protocol_timeout > 0 {
-		connect_ctx, cancel = context.WithTimeout(ctx, m.config.Protocol_timeout)
+	if timeout := protocol_timeout(m.config.Protocol_timeout, protocol); timeout > 0 {
+		connect_ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	err = protocol.Connect(connect_ctx, connect_config)
 	if cancel != nil {
@@ -1193,8 +1205,8 @@ func (m *Manager) retry_current(ctx context.Context) bool {
 
 	connect_ctx := ctx
 	var cancel context.CancelFunc
-	if m.config.Protocol_timeout > 0 {
-		connect_ctx, cancel = context.WithTimeout(ctx, m.config.Protocol_timeout)
+	if timeout := protocol_timeout(m.config.Protocol_timeout, protocol); timeout > 0 {
+		connect_ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	err = protocol.Connect(connect_ctx, m.current_config)
 	if cancel != nil {

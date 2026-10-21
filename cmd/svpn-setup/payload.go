@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
+	"path"
+	"sort"
 	"strings"
 )
 
@@ -21,7 +24,14 @@ const (
 	windivert_sys     = "WinDivert64.sys"
 	windivert_licence = "WinDivert-LICENSE.txt"
 	uninstaller       = "uninstall.exe"
+	// openvpn_dir holds openvpn.exe with the DLLs of its release, shipped
+	// unmodified under the GPLv2 with its licence beside it. Which DLLs a
+	// release has is the release's business: the whole directory is the
+	// payload, and only the program and the licence are required by name.
+	openvpn_dir = "openvpn"
 )
+
+var openvpn_required = []string{openvpn_dir + "/openvpn.exe", openvpn_dir + "/LICENSE"}
 
 var payload_files = []string{service_exe, window_exe, ctl_exe, swap_exe, wintun_dll, windivert_dll, windivert_sys, windivert_licence}
 
@@ -43,10 +53,48 @@ func payload_contents(source fs.FS) (map[string][]byte, error) {
 		}
 		contents[name] = data
 	}
+	// Every file of the directory is read, and one that cannot be is
+	// missing like a fixed one: openvpn.exe without one of its DLLs
+	// installs fine and then never starts.
+	entries, err := fs.ReadDir(source, openvpn_dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("reading the payload's %s: %w", openvpn_dir, err)
+	}
+	for _, entry := range entries {
+		name := path.Join(openvpn_dir, entry.Name())
+		if entry.IsDir() {
+			return nil, fmt.Errorf("the payload's %s holds a directory, %s; it is installed flat", openvpn_dir, name)
+		}
+		data, err := fs.ReadFile(source, name)
+		if err != nil || len(data) == 0 {
+			missing = append(missing, name)
+			continue
+		}
+		contents[name] = data
+	}
+	for _, name := range openvpn_required {
+		if _, ok := contents[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("the payload is missing %s", strings.Join(missing, ", "))
 	}
 	return contents, nil
+}
+
+// install_order is every file of the payload in the order it is written:
+// the fixed ones first, then the OpenVPN directory by name.
+func install_order(contents map[string][]byte) []string {
+	names := append([]string{}, payload_files...)
+	var extra []string
+	for name := range contents {
+		if strings.HasPrefix(name, openvpn_dir+"/") {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	return append(names, extra...)
 }
 
 // reg_value is one value of the Add/Remove Programs entry.
