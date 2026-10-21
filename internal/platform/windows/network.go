@@ -48,19 +48,30 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 	}
 	luid := winipcfg.LUID(handle)
 
-	if err := luid.SetIPAddresses(plan.Addresses); err != nil {
-		return fmt.Errorf("platform/windows: setting addresses: %w", err)
-	}
-
+	// Duplicate address detection is off, and set before the address is:
+	// with it on (Windows' default is three probes) the new address stays
+	// tentative for about three seconds, packets routed into the tunnel
+	// meanwhile leave with the physical address as their source, and the
+	// node decrypts them and drops them as not the peer's -- seen on the
+	// owner's machine 2026-10-21 as every first verification failing,
+	// the node's received count growing and its sent count flat. A
+	// point-to-point tunnel has no neighbour to collide with; the official
+	// WireGuard client turns it off the same way.
 	for _, family := range families_of_prefixes(plan.Addresses) {
 		row, err := luid.IPInterface(family)
 		if err != nil {
-			return fmt.Errorf("platform/windows: reading the interface to set its MTU: %w", err)
+			return fmt.Errorf("platform/windows: reading the interface to set it up: %w", err)
 		}
 		row.NLMTU = uint32(plan.Mtu)
+		row.DadTransmits = 0
+		row.RouterDiscoveryBehavior = winipcfg.RouterDiscoveryDisabled
 		if err := row.Set(); err != nil {
-			return fmt.Errorf("platform/windows: setting MTU: %w", err)
+			return fmt.Errorf("platform/windows: setting MTU and address detection: %w", err)
 		}
+	}
+
+	if err := luid.SetIPAddresses(plan.Addresses); err != nil {
+		return fmt.Errorf("platform/windows: setting addresses: %w", err)
 	}
 
 	if err := luid.SetRoutes(to_route_data(plan.Routes)); err != nil {

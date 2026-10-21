@@ -3,6 +3,7 @@
 package wireguard
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/conn"
 	"github.com/amnezia-vpn/amneziawg-go/device"
 	"github.com/amnezia-vpn/amneziawg-go/tun"
+	"golang.org/x/sys/windows"
 
 	"singularity-vpn-app/internal/platform"
 )
@@ -34,7 +36,7 @@ type real_tunnel struct {
 // must never print regardless of how tempting that is to turn on while
 // debugging a tunnel that will not come up.
 func New_windows_tunnel(name string, mtu int, wrap device_wrapper) (tunnel, error) {
-	tun_device, err := tun.CreateTUN(name, mtu)
+	tun_device, err := create_tun(name, mtu)
 	if err != nil {
 		return nil, wrap_missing_wintun(err)
 	}
@@ -97,6 +99,32 @@ func (t *real_tunnel) Handle() platform.Tunnel_handle {
 		return 0
 	}
 	return platform.Tunnel_handle(native.LUID())
+}
+
+// adapter_gone_wait is how long create_tun keeps trying while the adapter
+// of the tunnel just closed is still being removed, and adapter_gone_step
+// how often it tries within that.
+const (
+	adapter_gone_wait = 3 * time.Second
+	adapter_gone_step = 250 * time.Millisecond
+)
+
+// create_tun creates the adapter, waiting out the one just closed. A
+// rebuild on the same node closes the old adapter and creates one of the
+// same name straight away, and wintun answers "file not found" until the
+// old one is fully gone -- seen on the owner's machine 2026-10-21, where
+// the first rebuild failed and the second, a moment later, came up.
+func create_tun(name string, mtu int) (tun.Device, error) {
+	deadline := time.Now().Add(adapter_gone_wait)
+	for {
+		tun_device, err := tun.CreateTUN(name, mtu)
+		// A missing wintun.dll can carry the same code; it does not go
+		// away by waiting.
+		if err == nil || !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || strings.Contains(err.Error(), "wintun.dll") || time.Now().After(deadline) {
+			return tun_device, err
+		}
+		time.Sleep(adapter_gone_step)
+	}
 }
 
 // wrap_missing_wintun turns tun.CreateTUN's "Error loading wintun.dll DLL:
