@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
@@ -98,6 +99,13 @@ type Server struct {
 	Region    string `json:"region"`
 	City      string `json:"city"`
 	Available bool   `json:"available"`
+
+	// Host is the public address the node's configs point at, usually an
+	// IPv4 literal, possibly a DNS name. Absent in the response means empty
+	// here, and a server without one gets no latency: it is never pinged and
+	// the window shows nothing for it. It stays inside the service -- the
+	// window learns a node's latency by node_id, never its address.
+	Host string `json:"host"`
 }
 
 // Reach_target is one entry of the reachability catalog: a host the device
@@ -160,6 +168,9 @@ func (p Profile) validate() error {
 		required_field{"expires_at", !p.Expires_at.IsZero()},
 	)
 }
+
+// Mode_antizapret names the profile that carries only blocked destinations.
+const Mode_antizapret = "antizapret"
 
 // Vpn_config is a config fetched for an already-provisioned client.
 type Vpn_config struct {
@@ -369,11 +380,15 @@ func (c *Client) Create_profile(ctx context.Context, token, protocol, node_id st
 // the control plane and a profile must be provisioned again; deciding that
 // is stage 2's job, not this client's.
 //
-// Mode is not a parameter this client sends: full VPN is the server's
-// default, and the split-tunnel mode does not exist in v1. client_id,
-// protocol and node_id are omitted from the query when empty rather than
-// sent as empty values.
-func (c *Client) Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (Vpn_config, error) {
+// mode is "antizapret" to ask for the AntiZapret profile -- only blocked
+// destinations go through the tunnel -- and anything else for the full VPN
+// profile. It is sent only for "antizapret": full VPN is the server's
+// default, and an older control plane that knows no modes is unaffected.
+// A response that does not carry the AntiZapret profile is refused: the
+// person chose it, and connecting in another mode would be a silent
+// substitution. client_id, protocol and node_id are omitted from the query
+// when empty rather than sent as empty values.
+func (c *Client) Fetch_config(ctx context.Context, token, client_id, protocol, node_id, mode string) (Vpn_config, error) {
 	query := url.Values{}
 	if client_id != "" {
 		query.Set("client_id", client_id)
@@ -384,6 +399,9 @@ func (c *Client) Fetch_config(ctx context.Context, token, client_id, protocol, n
 	if node_id != "" {
 		query.Set("node_id", node_id)
 	}
+	if mode == Mode_antizapret {
+		query.Set("mode", mode)
+	}
 
 	var config Vpn_config
 	if err := c.do(ctx, "GET", "/api/v1/vpn/config", query, token, nil, &config, true); err != nil {
@@ -391,6 +409,9 @@ func (c *Client) Fetch_config(ctx context.Context, token, client_id, protocol, n
 	}
 	if err := config.validate(); err != nil {
 		return Vpn_config{}, err
+	}
+	if mode == Mode_antizapret && config.Mode != Mode_antizapret {
+		return Vpn_config{}, fmt.Errorf("api: the control plane answered mode %q to a request for %q", config.Mode, Mode_antizapret)
 	}
 	return config, nil
 }

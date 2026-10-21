@@ -175,7 +175,7 @@ func Test_fetch_config_omits_empty_query_parameters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	cfg, err := client.Fetch_config(context.Background(), "tok", "c1", "", "")
+	cfg, err := client.Fetch_config(context.Background(), "tok", "c1", "", "", "")
 	if err != nil {
 		t.Fatalf("Fetch_config: %v", err)
 	}
@@ -195,8 +195,55 @@ func Test_fetch_config_client_not_found(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = client.Fetch_config(context.Background(), "tok", "gone", "", "")
+	_, err = client.Fetch_config(context.Background(), "tok", "gone", "", "", "")
 	if !Is_code(err, Code_client_not_found) {
 		t.Fatalf("expected CLIENT_NOT_FOUND, got %v", err)
+	}
+}
+
+func Test_fetch_config_asks_for_antizapret_only_when_it_is_the_mode(t *testing.T) {
+	for _, c := range []struct {
+		asked   string
+		sent    string
+		sent_ok bool
+		answer  string
+	}{
+		{"", "", false, "vpn"},
+		{"vpn", "", false, "vpn"},
+		{"antizapret", "antizapret", true, "antizapret"},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got, present := r.URL.Query()["mode"]
+			if present != c.sent_ok || (present && got[0] != c.sent) {
+				t.Errorf("asked %q: mode query = %v (present %v), want %q (present %v)", c.asked, got, present, c.sent, c.sent_ok)
+			}
+			write_success(w, `{"config":"cfg","protocol":"wireguard","mode":"`+c.answer+`","expires_at":"2026-10-01T00:00:00Z"}`)
+		}))
+		client, err := New(Config{Base_url: server.URL, Sleep: no_sleep})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := client.Fetch_config(context.Background(), "tok", "c1", "", "", c.asked); err != nil {
+			t.Errorf("asked %q: %v", c.asked, err)
+		}
+		server.Close()
+	}
+}
+
+func Test_fetch_config_refuses_a_profile_that_is_not_the_antizapret_one_asked_for(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		write_success(w, `{"config":"cfg","protocol":"wireguard","mode":"vpn","expires_at":"2026-10-01T00:00:00Z"}`)
+	}))
+	defer server.Close()
+	client, err := New(Config{Base_url: server.URL, Sleep: no_sleep})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := client.Fetch_config(context.Background(), "tok", "c1", "", "", "antizapret"); err == nil {
+		t.Fatal("a full VPN config was accepted for an AntiZapret request")
+	}
+	// A full request is not held to the same check.
+	if _, err := client.Fetch_config(context.Background(), "tok", "c1", "", "", ""); err != nil {
+		t.Fatalf("a full request was refused: %v", err)
 	}
 }

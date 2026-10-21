@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"singularity-vpn-app/internal/journal"
 )
 
 // Pipe_name is the one address this protocol is spoken on.
@@ -85,12 +87,24 @@ const (
 	Command_strategy     = "strategy"
 	Command_set_strategy = "set_strategy"
 	Command_servers      = "servers"
+	Command_ping_servers = "ping_servers"
 	Command_games        = "games"
 	Command_set_games    = "set_games"
+	Command_tunnel_mode  = "tunnel_mode"
+
+	Command_set_tunnel_mode = "set_tunnel_mode"
 
 	Command_analyze  = "analyze"
 	Command_analysis = "analysis"
+
+	Command_journal = "journal"
 )
+
+// Journal_result answers Command_journal: the service's recent operations,
+// oldest first.
+type Journal_result struct {
+	Entries []journal.Entry `json:"entries"`
+}
 
 // Strategy is what the connection is for -- see state.Strategy, which it
 // mirrors on the wire. The zero value asks for nothing in particular.
@@ -125,6 +139,30 @@ func (s Strategy) Validate() error {
 		}
 	}
 	return nil
+}
+
+// What a tunnel carries. Tunnel_vpn and Tunnel_antizapret are the two
+// profiles a person chooses between; Tunnel_games is only ever reported, by
+// Status_result.Tunnel, when games alone are put through the tunnel.
+const (
+	Tunnel_vpn        = "vpn"
+	Tunnel_antizapret = "antizapret"
+	Tunnel_games      = "games"
+)
+
+// Tunnel_mode is which profile of the node the person wants: the whole
+// machine through the tunnel, or only what is blocked.
+type Tunnel_mode struct {
+	Mode string `json:"mode"`
+}
+
+// Validate refuses anything but exactly "vpn" or "antizapret".
+func (t Tunnel_mode) Validate() error {
+	switch t.Mode {
+	case Tunnel_vpn, Tunnel_antizapret:
+		return nil
+	}
+	return fmt.Errorf("ipc: tunnel mode %q is not vpn or antizapret", t.Mode)
 }
 
 // Games are the catalog ids of the games carried through the tunnel. An
@@ -175,6 +213,23 @@ type Server struct {
 // Servers_result answers Command_servers.
 type Servers_result struct {
 	Servers []Server `json:"servers"`
+}
+
+// Server_ping is the latency to one server: the round trip of an ICMP echo,
+// in milliseconds, as measured from this machine outside the tunnel. Node_id
+// is the one Server carries; the server's address is not on the wire, here
+// or in Server.
+type Server_ping struct {
+	Node_id string  `json:"node_id"`
+	Rtt_ms  float64 `json:"rtt_ms"`
+}
+
+// Ping_servers_result answers Command_ping_servers. Pings holds only the
+// servers that answered, sorted by node id; a server that did not is absent,
+// not present with a zero, and the list is empty -- never null -- when none
+// did.
+type Ping_servers_result struct {
+	Pings []Server_ping `json:"pings"`
 }
 
 // Reach_check is one probed target in an Analysis_result: how far each of
@@ -312,6 +367,11 @@ type Status_result struct {
 	Protocol   string     `json:"protocol,omitempty"`
 	Session_id string     `json:"session_id,omitempty"`
 	Since      *time.Time `json:"since,omitempty"`
+
+	// Tunnel is what the live tunnel was built to carry: vpn, antizapret
+	// or games. It is what the session was connected with, not the stored
+	// wish, and is present under the same condition as Node_id.
+	Tunnel string `json:"tunnel,omitempty"`
 
 	// Node_name, Country and City describe the node for a person, and are
 	// present only when the control plane named this node -- see

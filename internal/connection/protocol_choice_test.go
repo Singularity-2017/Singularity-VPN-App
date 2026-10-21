@@ -37,6 +37,58 @@ func Test_a_recommended_protocol_this_build_lacks_falls_back_to_an_offered_one_i
 	}
 }
 
+// Of the offered protocols, the one that carried traffic on this node last
+// time is tried first, whatever order the control plane listed them in.
+func Test_the_protocol_that_worked_last_on_the_node_is_tried_first(t *testing.T) {
+	env := new_test_env(t)
+	env.protocols.by_name["amneziawg"] = &fake_protocol{name: "amneziawg"}
+	env.store.state.Client_id = "client-1"
+	env.store.state.Last_node_id = "de-01"
+	env.store.state.Last_protocol = "amneziawg"
+	env.control_plane.recommend_result = api.Recommendation{
+		Node_id:  "de-01",
+		Protocol: "openvpn",
+		Alternatives: []api.Alternative{
+			{Node: "de-01", Protocol: "wireguard", State: "unknown"},
+			{Node: "de-01", Protocol: "amneziawg", State: "unknown"},
+		},
+	}
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if env.protocol.connect_calls != 0 {
+		t.Fatalf("wireguard was brought up %d times; amneziawg worked last time on this node", env.protocol.connect_calls)
+	}
+	if env.store.state.Last_protocol != "amneziawg" {
+		t.Fatalf("connected with %q; want amneziawg", env.store.state.Last_protocol)
+	}
+}
+
+// What worked on another node says nothing about this one.
+func Test_the_last_protocol_of_another_node_does_not_reorder(t *testing.T) {
+	env := new_test_env(t)
+	env.protocols.by_name["amneziawg"] = &fake_protocol{name: "amneziawg"}
+	env.store.state.Client_id = "client-1"
+	env.store.state.Last_node_id = "nl-01"
+	env.store.state.Last_protocol = "amneziawg"
+	env.control_plane.recommend_result = api.Recommendation{
+		Node_id:  "de-01",
+		Protocol: "openvpn",
+		Alternatives: []api.Alternative{
+			{Node: "de-01", Protocol: "wireguard", State: "unknown"},
+			{Node: "de-01", Protocol: "amneziawg", State: "unknown"},
+		},
+	}
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if env.store.state.Last_protocol != "wireguard" {
+		t.Fatalf("connected with %q; want wireguard, the first offer", env.store.state.Last_protocol)
+	}
+}
+
 // Nothing offered that this build speaks: the failure must say so plainly.
 func Test_no_offered_protocol_this_build_has_is_refused_by_name(t *testing.T) {
 	env := new_test_env(t)

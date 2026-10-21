@@ -19,6 +19,11 @@ type Session struct {
 	Protocol   string
 	Started_at time.Time
 
+	// Tunnel is what this session's tunnel was built to carry: Tunnel_vpn,
+	// Tunnel_antizapret or Tunnel_games. It is decided when the tunnel is
+	// built and is not the stored wish, which may have changed since.
+	Tunnel string
+
 	// Node_name, Country and City describe the node for a person. They
 	// are filled only when the control plane's recommendation named this
 	// very node; a switch to an alternative, or a first connect through

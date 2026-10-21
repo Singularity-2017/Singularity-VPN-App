@@ -11,6 +11,7 @@ import (
 	"singularity-vpn-app/internal/connection"
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
+	"singularity-vpn-app/internal/journal"
 	"singularity-vpn-app/internal/security"
 	"singularity-vpn-app/internal/state"
 )
@@ -43,6 +44,7 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 	}
 	result.Node_id = session.Node_id
 	result.Protocol = session.Protocol
+	result.Tunnel = session.Tunnel
 	result.Session_id = session.Id
 	if !session.Started_at.IsZero() {
 		// Since stays absent unless there is a real moment to report. See
@@ -253,6 +255,12 @@ func (a *Application) Sign_out(ctx context.Context) error {
 		}
 	}
 
+	// The servers this account was listed are not the next account's to
+	// measure, nor anybody's once nobody is signed in.
+	a.hosts_mu.Lock()
+	a.hosts = nil
+	a.hosts_mu.Unlock()
+
 	if err := a.secrets.Delete(security.Key_device_token); err != nil {
 		return fmt.Errorf("core: removing the device token: %w", err)
 	}
@@ -350,8 +358,45 @@ func (a *Application) Set_games(ctx context.Context, games ipc.Games) error {
 	return map_error(a.manager.Apply_games(ctx))
 }
 
+// Journal answers Command_journal: the operations the service has logged
+// since it started, as many as the journal keeps.
+func (a *Application) Journal(ctx context.Context) (ipc.Journal_result, error) {
+	result := ipc.Journal_result{Entries: []journal.Entry{}}
+	if a.journal != nil {
+		result.Entries = a.journal.List()
+	}
+	return result, nil
+}
+
+// Tunnel_mode answers Command_tunnel_mode: the profile the person chose,
+// always "vpn" or "antizapret".
+func (a *Application) Tunnel_mode(ctx context.Context) (ipc.Tunnel_mode, error) {
+	mode, err := a.manager.Tunnel_mode()
+	if err != nil {
+		return ipc.Tunnel_mode{}, map_error(err)
+	}
+	return ipc.Tunnel_mode{Mode: mode}, nil
+}
+
+// Set_tunnel_mode answers Command_set_tunnel_mode: it records the choice
+// and, if a tunnel is up and was built with the other profile, rebuilds it
+// on the same node. A choice recorded but not applied is reported as the
+// failure to apply it; the record stands.
+func (a *Application) Set_tunnel_mode(ctx context.Context, mode ipc.Tunnel_mode) error {
+	if err := mode.Validate(); err != nil {
+		return err
+	}
+	a.logger.Info("tunnel mode set", "mode", mode.Mode)
+	if err := a.manager.Set_tunnel_mode(mode.Mode); err != nil {
+		return map_error(err)
+	}
+	return map_error(a.manager.Apply_tunnel(ctx))
+}
+
 // Servers answers Command_servers: the servers this account may be put on,
-// as the control plane lists them.
+// as the control plane lists them. It also remembers which of them have an
+// address to measure, for Ping_servers; the address itself is not part of
+// the answer.
 func (a *Application) Servers(ctx context.Context) (ipc.Servers_result, error) {
 	token, err := (&token_source{secrets: a.secrets}).Token(ctx)
 	if err != nil {
@@ -362,10 +407,20 @@ func (a *Application) Servers(ctx context.Context) (ipc.Servers_result, error) {
 		return ipc.Servers_result{}, map_error(err)
 	}
 	result := ipc.Servers_result{Servers: make([]ipc.Server, 0, len(list))}
+	hosts := make(map[string]string, len(list))
 	for _, s := range list {
 		result.Servers = append(result.Servers, ipc.Server{
 			Node_id: s.Node_id, Name: s.Name, Country: s.Country, Region: s.Region, City: s.City, Available: s.Available,
 		})
+		if s.Host != "" {
+			hosts[s.Node_id] = s.Host
+		}
 	}
+
+	// Replaced, not merged: a server the control plane no longer lists, or
+	// one whose address changed, must stop being measured at the old one.
+	a.hosts_mu.Lock()
+	a.hosts = hosts
+	a.hosts_mu.Unlock()
 	return result, nil
 }

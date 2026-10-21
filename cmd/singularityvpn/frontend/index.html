@@ -59,85 +59,96 @@
     </form>
   </section>
 
-  <section id="screen-main" class="screen" hidden>
-    <div class="server">
-      <div class="server-head">
-        <span class="server-label">Сервер</span>
-        <button class="switch" id="auto" role="switch" aria-checked="true" title="Сервер выбирается автоматически и меняется, если перестал работать">
-          <span class="knob"></span><span>Авто</span>
+  <section id="screen-main" class="screen main" hidden>
+    <div class="side">
+      <div class="power-wrap">
+        <button class="power" id="power" aria-label="Подключить VPN">
+          <svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>
+          <span id="power-label">Подключиться</span>
         </button>
+        <div class="trouble-line" id="trouble" hidden></div>
+        <div class="error" id="action-error" role="alert" hidden></div>
       </div>
-      <button class="chip" id="chip" aria-haspopup="listbox" aria-expanded="false">
-        <span class="chip-name" id="place"></span>
-        <span class="chip-sub" id="link-line" hidden><span id="protocol"></span><span id="rtt-line" hidden><span id="rtt-sep"> · </span>задержка <span class="num accent" id="rtt"></span></span></span>
-        <span class="chip-sub" id="reason" hidden></span>
-      </button>
-      <div class="pop list" id="servers" role="listbox" aria-label="Серверы" hidden>
-        <div class="pop-title">Серверы</div>
-        <div id="server-list"></div>
-        <div class="pop-note" id="servers-note" hidden></div>
-      </div>
-      <div class="note" id="note"><span class="dot"></span><span id="note-text"></span></div>
+
       <div class="details" id="details" hidden>
-        <div class="row" id="row-node"><span class="l">Узел</span><span id="d-node"></span></div>
-        <div class="row" id="row-since"><span class="l">Подключено с</span><span id="d-since"></span></div>
-        <div class="row" id="row-rtt"><span class="l">Задержка через туннель</span><span class="num" id="d-rtt"></span></div>
-        <div class="row" id="row-loss"><span class="l">Неудачных попыток</span><span class="num" id="d-loss"></span></div>
+        <div class="row" id="row-since"><span class="l">Подключено</span><span id="d-since"></span></div>
+        <div class="row" id="row-loss"><span class="l" data-tip="Доля неудачных из четырёх TCP-соединений с внешним адресом через туннель, а не потери пакетов.">Неудачных попыток</span><span class="num" id="d-loss"></span></div>
         <div class="row" id="row-measured"><span class="l">Замер</span><span id="d-measured"></span></div>
-        <div class="hint">Задержка — время TCP-соединения с внешним адресом через туннель, а не ping до сервера. Неудачные попытки — доля из четырёх таких соединений, не потери пакетов.</div>
+      </div>
+
+      <div class="journal" id="journal" hidden>
+        <span class="server-label" data-tip="Что служба делала и почему: подключения, протоколы, проверки, переключения. Хранится с запуска службы.">Журнал</span>
+        <ol class="journal-list" id="journal-list"></ol>
       </div>
     </div>
 
-    <div class="power-wrap">
-      <button class="power" id="power" aria-label="Подключить VPN">
-        <svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>
-        <span id="power-label">Подключиться</span>
-      </button>
-      <div class="error" id="action-error" role="alert" hidden></div>
-    </div>
-
-    <div class="goals">
-      <button class="tile" id="goal-bypass" aria-pressed="false">
-        <span class="tile-name">Обход блокировок</span>
-        <span class="tile-sub" id="sub-bypass" hidden></span>
-      </button>
-      <button class="tile" id="goal-geo" aria-haspopup="listbox" aria-expanded="false">
-        <span class="tile-name">Геолокация</span>
-        <span class="tile-value" id="geo-value"></span>
-        <span class="tile-sub" id="sub-geo" hidden></span>
-      </button>
-      <button class="tile" id="goal-route" aria-pressed="false">
-        <span class="tile-name">Маршрут</span>
-        <span class="tile-value">самый быстрый</span>
-        <span class="tile-sub" id="sub-route" hidden></span>
-      </button>
-      <button class="tile" id="goal-anonymity" aria-haspopup="listbox" aria-expanded="false">
-        <span class="tile-name">Анонимность</span>
-        <span class="tile-value" id="anon-value"></span>
-        <span class="tile-sub" id="sub-anonymity" hidden></span>
-      </button>
-
-      <div class="pop list goal-pop" id="countries" role="listbox" aria-label="Страна" hidden>
-        <div class="pop-title">Страна</div>
-        <div id="country-list"></div>
-        <div class="pop-note" id="countries-note" hidden></div>
+    <div class="choices">
+      <div class="server">
+        <div class="server-head">
+          <span class="server-label">Сервер</span>
+          <button class="switch" id="auto" role="switch" aria-checked="true" data-tip="Сервер выбирается автоматически и меняется, если перестал работать. Выключить — закрепить текущий.">
+            <span class="knob"></span><span>Авто</span>
+          </button>
+          <div class="segment" id="mode" role="radiogroup" aria-label="Режим" hidden>
+            <button role="radio" aria-checked="false" data-mode="vpn" data-tip="Весь трафик компьютера идёт через сервер.">VPN</button>
+            <button role="radio" aria-checked="false" data-mode="antizapret" data-tip="Через сервер идут только сайты, заблокированные в России, остальное — напрямую: местные сайты и банки работают как без VPN.">Антизапрет</button>
+          </div>
+        </div>
+        <span class="mode-note" id="mode-note" hidden></span>
+        <button class="chip" id="chip" aria-haspopup="listbox" aria-expanded="false">
+          <span class="chip-flag" id="chip-flag"></span>
+          <span class="chip-text">
+            <span class="chip-name" id="place"></span>
+            <span class="chip-sub" id="chip-sub" hidden></span>
+            <span class="chip-sub" id="reason" hidden></span>
+          </span>
+          <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="pop list server-pop" id="servers" role="listbox" aria-label="Страна и сервер" hidden>
+          <div id="server-list"></div>
+          <div class="pop-note" id="servers-note" hidden></div>
+        </div>
       </div>
-      <div class="pop list goal-pop" id="levels" role="listbox" aria-label="Уровень анонимности" hidden>
-        <div class="pop-title">Анонимность</div>
-        <button class="opt" data-level="">Выкл</button>
-        <button class="opt" data-level="light">Лёгкая <span class="opt-sub">почти не мешает играм</span></button>
-        <button class="opt" data-level="standard">Средняя</button>
-        <button class="opt" data-level="high">Высокая</button>
-        <div class="pop-note">Пока ни один сервер не даёт дополнительной анонимности. Уровень запомнится и начнёт действовать, когда это появится.</div>
-      </div>
-    </div>
 
-    <div class="blocks" id="blocks" hidden>
-      <div class="blocks-line" id="blocks-line"></div>
-      <div class="details" id="blocks-details" hidden>
-        <div id="blocks-rows"></div>
-        <div class="hint" id="blocks-hint"></div>
-        <div class="row" id="row-blocks-measured"><span class="l">Замер</span><span id="d-blocks-measured"></span></div>
+      <div class="goals">
+        <button class="tile" id="goal-bypass" aria-pressed="false" data-tip="Протокол подбирается под вашу сеть, чтобы его не блокировали.">
+          <span class="tile-name">Обход блокировок</span>
+          <span class="tile-sub" id="sub-bypass" hidden></span>
+        </button>
+        <button class="tile" id="goal-route" aria-pressed="false" data-tip="Сервер с самой быстрой связью до вас по прошлым замерам. Действует, пока включено «Авто».">
+          <span class="tile-name">Маршрут</span>
+          <span class="tile-value">самый быстрый</span>
+          <span class="tile-sub" id="sub-route" hidden></span>
+        </button>
+        <button class="tile selector" id="goal-anonymity" aria-haspopup="listbox" aria-expanded="false">
+          <span class="tile-name">Анонимность</span>
+          <span class="tile-pick">
+            <span class="tile-value" id="anon-value"></span>
+            <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>
+          </span>
+          <span class="tile-sub" id="sub-anonymity" hidden></span>
+        </button>
+
+        <div class="pop list goal-pop" id="levels" role="listbox" aria-label="Уровень анонимности" hidden>
+          <div class="pop-title">Анонимность</div>
+          <button class="opt" data-level="">Выкл</button>
+          <button class="opt" data-level="light" data-tip="Почти не мешает играм. Пока ни один сервер не даёт дополнительной анонимности: уровень запомнится и начнёт действовать, когда это появится.">Лёгкая</button>
+          <button class="opt" data-level="standard" data-tip="Пока ни один сервер не даёт дополнительной анонимности: уровень запомнится и начнёт действовать, когда это появится.">Средняя</button>
+          <button class="opt" data-level="high" data-tip="Пока ни один сервер не даёт дополнительной анонимности: уровень запомнится и начнёт действовать, когда это появится.">Высокая</button>
+        </div>
+      </div>
+
+      <div class="games" id="games" hidden>
+        <span class="server-label" data-tip="Включённая игра идёт через сервер, остальное — как без неё. Если включены анонимность или обход блокировок, через сервер идёт весь компьютер.">Игры</span>
+        <div class="game-cards" id="game-cards"></div>
+      </div>
+
+      <div class="blocks" id="blocks" hidden>
+        <div class="blocks-line" id="blocks-line"></div>
+        <div class="details" id="blocks-details" hidden>
+          <div id="blocks-rows"></div>
+          <div class="row" id="row-blocks-measured"><span class="l">Замер</span><span id="d-blocks-measured"></span></div>
+        </div>
       </div>
     </div>
   </section>
@@ -152,10 +163,12 @@
     </div>
   </div>
 
-  <footer class="foot">
-    <button class="corner" id="corner" aria-label="Подробный режим" aria-pressed="false" hidden></button>
-  </footer>
+  <div class="tip" id="tip" role="tooltip" hidden></div>
 </div>
+<button class="edge" id="edge" aria-label="Подробный режим" aria-pressed="false" hidden>
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+</button>
+<script src="flags.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

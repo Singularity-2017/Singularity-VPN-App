@@ -83,6 +83,8 @@ func main() {
 		run = run_events
 	case "games":
 		run = parse_games(args)
+	case "tunnel":
+		run = parse_tunnel(args)
 	case "servers":
 		no_args(command, args)
 		run = run_servers
@@ -122,6 +124,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  svpn-ctl games                         the games carried through the tunnel")
 	fmt.Fprintln(os.Stderr, "  svpn-ctl games <id>...                 carry only these games; a tunnel that is up is rebuilt")
 	fmt.Fprintln(os.Stderr, "  svpn-ctl games --none                  carry the whole machine again")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl tunnel                        the tunnel mode: vpn or antizapret")
+	fmt.Fprintln(os.Stderr, "  svpn-ctl tunnel vpn|antizapret         choose it; a tunnel that is up is rebuilt")
 }
 
 func usage_error(format string, args ...any) {
@@ -264,6 +268,39 @@ func parse_games(args []string) func(ctx context.Context, client *ipc.Client) er
 		} else {
 			fmt.Println("games carried through the tunnel:", strings.Join(ids, " "))
 		}
+		return nil
+	}
+}
+
+// parse_tunnel reads the tunnel command: no argument shows the mode, vpn or
+// antizapret sets it.
+func parse_tunnel(args []string) func(ctx context.Context, client *ipc.Client) error {
+	if len(args) == 0 {
+		return func(ctx context.Context, client *ipc.Client) error {
+			ctx, cancel := with_timeout(ctx)
+			defer cancel()
+			mode, err := client.Tunnel_mode(ctx)
+			if err != nil {
+				return err
+			}
+			fmt.Println("tunnel mode:", mode.Mode)
+			return nil
+		}
+	}
+	if len(args) != 1 {
+		usage_error("tunnel: expected vpn or antizapret")
+	}
+	mode := ipc.Tunnel_mode{Mode: args[0]}
+	if err := mode.Validate(); err != nil {
+		usage_error("tunnel: %q is not vpn or antizapret", args[0])
+	}
+	return func(ctx context.Context, client *ipc.Client) error {
+		ctx, cancel := with_timeout(ctx)
+		defer cancel()
+		if err := client.Set_tunnel_mode(ctx, mode); err != nil {
+			return err
+		}
+		fmt.Println("tunnel mode:", mode.Mode)
 		return nil
 	}
 }

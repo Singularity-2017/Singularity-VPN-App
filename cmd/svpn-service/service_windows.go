@@ -23,6 +23,7 @@ import (
 	"singularity-vpn-app/internal/core"
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
+	"singularity-vpn-app/internal/journal"
 	"singularity-vpn-app/internal/platform"
 	winplatform "singularity-vpn-app/internal/platform/windows"
 	"singularity-vpn-app/internal/platform/windows/divert"
@@ -221,10 +222,11 @@ func start(console bool) (*running_service, error) {
 	if console {
 		log_out = io.MultiWriter(log_file, os.Stderr)
 	}
-	logger := slog.New(slog.NewTextHandler(log_out, nil))
+	operations := journal.New(journal_size)
+	logger := slog.New(journal.Handler(slog.NewTextHandler(log_out, nil), operations))
 	logger.Info("service starting", build_attributes()...)
 
-	application, err := build_application(p, logger)
+	application, err := build_application(p, logger, operations)
 	if err != nil {
 		logger.Error("service did not start", "error", err.Error())
 		log_file.Close()
@@ -352,7 +354,11 @@ func enable_games(adapter *wireguard.Adapter, p paths, logger *slog.Logger) erro
 	return nil
 }
 
-func build_application(p paths, logger *slog.Logger) (*core.Application, error) {
+// journal_size is how many operations the window can read back: a few
+// sessions' worth of connects, switches and failures.
+const journal_size = 300
+
+func build_application(p paths, logger *slog.Logger, operations *journal.Journal) (*core.Application, error) {
 	secrets, err := security.Open_file_store(p.secrets, security.New_dpapi_cipher())
 	if err != nil {
 		return nil, err
@@ -380,6 +386,9 @@ func build_application(p paths, logger *slog.Logger) (*core.Application, error) 
 		Tunnel_up:   func() bool { return adapter.Status().Running },
 		Dns_name:    probe_dns_name,
 		Dial_target: probe_dial_target,
+		// A tunnel that carries only part of the traffic drops the
+		// static target; the adapter names one it does carry.
+		Dial_target_now: adapter.Probe_target,
 	})
 	if err != nil {
 		return nil, err
@@ -392,9 +401,11 @@ func build_application(p paths, logger *slog.Logger) (*core.Application, error) 
 		Protocols:     registry,
 		Prober:        prober,
 		Reach_prober:  reach.New_prober(reach.System_network{}),
+		Pinger:        winplatform.New_pinger(adapter_name),
 		Bus:           events.New_bus(0),
 		Device_name:   device_name(),
 		Logger:        logger,
+		Journal:       operations,
 	})
 }
 

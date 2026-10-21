@@ -186,9 +186,44 @@ func (c *Client) Set_games(ctx context.Context, games Games) error {
 	return decode_result(resp, nil)
 }
 
+func (c *Client) Journal(ctx context.Context) (Journal_result, error) {
+	var result Journal_result
+	resp, err := c.call(ctx, Command_journal, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Tunnel_mode(ctx context.Context) (Tunnel_mode, error) {
+	var result Tunnel_mode
+	resp, err := c.call(ctx, Command_tunnel_mode, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Set_tunnel_mode(ctx context.Context, mode Tunnel_mode) error {
+	resp, err := c.call(ctx, Command_set_tunnel_mode, mode)
+	if err != nil {
+		return err
+	}
+	return decode_result(resp, nil)
+}
+
 func (c *Client) Servers(ctx context.Context) (Servers_result, error) {
 	var result Servers_result
 	resp, err := c.call(ctx, Command_servers, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Ping_servers(ctx context.Context) (Ping_servers_result, error) {
+	var result Ping_servers_result
+	resp, err := c.call(ctx, Command_ping_servers, nil)
 	if err != nil {
 		return result, err
 	}

@@ -258,8 +258,32 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 		}
 		h.reply(req.Id, nil, h.service.Set_games(ctx, params))
 
+	case Command_tunnel_mode:
+		result, err := h.service.Tunnel_mode(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_journal:
+		result, err := h.service.Journal(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_set_tunnel_mode:
+		params, err := decode_params[Tunnel_mode](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		h.reply(req.Id, nil, h.service.Set_tunnel_mode(ctx, params))
+
 	case Command_servers:
 		result, err := h.service.Servers(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_ping_servers:
+		result, err := h.service.Ping_servers(ctx)
 		h.reply(req.Id, result, err)
 
 	case Command_analyze:

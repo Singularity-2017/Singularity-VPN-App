@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -89,7 +90,7 @@ func (f *fake_control_plane) Create_profile(ctx context.Context, token, protocol
 	return f.profile, f.profile_err
 }
 
-func (f *fake_control_plane) Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (api.Vpn_config, error) {
+func (f *fake_control_plane) Fetch_config(ctx context.Context, token, client_id, protocol, node_id, mode string) (api.Vpn_config, error) {
 	return f.config, f.config_err
 }
 
@@ -186,6 +187,41 @@ func (p *fake_reach_prober) Probe(ctx context.Context, targets []reach.Target) (
 	return p.results, p.err
 }
 
+// fake_pinger answers an echo from a script: an address with an entry in
+// rtts answers after that long, any other fails the way an unanswered echo
+// does. It records every address it was asked about.
+type fake_pinger struct {
+	mu    sync.Mutex
+	rtts  map[netip.Addr]time.Duration
+	asked []netip.Addr
+	wait  time.Duration // each echo takes this long to fail or answer, or until ctx ends
+}
+
+func (p *fake_pinger) Ping(ctx context.Context, destination netip.Addr) (time.Duration, error) {
+	p.mu.Lock()
+	p.asked = append(p.asked, destination)
+	rtt, answers := p.rtts[destination]
+	wait := p.wait
+	p.mu.Unlock()
+	if wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	if !answers {
+		return 0, errors.New("no echo reply")
+	}
+	return rtt, nil
+}
+
+func (p *fake_pinger) addresses_asked() []netip.Addr {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]netip.Addr(nil), p.asked...)
+}
+
 // memory_state_store is connection.State_store over a value in memory.
 type memory_state_store struct {
 	mu       sync.Mutex
@@ -226,6 +262,7 @@ type fixture struct {
 	protocol      *fake_protocol
 	prober        *fake_prober
 	reach_prober  *fake_reach_prober
+	pinger        *fake_pinger
 	bus           *events.Bus
 }
 
@@ -252,6 +289,7 @@ func new_fixture(t *testing.T) *fixture {
 		protocol:      protocol,
 		prober:        &fake_prober{sample: diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Dns_ok: true, Rtt: 10 * time.Millisecond}},
 		reach_prober:  &fake_reach_prober{},
+		pinger:        &fake_pinger{},
 		bus:           events.New_bus(16),
 	}
 
@@ -262,6 +300,7 @@ func new_fixture(t *testing.T) *fixture {
 		Protocols:     registry,
 		Prober:        f.prober,
 		Reach_prober:  f.reach_prober,
+		Pinger:        f.pinger,
 		Bus:           f.bus,
 		Device_name:   "test machine",
 	})
@@ -282,6 +321,7 @@ func base_dependencies() Dependencies {
 		Protocols:     registry,
 		Prober:        &fake_prober{},
 		Reach_prober:  &fake_reach_prober{},
+		Pinger:        &fake_pinger{},
 		Bus:           events.New_bus(1),
 		Device_name:   "test machine",
 	}
@@ -300,6 +340,7 @@ func Test_the_application_refuses_missing_dependencies(t *testing.T) {
 		{"Protocols", func(d *Dependencies) { d.Protocols = nil }},
 		{"Prober", func(d *Dependencies) { d.Prober = nil }},
 		{"Reach_prober", func(d *Dependencies) { d.Reach_prober = nil }},
+		{"Pinger", func(d *Dependencies) { d.Pinger = nil }},
 		{"Bus", func(d *Dependencies) { d.Bus = nil }},
 		{"Device_name", func(d *Dependencies) { d.Device_name = "" }},
 	}

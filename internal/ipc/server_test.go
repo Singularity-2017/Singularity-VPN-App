@@ -26,9 +26,12 @@ type fake_service struct {
 
 	strategy         Strategy
 	games            Games
+	tunnel_mode      Tunnel_mode
 	set_strategy_err error
 	servers          Servers_result
 	servers_err      error
+	ping_servers     Ping_servers_result
+	ping_servers_err error
 	analyze_result   Analysis_result
 	analyze_err      error
 	analysis         Last_analysis
@@ -139,8 +142,25 @@ func (f *fake_service) Set_games(ctx context.Context, games Games) error {
 	return nil
 }
 
+func (f *fake_service) Journal(ctx context.Context) (Journal_result, error) {
+	return Journal_result{}, nil
+}
+
+func (f *fake_service) Tunnel_mode(ctx context.Context) (Tunnel_mode, error) {
+	return f.tunnel_mode, nil
+}
+
+func (f *fake_service) Set_tunnel_mode(ctx context.Context, mode Tunnel_mode) error {
+	f.tunnel_mode = mode
+	return nil
+}
+
 func (f *fake_service) Servers(ctx context.Context) (Servers_result, error) {
 	return f.servers, f.servers_err
+}
+
+func (f *fake_service) Ping_servers(ctx context.Context) (Ping_servers_result, error) {
+	return f.ping_servers, f.ping_servers_err
 }
 
 func (f *fake_service) Analyze(ctx context.Context) (Analysis_result, error) {

@@ -59,6 +59,14 @@ func Test_a_recommendation_from_a_control_plane_without_goals_is_still_usable(t 
 	}
 }
 
+func Test_a_servers_host_is_read_when_the_control_plane_sends_one_and_empty_when_it_does_not(t *testing.T) {
+	list, err := serve_data(t, `{"servers":[{"node_id":"node-2","host":"192.0.2.10","available":true},{"node_id":"node-3","available":true}]}`).
+		Servers(context.Background(), "tok")
+	if err != nil || len(list) != 2 || list[0].Host != "192.0.2.10" || list[1].Host != "" {
+		t.Fatalf("Servers = %+v, %v; want the host of the first and none for the second", list, err)
+	}
+}
+
 func Test_the_server_list_is_read_and_a_server_without_an_id_refused(t *testing.T) {
 	list, err := serve_data(t, `{"servers":[{"node_id":"node-2","name":"Germany 1","country":"DE","available":true},{"node_id":"node-3","available":false}]}`).
 		Servers(context.Background(), "tok")

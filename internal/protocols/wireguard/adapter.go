@@ -127,6 +127,7 @@ type Adapter struct {
 	handle  platform.Tunnel_handle
 	device  tunnel
 	routing bool // the router is capturing for this tunnel
+	probe   string
 }
 
 // Enable_games gives the adapter the platform's game router and the
@@ -310,6 +311,7 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 	a.handle = handle
 	a.running = true
 	a.routing = games_only
+	a.probe = split_probe_target(parsed.Dns, peer.Allowed_ips, games_only)
 	a.since = a.clock()
 	switch {
 	case games_only:
@@ -318,6 +320,43 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 		a.detail = fmt.Sprintf("connected, %d peer(s)", len(parsed.Peers))
 	}
 	return nil
+}
+
+// Probe_target is what a health probe should dial through this tunnel when
+// the static target would be dropped: the node's resolver, as "addr:53".
+// It is empty when the tunnel is not running, when it carries everything
+// (the static target is reachable), in games-only mode, and when the config
+// names no DNS address the tunnel carries.
+func (a *Adapter) Probe_target() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.running {
+		return ""
+	}
+	return a.probe
+}
+
+// split_probe_target picks the probe target for a tunnel that carries only
+// part of the traffic: the first DNS address of the config that lies inside
+// one of the peer's AllowedIPs. TCP port 53 is used because the AntiZapret
+// resolver answers TCP.
+func split_probe_target(dns []netip.Addr, allowed []netip.Prefix, games_only bool) string {
+	if games_only {
+		return ""
+	}
+	for _, prefix := range allowed {
+		if prefix.Bits() == 0 {
+			return ""
+		}
+	}
+	for _, address := range dns {
+		for _, prefix := range allowed {
+			if prefix.Contains(address) {
+				return net.JoinHostPort(address.String(), "53")
+			}
+		}
+	}
+	return ""
 }
 
 // only_routes is routing.Tunnel.Only for this connect: nil for the whole
@@ -376,6 +415,7 @@ func (a *Adapter) Disconnect(ctx context.Context) error {
 
 	a.running = false
 	a.routing = false
+	a.probe = ""
 	a.device = nil
 	a.handle = 0
 	a.detail = ""

@@ -11,6 +11,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"singularity-vpn-app/internal/ipc"
+	"singularity-vpn-app/internal/journal"
 )
 
 // call_timeout bounds one call to the service. A connect can legitimately
@@ -162,6 +163,59 @@ func (a *App) Set_strategy(strategy ipc.Strategy) Outcome {
 	return a.act(func(ctx context.Context, c *ipc.Client) error { return c.Set_strategy(ctx, strategy) })
 }
 
+// Tunnel_mode_view is the stored tunnel mode, "vpn" or "antizapret", or why
+// it could not be read.
+type Tunnel_mode_view struct {
+	Mode  string   `json:"mode"`
+	Error *Outcome `json:"error,omitempty"`
+}
+
+func (a *App) Tunnel_mode() Tunnel_mode_view {
+	var view Tunnel_mode_view
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		t, err := c.Tunnel_mode(ctx)
+		if err == nil {
+			view.Mode = t.Mode
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
+// Set_tunnel_mode records which profile of the node to use. If a tunnel is
+// up the service rebuilds it, which is why this can take as long as a
+// connect.
+func (a *App) Set_tunnel_mode(mode string) Outcome {
+	return a.act(func(ctx context.Context, c *ipc.Client) error {
+		return c.Set_tunnel_mode(ctx, ipc.Tunnel_mode{Mode: mode})
+	})
+}
+
+// Journal_view is the service's recent operations, oldest first, or why
+// they could not be read.
+type Journal_view struct {
+	Entries []journal.Entry `json:"entries"`
+	Error   *Outcome        `json:"error,omitempty"`
+}
+
+func (a *App) Journal() Journal_view {
+	view := Journal_view{Entries: []journal.Entry{}}
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		result, err := c.Journal(ctx)
+		if err == nil && result.Entries != nil {
+			view.Entries = result.Entries
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
 // Servers_view is the server list, or why it could not be had.
 type Servers_view struct {
 	Servers []ipc.Server `json:"servers"`
@@ -174,6 +228,33 @@ func (a *App) Servers() Servers_view {
 		result, err := c.Servers(ctx)
 		if err == nil && result.Servers != nil {
 			view.Servers = result.Servers
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
+// Ping_servers_view is the latency to the servers that answered, by node id,
+// or why it could not be had. A server that did not answer is not in Pings,
+// and the page shows nothing for it.
+type Ping_servers_view struct {
+	Pings []ipc.Server_ping `json:"pings"`
+	Error *Outcome          `json:"error,omitempty"`
+}
+
+// Ping_servers asks the service how long each server takes to answer. The
+// page calls it once a second while the server menu is open. The service
+// does the measuring and keeps the addresses: this side gets node ids and
+// round trips only.
+func (a *App) Ping_servers() Ping_servers_view {
+	view := Ping_servers_view{Pings: []ipc.Server_ping{}}
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		result, err := c.Ping_servers(ctx)
+		if err == nil && result.Pings != nil {
+			view.Pings = result.Pings
 		}
 		return err
 	})

@@ -5,12 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
+	"sync"
 	"time"
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/connection"
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
+	"singularity-vpn-app/internal/journal"
+	"singularity-vpn-app/internal/platform"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/reach"
 	"singularity-vpn-app/internal/recovery"
@@ -32,7 +37,7 @@ type Control_plane interface {
 	Mint_device_token(ctx context.Context, session_token, name string) (api.Device, error)
 	Recommend(ctx context.Context, token string, request api.Recommend_request) (api.Recommendation, error)
 	Create_profile(ctx context.Context, token, protocol, node_id string, duration_days int) (api.Profile, error)
-	Fetch_config(ctx context.Context, token, client_id, protocol, node_id string) (api.Vpn_config, error)
+	Fetch_config(ctx context.Context, token, client_id, protocol, node_id, mode string) (api.Vpn_config, error)
 	Servers(ctx context.Context, token string) ([]api.Server, error)
 	Reach_targets(ctx context.Context, token string) (api.Reach_catalog, error)
 }
@@ -57,11 +62,15 @@ type Dependencies struct {
 	Protocols     protocols.Manager
 	Prober        diagnostics.Prober
 	Reach_prober  Reach_prober
+	Pinger        platform.Pinger // the latency to every listed server; see Application.Ping_servers
 	Bus           *events.Bus
 	Config        connection.Config
 	Device_name   string       // what a minted device token is called on the account
 	Logger        *slog.Logger // nil means slog.New(slog.DiscardHandler)
-	Now           func() time.Time
+	// Journal is what Command_journal reads; the logger above feeds it.
+	// nil means an empty journal.
+	Journal *journal.Journal
+	Now     func() time.Time
 }
 
 // Application is the running program: the connection state machine, wired
@@ -75,10 +84,24 @@ type Application struct {
 	bus           *events.Bus
 	device_name   string
 	logger        *slog.Logger
+	journal       *journal.Journal
 	now           func() time.Time
 
 	reach_prober Reach_prober
 	analysis     analysis_cache
+
+	// pinger and resolve_ip4 are what Ping_servers measures with.
+	// resolve_ip4 is a field only so a test can answer a name without a
+	// network.
+	pinger      platform.Pinger
+	resolve_ip4 func(ctx context.Context, host string) ([]netip.Addr, error)
+
+	// hosts is node_id -> host for the servers the last Servers call listed
+	// with an address. The addresses stay here: the window is told only how
+	// long each node took to answer. hosts_mu guards it, because Servers
+	// replaces it on one request while Ping_servers reads it on another.
+	hosts_mu sync.Mutex
+	hosts    map[string]string
 }
 
 // New_application builds an Application, refusing a Dependencies missing
@@ -101,6 +124,8 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		return nil, fmt.Errorf("core: Dependencies.Prober is required")
 	case dependencies.Reach_prober == nil:
 		return nil, fmt.Errorf("core: Dependencies.Reach_prober is required")
+	case dependencies.Pinger == nil:
+		return nil, fmt.Errorf("core: Dependencies.Pinger is required")
 	case dependencies.Bus == nil:
 		return nil, fmt.Errorf("core: Dependencies.Bus is required")
 	case dependencies.Device_name == "":
@@ -140,8 +165,13 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		bus:           dependencies.Bus,
 		device_name:   dependencies.Device_name,
 		logger:        logger,
+		journal:       dependencies.Journal,
 		now:           now,
 		reach_prober:  dependencies.Reach_prober,
+		pinger:        dependencies.Pinger,
+		resolve_ip4: func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+		},
 	}, nil
 }
 

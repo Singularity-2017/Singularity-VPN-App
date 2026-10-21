@@ -540,6 +540,7 @@ func restart(t *testing.T, f *fixture) *fixture {
 		Protocols:     registry,
 		Prober:        f.prober,
 		Reach_prober:  f.reach_prober,
+		Pinger:        f.pinger,
 		Bus:           bus,
 		Device_name:   "test machine",
 	})
@@ -635,5 +636,41 @@ func Test_a_connect_before_sign_in_records_no_wish(t *testing.T) {
 	}
 	if want {
 		t.Fatal("Connect_on_start after a refused connect = true, want false")
+	}
+}
+
+func Test_a_status_names_what_the_live_tunnel_carries_and_omits_it_when_down(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+
+	got, err := f.app.Status(context.Background())
+	if err != nil || got.Tunnel != "" {
+		t.Fatalf("Status() before connecting = %+v, %v; want no tunnel", got, err)
+	}
+
+	if err := f.app.Set_tunnel_mode(context.Background(), ipc.Tunnel_mode{Mode: ipc.Tunnel_antizapret}); err != nil {
+		t.Fatalf("Set_tunnel_mode: %v", err)
+	}
+	f.control_plane.config = api.Vpn_config{Config: "[Interface]\n", Protocol: "wireguard", Mode: "antizapret", Expires_at: time.Now().Add(time.Hour)}
+	connect(t, f)
+	got, err = f.app.Status(context.Background())
+	if err != nil || got.Tunnel != ipc.Tunnel_antizapret {
+		t.Fatalf("Status() = %+v, %v; want the antizapret tunnel the session was built with", got, err)
+	}
+
+	// The wish changes; the session reports what it was built with until
+	// it is rebuilt.
+	if err := f.app.manager.Set_tunnel_mode(ipc.Tunnel_vpn); err != nil {
+		t.Fatalf("Set_tunnel_mode: %v", err)
+	}
+	if got, _ := f.app.Status(context.Background()); got.Tunnel != ipc.Tunnel_antizapret {
+		t.Fatalf("Status().Tunnel = %q after the stored wish changed, want the live tunnel's", got.Tunnel)
+	}
+
+	if err := f.app.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	if got, _ := f.app.Status(context.Background()); got.Tunnel != "" {
+		t.Fatalf("Status().Tunnel = %q after disconnecting, want none", got.Tunnel)
 	}
 }

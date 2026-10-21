@@ -56,6 +56,23 @@ func Test_a_server_that_cannot_be_used_is_reported_as_such(t *testing.T) {
 	}
 }
 
+func Test_server_latencies_round_trip_by_node_id_alone(t *testing.T) {
+	service := new_fake_service()
+	client, _ := serve_pair(t, service)
+
+	want := Ping_servers_result{Pings: []Server_ping{{Node_id: "node-1", Rtt_ms: 12.5}, {Node_id: "node-2", Rtt_ms: 0.4}}}
+	service.ping_servers = want
+	got, err := client.Ping_servers(with_timeout(t))
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Ping_servers() = %+v, %v; want %+v", got, err, want)
+	}
+
+	service.ping_servers_err = Err_not_signed_in
+	if _, err := client.Ping_servers(with_timeout(t)); !errors.Is(err, Remote_not_signed_in) {
+		t.Fatalf("Ping_servers() error = %v, want the service's refusal passed on", err)
+	}
+}
+
 func Test_an_analysis_round_trips_and_is_absent_until_there_is_one(t *testing.T) {
 	service := new_fake_service()
 	client, _ := serve_pair(t, service)
@@ -106,5 +123,33 @@ func Test_a_game_list_the_service_would_not_read_is_refused(t *testing.T) {
 		if err := good.Validate(); err != nil {
 			t.Errorf("%+v: %v", good, err)
 		}
+	}
+}
+
+func Test_a_tunnel_mode_other_than_the_two_is_refused(t *testing.T) {
+	for _, bad := range []string{"", "full", "Antizapret", "VPN", "games", "antizapret "} {
+		if (Tunnel_mode{Mode: bad}).Validate() == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+	for _, good := range []string{"vpn", "antizapret"} {
+		if err := (Tunnel_mode{Mode: good}).Validate(); err != nil {
+			t.Errorf("%q: %v", good, err)
+		}
+	}
+}
+
+func Test_a_tunnel_mode_travels_to_the_service_and_back(t *testing.T) {
+	service := new_fake_service()
+	client, _ := serve_pair(t, service)
+	if err := client.Set_tunnel_mode(with_timeout(t), Tunnel_mode{Mode: Tunnel_antizapret}); err != nil {
+		t.Fatalf("Set_tunnel_mode: %v", err)
+	}
+	got, err := client.Tunnel_mode(with_timeout(t))
+	if err != nil || got.Mode != Tunnel_antizapret {
+		t.Fatalf("Tunnel_mode() = %+v, %v; want antizapret", got, err)
+	}
+	if err := client.Set_tunnel_mode(with_timeout(t), Tunnel_mode{Mode: "full"}); err == nil {
+		t.Fatal("a mode the service would not read was accepted")
 	}
 }

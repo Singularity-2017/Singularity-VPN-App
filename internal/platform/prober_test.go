@@ -487,3 +487,50 @@ func Test_a_prober_without_a_target_is_refused(t *testing.T) {
 		})
 	}
 }
+
+// addresses_dialled records which address every attempt of a probe dialled.
+func addresses_dialled(t *testing.T, config Prober_config) []string {
+	t.Helper()
+	var mu sync.Mutex
+	var addresses []string
+	config.Lookup = lookup_ok("203.0.113.1")
+	config.Now = fixed_clock()
+	config.Dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		mu.Lock()
+		addresses = append(addresses, address)
+		mu.Unlock()
+		return &fake_conn{}, nil
+	}
+	prober, err := New_network_prober(config)
+	if err != nil {
+		t.Fatalf("New_network_prober: %v", err)
+	}
+	if _, err := prober.Probe(context.Background()); err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	return addresses
+}
+
+func Test_a_probe_dials_the_target_the_tunnel_names_when_it_names_one(t *testing.T) {
+	config := base_config()
+	config.Dial_target_now = func() string { return "10.29.8.1:53" }
+	got := addresses_dialled(t, config)
+	if len(got) != Default_attempts {
+		t.Fatalf("dialled %d times, want %d", len(got), Default_attempts)
+	}
+	for _, address := range got {
+		if address != "10.29.8.1:53" {
+			t.Fatalf("dialled %q, want the target the tunnel named", address)
+		}
+	}
+}
+
+func Test_a_probe_dials_the_static_target_when_the_tunnel_names_none(t *testing.T) {
+	config := base_config()
+	config.Dial_target_now = func() string { return "" }
+	for _, address := range addresses_dialled(t, config) {
+		if address != "example.test:443" {
+			t.Fatalf("dialled %q, want the static target", address)
+		}
+	}
+}

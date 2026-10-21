@@ -17,8 +17,14 @@ type State struct {
 	Strategy         Strategy
 	// Games are the catalog ids of the games the person wants carried
 	// through the tunnel, in the order they chose them.
-	Games      []string
-	Updated_at time.Time
+	Games []string
+	// Tunnel_mode is which profile of the node the person wants: "" or
+	// "vpn" for the full tunnel (so a state file from before this field
+	// reads as full VPN), "antizapret" for only the blocked destinations.
+	// It is not part of Strategy: Strategy is about which node, this is
+	// about which profile of that node.
+	Tunnel_mode string
+	Updated_at  time.Time
 }
 
 // Strategy is what the person said the connection is for. The control

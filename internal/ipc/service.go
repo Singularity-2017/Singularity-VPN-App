@@ -31,10 +31,16 @@ type Service interface {
 	Strategy(ctx context.Context) (Strategy, error)
 	Set_strategy(ctx context.Context, strategy Strategy) error
 	Servers(ctx context.Context) (Servers_result, error)
+	Ping_servers(ctx context.Context) (Ping_servers_result, error)
 
 	Games(ctx context.Context) (Games, error)
 	Set_games(ctx context.Context, games Games) error
 
+	Tunnel_mode(ctx context.Context) (Tunnel_mode, error)
+	Set_tunnel_mode(ctx context.Context, mode Tunnel_mode) error
+
 	Analyze(ctx context.Context) (Analysis_result, error)
 	Analysis(ctx context.Context) (Last_analysis, error)
+
+	Journal(ctx context.Context) (Journal_result, error)
 }

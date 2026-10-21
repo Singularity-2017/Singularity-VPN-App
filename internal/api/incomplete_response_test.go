@@ -46,7 +46,7 @@ func call_by_name(t *testing.T, client *Client, method string) error {
 		_, err := client.Create_profile(ctx, "token", "wireguard", "node-1", 30)
 		return err
 	case "Fetch_config":
-		_, err := client.Fetch_config(ctx, "token", "client-1", "wireguard", "node-1")
+		_, err := client.Fetch_config(ctx, "token", "client-1", "wireguard", "node-1", "")
 		return err
 	}
 	t.Fatalf("no such method: %s", method)

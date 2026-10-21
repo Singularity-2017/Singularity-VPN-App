@@ -48,6 +48,7 @@ type Network_prober struct {
 	tunnel_up   func() bool
 	dns_name    string
 	dial_target string
+	target_now  func() string
 
 	attempts        int
 	attempt_timeout time.Duration
@@ -68,6 +69,12 @@ type Prober_config struct {
 
 	// Dial_target is the host:port opened to measure round trips. Required.
 	Dial_target string
+
+	// Dial_target_now, when set, is asked at the start of every probe, and
+	// a non-empty answer is dialed instead of Dial_target for that probe.
+	// A tunnel that carries only part of the traffic drops the static
+	// target; this lets the service name one the live tunnel does carry.
+	Dial_target_now func() string
 
 	// Attempts is how many round trips one probe makes. Zero means
 	// Default_attempts.
@@ -126,6 +133,7 @@ func New_network_prober(config Prober_config) (*Network_prober, error) {
 		tunnel_up:       config.Tunnel_up,
 		dns_name:        config.Dns_name,
 		dial_target:     config.Dial_target,
+		target_now:      config.Dial_target_now,
 		attempts:        attempts,
 		attempt_timeout: attempt_timeout,
 		dial:            dial,
@@ -218,12 +226,22 @@ func (p *Network_prober) dial_all(ctx context.Context) ([]time.Duration, int) {
 	}
 	outcomes := make([]outcome, p.attempts)
 
+	// One target for the whole probe: the tunnel could be rebuilt between
+	// two attempts, and a probe that mixed two targets would measure
+	// neither.
+	target := p.dial_target
+	if p.target_now != nil {
+		if now_target := p.target_now(); now_target != "" {
+			target = now_target
+		}
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(p.attempts)
 	for i := 0; i < p.attempts; i++ {
 		go func(i int) {
 			defer wg.Done()
-			rtt, ok := p.dial_one(ctx)
+			rtt, ok := p.dial_one(ctx, target)
 			outcomes[i] = outcome{rtt: rtt, ok: ok}
 		}(i)
 	}
@@ -241,10 +259,10 @@ func (p *Network_prober) dial_all(ctx context.Context) ([]time.Duration, int) {
 	return rtts, failed
 }
 
-// dial_one performs one round trip: dial p.dial_target within its own
+// dial_one performs one round trip: dial target within its own
 // Attempt_timeout, timed from just before the dial to just after it
 // returns, and close the connection the moment it is no longer needed.
-func (p *Network_prober) dial_one(ctx context.Context) (time.Duration, bool) {
+func (p *Network_prober) dial_one(ctx context.Context, target string) (time.Duration, bool) {
 	attempt_ctx := ctx
 	if p.attempt_timeout > 0 {
 		var cancel context.CancelFunc
@@ -253,7 +271,7 @@ func (p *Network_prober) dial_one(ctx context.Context) (time.Duration, bool) {
 	}
 
 	start := p.now()
-	conn, err := p.dial(attempt_ctx, "tcp", p.dial_target)
+	conn, err := p.dial(attempt_ctx, "tcp", target)
 	elapsed := p.now().Sub(start)
 	if err != nil {
 		return 0, false

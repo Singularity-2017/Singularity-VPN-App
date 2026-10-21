@@ -23,6 +23,7 @@ func Test_round_trip_preserves_state(t *testing.T) {
 		Last_node_id:     "n1",
 		Last_protocol:    "wireguard",
 		Connect_on_start: true,
+		Tunnel_mode:      "antizapret",
 	}
 	if err := store.Save(want); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -34,7 +35,7 @@ func Test_round_trip_preserves_state(t *testing.T) {
 	}
 	if got.Client_id != want.Client_id || got.Device_id != want.Device_id ||
 		got.Last_node_id != want.Last_node_id || got.Last_protocol != want.Last_protocol ||
-		got.Connect_on_start != want.Connect_on_start {
+		got.Connect_on_start != want.Connect_on_start || got.Tunnel_mode != want.Tunnel_mode {
 		t.Fatalf("round trip did not preserve state: got %+v, want %+v", got, want)
 	}
 	if got.Version != 1 {
