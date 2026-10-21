@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -36,7 +37,36 @@ type Router struct {
 	sender  *Handle
 	stop    chan struct{}
 	done    sync.WaitGroup
+
+	counts packet_counts
+	// view is the latest port_view follow published, read by capture.
+	view atomic.Pointer[port_view]
 }
+
+// packet_counts follows game packets along the split path, so the log can
+// say where they stop: captured but refused by the tunnel, carried out and
+// never answered, answered and not delivered.
+type packet_counts struct {
+	captured       atomic.Uint64 // diverted by the capture handle
+	carried        atomic.Uint64 // handed to the tunnel
+	refused        atomic.Uint64 // the tunnel's queue was full or closed
+	direct         atomic.Uint64 // not carried, sent back out as it came
+	delivered      atomic.Uint64 // replies injected inbound
+	deliver_failed atomic.Uint64 // replies the send handle refused
+	send_failed    atomic.Uint64 // anybody's packet that could not be sent back out
+}
+
+// reset zeroes the counts one by one: a Deliver from the last session's
+// tunnel may still be counting.
+func (c *packet_counts) reset() {
+	for _, n := range []*atomic.Uint64{&c.captured, &c.carried, &c.refused, &c.direct, &c.delivered, &c.deliver_failed, &c.send_failed} {
+		n.Store(0)
+	}
+}
+
+// count_every is how often the router writes its packet counts, while they
+// change.
+const count_every = 10 * time.Second
 
 // The router's timing. A burst of socket events -- a game starting opens
 // dozens -- is folded into one filter rebuild after settle. The system's
@@ -91,6 +121,15 @@ func (r *Router) Start(selected []games.Game, splitter *split.Splitter, inject f
 		_ = sender.Close()
 		return err
 	}
+	// Opened last: from this moment every outbound packet of the machine
+	// waits in the driver for capture to read it.
+	capture, err := r.library.Open(Outbound_all_filter, Layer_network, 1, 0)
+	if err != nil {
+		_ = sockets.Shutdown()
+		_ = sockets.Close()
+		_ = sender.Close()
+		return err
+	}
 
 	r.sockets = sockets
 	r.send_mu.Lock()
@@ -104,9 +143,12 @@ func (r *Router) Start(selected []games.Game, splitter *split.Splitter, inject f
 		}
 	}
 	events := make(chan socket_event, 1024)
-	r.done.Add(2)
+	r.counts.reset()
+	r.view.Store(nil)
+	r.done.Add(3)
 	go r.read_sockets(sockets, events, r.stop)
-	go r.follow(images, existing, events, splitter, inject, r.stop)
+	go r.follow(images, existing, events, capture, splitter, inject, r.stop)
+	go r.report(r.stop)
 	r.logger.Info("game router started", "games", len(selected), "sockets", len(existing))
 	return nil
 }
@@ -138,10 +180,9 @@ func (r *Router) read_sockets(handle *Handle, events chan<- socket_event, stop <
 }
 
 // follow owns the owner table. It applies socket events, re-reads the
-// system's tables, and reopens the capture handle whenever the games' port
-// set changes: the new handle opens at a higher priority before the old
-// one is retired, so no game packet slips out direct in between.
-func (r *Router) follow(images map[string]bool, existing []Owned, events <-chan socket_event, splitter *split.Splitter, inject func([]byte) bool, stop <-chan struct{}) {
+// system's tables, publishes which ports are a game's for capture to read,
+// and runs capture on the one handle Start opened.
+func (r *Router) follow(images map[string]bool, existing []Owned, events <-chan socket_event, capture *Handle, splitter *split.Splitter, inject func([]byte) bool, stop <-chan struct{}) {
 	defer r.done.Done()
 	owners := New_owners()
 	owners.Replace_snapshot(existing)
@@ -159,58 +200,43 @@ func (r *Router) follow(images map[string]bool, existing []Owned, events <-chan 
 		return images[name]
 	}
 
-	timer := time.NewTimer(settle)
-	timer.Stop()
-	var capture *Handle
-	var capture_done sync.WaitGroup
-	filter := ""
-	keep := map[Port]bool{}
-	priority := int16(0)
-	rebuild := func() {
-		ports := owners.Ports_of(is_game)
-		keep = map[Port]bool{}
-		for _, port := range ports {
-			keep[port] = true
+	// The view is published after every change, so a packet held for an
+	// unknown port sees the bind as soon as it is applied. The splitter
+	// forgets ports that stopped being a game's only once a burst settles.
+	game_count := -1
+	publish := func() {
+		game := owners.Ports_of(is_game)
+		known := owners.Ports_of(func(uint32) bool { return true })
+		r.view.Store(new_port_view(game, known))
+		if len(game) != game_count {
+			game_count = len(game)
+			r.logger.Info("game router: game ports", "ports", game_count)
 		}
+	}
+	retain := func() {
+		view := r.view.Load()
 		splitter.Retain(func(protocol uint8, number uint16) bool {
 			name, ok := protocol_of(protocol)
-			return ok && keep[Port{name, number}]
+			return ok && view != nil && view.game[Port{name, number}]
 		})
-		next, err := Outbound_ports_filter(ports)
-		if err != nil || next == filter {
-			return
-		}
-		var replacement *Handle
-		if len(ports) > 0 {
-			if priority >= Priority_highest {
-				priority = 0
-			}
-			priority++
-			replacement, err = r.library.Open(next, Layer_network, priority, 0)
-			if err != nil {
-				r.logger.Warn("game router: the capture filter was refused", "ports", len(ports), "error", err)
-				timer.Reset(4 * settle) // try again, not only at the next event
-				return
-			}
-			capture_done.Add(1)
-			go r.capture(replacement, splitter, inject, &capture_done)
-		}
-		if capture != nil {
-			_ = capture.Shutdown_receive()
-		}
-		capture, filter = replacement, next
-		r.logger.Info("game router: capturing", "ports", len(ports))
 	}
+	timer := time.NewTimer(settle)
+	timer.Stop()
+	var capture_done sync.WaitGroup
+	guarded := &guarded_handle{handle: capture}
+	publish()
+	capture_done.Add(1)
+	go r.capture(guarded, splitter, inject, &capture_done)
 
 	ticker := time.NewTicker(refresh)
 	defer ticker.Stop()
-	rebuild()
 	for {
 		select {
 		case <-stop:
-			if capture != nil {
-				_ = capture.Shutdown()
-			}
+			// Receiving stops; what is already queued -- the machine's
+			// ordinary packets among it -- is still read and sent on
+			// before the handle closes.
+			guarded.shutdown_receive()
 			capture_done.Wait()
 			return
 		case e, ok := <-events:
@@ -219,49 +245,110 @@ func (r *Router) follow(images map[string]bool, existing []Owned, events <-chan 
 				continue
 			}
 			owners.Apply(e.event, e.socket)
-			// A game's new port is captured at once: its first packets
-			// leave within milliseconds of the bind, and one that went
-			// out direct gives the server a second address for the flow.
-			// Everything else -- closes, other programs -- waits for the
-			// burst to settle.
-			if e.event != Event_socket_close && is_game(e.socket.Process_id) {
-				if protocol, ok := protocol_of(e.socket.Protocol); ok && !keep[Port{protocol, e.socket.Local_port}] {
-					rebuild()
-					continue
+			// A burst -- a game starting opens dozens of sockets -- is
+			// applied whole and published once.
+		drain:
+			for {
+				select {
+				case e, ok := <-events:
+					if !ok {
+						events = nil
+						break drain
+					}
+					owners.Apply(e.event, e.socket)
+				default:
+					break drain
 				}
 			}
+			publish()
 			timer.Reset(settle)
 		case <-timer.C:
-			rebuild()
+			retain()
 		case <-ticker.C:
 			if fresh, err := Existing_sockets(); err == nil {
 				owners.Replace_snapshot(fresh)
 			}
 			clear(names)
-			rebuild()
+			publish()
+			retain()
 		}
 	}
 }
 
-// capture takes each diverted game packet into the tunnel. One the
-// splitter cannot carry goes out as it came.
-func (r *Router) capture(handle *Handle, splitter *split.Splitter, inject func([]byte) bool, done *sync.WaitGroup) {
+// guarded_handle is the capture handle shared by follow, which stops it,
+// and capture, which closes it. Once closed it is never touched again: a
+// handle value can be reused by the next one opened.
+type guarded_handle struct {
+	mu     sync.Mutex
+	handle *Handle
+	closed bool
+}
+
+func (g *guarded_handle) shutdown_receive() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.closed {
+		_ = g.handle.Shutdown_receive()
+	}
+}
+
+func (g *guarded_handle) close() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.closed {
+		g.closed = true
+		_ = g.handle.Close()
+	}
+}
+
+// capture sees every outbound packet the filter diverts. A game's goes
+// into the tunnel; everything else -- and a game's packet the splitter
+// cannot carry -- goes out as it came.
+func (r *Router) capture(guarded *guarded_handle, splitter *split.Splitter, inject func([]byte) bool, done *sync.WaitGroup) {
 	defer done.Done()
-	defer handle.Close()
+	// Closing is what makes the driver stop diverting: a handle left open
+	// with nobody reading would swallow the machine's traffic.
+	defer guarded.close()
+	handle := guarded.handle
+	judge := new_port_judge(r.view.Load)
 	buffer := make([]byte, 65535)
+	send_error_logged := false
 	for {
 		var address Address
 		n, err := handle.Recv(buffer, &address)
 		if err != nil {
+			// After a stop this is the queue running dry. Anything else
+			// ends capture mid-session: the handle closes, everything --
+			// the games too -- goes direct, and the log must say so.
+			if !errors.Is(err, windows.ERROR_NO_DATA) && !errors.Is(err, windows.ERROR_OPERATION_ABORTED) {
+				r.logger.Warn("game router: capture stopped; games go direct until the next connect", "error", err)
+			}
 			return
 		}
 		packet := buffer[:n]
-		index, sub_index := address.Interface()
-		if splitter.Outbound(packet, split.Origin{Interface_index: index, Sub_index: sub_index}) {
-			inject(packet)
-			continue
+		if flow, ok := split.Flow_of(packet); ok {
+			opens := flow.Protocol == split.Protocol_udp || split.Is_syn(packet)
+			if name, ok := protocol_of(flow.Protocol); ok && judge.is_game(Port{name, flow.Source.Port()}, opens) {
+				r.counts.captured.Add(1)
+				index, sub_index := address.Interface()
+				if splitter.Outbound(packet, split.Origin{Interface_index: index, Sub_index: sub_index}) {
+					if inject(packet) {
+						r.counts.carried.Add(1)
+					} else {
+						r.counts.refused.Add(1)
+					}
+					continue
+				}
+				r.counts.direct.Add(1)
+			}
 		}
-		_ = handle.Send(packet, &address)
+		if err := handle.Send(packet, &address); err != nil {
+			r.counts.send_failed.Add(1)
+			if !send_error_logged {
+				send_error_logged = true
+				r.logger.Warn("game router: a packet could not be sent back out", "error", err)
+			}
+		}
 	}
 }
 
@@ -275,7 +362,43 @@ func (r *Router) Deliver(packet []byte, origin split.Origin) bool {
 	address.Set_outbound(false)
 	address.Set_interface(origin.Interface_index, origin.Sub_index)
 	address.Set_checksums_valid()
-	return r.sender.Send(packet, &address) == nil
+	if err := r.sender.Send(packet, &address); err != nil {
+		r.counts.deliver_failed.Add(1)
+		return false
+	}
+	r.counts.delivered.Add(1)
+	return true
+}
+
+// report writes the packet counts every count_every while they move, and
+// once more when the router stops.
+func (r *Router) report(stop <-chan struct{}) {
+	defer r.done.Done()
+	ticker := time.NewTicker(count_every)
+	defer ticker.Stop()
+	var last [7]uint64
+	write := func() {
+		now := [7]uint64{
+			r.counts.captured.Load(), r.counts.carried.Load(), r.counts.refused.Load(),
+			r.counts.direct.Load(), r.counts.delivered.Load(), r.counts.deliver_failed.Load(),
+			r.counts.send_failed.Load(),
+		}
+		if now == last {
+			return
+		}
+		last = now
+		r.logger.Info("game router: packets", "captured", now[0], "carried", now[1], "refused", now[2],
+			"direct", now[3], "delivered", now[4], "deliver_failed", now[5], "send_failed", now[6])
+	}
+	for {
+		select {
+		case <-stop:
+			write()
+			return
+		case <-ticker.C:
+			write()
+		}
+	}
 }
 
 func (r *Router) Stop() error {

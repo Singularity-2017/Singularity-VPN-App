@@ -30,7 +30,7 @@ func Test_windivert_compiles_our_filters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{filter, "false", "true"} {
+	for _, text := range []string{filter, Outbound_all_filter, "false", "true"} {
 		bytes, _ := windows.BytePtrFromString(text)
 		var message *byte
 		var position uint32

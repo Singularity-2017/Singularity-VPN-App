@@ -47,7 +47,7 @@ func (s *Splitter) Outbound(packet []byte, origin Origin) bool {
 		return false
 	}
 	key := flow_key{flow.Protocol, flow.Source.Port()}
-	if flow.Protocol == Protocol_tcp && !is_syn(packet) {
+	if flow.Protocol == Protocol_tcp && !Is_syn(packet) {
 		// A TCP connection is carried only from its first SYN. One that
 		// was already open when capture began keeps going direct: moving
 		// it mid-stream would change its source address, and the server
@@ -71,8 +71,8 @@ func (s *Splitter) Outbound(packet []byte, origin Origin) bool {
 	return true
 }
 
-// is_syn reports a TCP segment opening a connection: SYN set, ACK not.
-func is_syn(packet []byte) bool {
+// Is_syn reports a TCP segment opening a connection: SYN set, ACK not.
+func Is_syn(packet []byte) bool {
 	h, err := parse_ipv4(packet)
 	if err != nil || h.protocol != Protocol_tcp {
 		return false

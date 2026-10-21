@@ -55,6 +55,15 @@ func Outbound_ports_filter(ports []Port) (string, error) {
 	return "outbound and !loopback and ip and " + local_destinations + " and (" + strings.Join(terms, " or ") + ")", nil
 }
 
+// Outbound_all_filter diverts every outbound IPv4 TCP and UDP packet bound
+// outside the machine's own network, whoever sent it. The router decides in
+// Go which are a game's: a filter naming the games' ports is rebuilt only
+// after a port appears, and on the owner's machine (2026-10-21) the first
+// packets of each new game socket left direct before the rebuild landed --
+// a TCP connection whose SYN went direct can never be moved, and a UDP flow
+// that moves changes address under the server.
+var Outbound_all_filter = "outbound and !loopback and ip and (tcp or udp) and " + local_destinations
+
 // local_destinations keeps a game's traffic to its own network out of the
 // tunnel: LAN play, the router, a NAS, another VPN's peers in the private
 // and shared (CGNAT) ranges, link-local, and multicast and broadcast, none
