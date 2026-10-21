@@ -21,6 +21,7 @@ type fake_router struct {
 	inject    func([]byte) bool
 	delivered []split.Origin
 	events    []string
+	running   []string
 }
 
 func (f *fake_router) Start(selected []games.Game, splitter *split.Splitter, inject func([]byte) bool) error {
@@ -33,6 +34,8 @@ func (f *fake_router) Deliver(packet []byte, origin split.Origin) bool {
 	f.delivered = append(f.delivered, origin)
 	return true
 }
+
+func (f *fake_router) Running_games() []string { return f.running }
 
 func (f *fake_router) Stop() error          { f.events = append(f.events, "stop"); return nil }
 func (f *fake_router) Remove_driver() error { f.events = append(f.events, "remove"); return nil }

@@ -225,6 +225,11 @@ func start(console bool) (*running_service, error) {
 	operations := journal.New(journal_size)
 	logger := slog.New(journal.Handler(slog.NewTextHandler(log_out, nil), operations))
 	logger.Info("service starting", build_attributes()...)
+	// A service that died connected left its DNS rule behind, pointing
+	// every name at a tunnel that is gone.
+	if err := winplatform.Remove_dns_policy(); err != nil {
+		logger.Warn("removing a DNS rule left from before failed", "error", err.Error())
+	}
 
 	application, err := build_application(p, logger, operations)
 	if err != nil {
@@ -402,6 +407,7 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Prober:        prober,
 		Reach_prober:  reach.New_prober(reach.System_network{}),
 		Pinger:        winplatform.New_pinger(adapter_name),
+		Game_pinger:   adapter,
 		Bus:           events.New_bus(0),
 		Device_name:   device_name(),
 		Logger:        logger,

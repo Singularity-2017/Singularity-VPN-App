@@ -340,7 +340,7 @@ func (a *Application) Games(ctx context.Context) (ipc.Games, error) {
 	if err != nil {
 		return ipc.Games{}, map_error(err)
 	}
-	return ipc.Games{Games: append([]string{}, ids...)}, nil
+	return ipc.Games{Games: append([]string{}, ids...), Pings: a.game_pings.list(ids)}, nil
 }
 
 // Set_games answers Command_set_games: it records the games and, if a

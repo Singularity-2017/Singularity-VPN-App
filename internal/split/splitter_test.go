@@ -104,3 +104,45 @@ func Test_a_tcp_connection_open_before_capture_keeps_going_direct(t *testing.T) 
 		t.Fatal("a connection carried from its SYN was dropped back to direct")
 	}
 }
+
+func Test_the_busiest_destination_is_where_most_udp_went(t *testing.T) {
+	s := New_splitter(netip.MustParseAddr("10.29.8.5"), 1380)
+	origin := Origin{Interface_index: 3}
+	send := func(to string, n int) {
+		for range n {
+			s.Outbound(build(Protocol_udp, "192.168.1.20", to, udp(5000, 7000, "x")), origin)
+		}
+	}
+	send("203.0.113.9", 30)
+	send("198.51.100.1", 5)
+	got, _, _, ok := s.Take_busiest(20)
+	if !ok || got != netip.MustParseAddr("203.0.113.9") {
+		t.Fatalf("got %v %v", got, ok)
+	}
+	if _, _, _, ok := s.Take_busiest(1); ok {
+		t.Error("counting did not start again")
+	}
+	send("203.0.113.9", 5)
+	if _, _, _, ok := s.Take_busiest(20); ok {
+		t.Error("a trickle passed the bar")
+	}
+}
+
+func Test_no_destination_stands_out_among_many_or_private_ones(t *testing.T) {
+	s := New_splitter(netip.MustParseAddr("10.29.8.5"), 1380)
+	origin := Origin{Interface_index: 3}
+	for range 60 {
+		s.Outbound(build(Protocol_udp, "192.168.1.20", "192.168.1.255", udp(5000, 7000, "x")), origin)
+	}
+	if _, _, _, ok := s.Take_busiest(20); ok {
+		t.Error("a private address was taken for a match server")
+	}
+	for _, to := range []string{"203.0.113.9", "198.51.100.1", "198.51.100.2"} {
+		for range 30 {
+			s.Outbound(build(Protocol_udp, "192.168.1.20", to, udp(5000, 7000, "x")), origin)
+		}
+	}
+	if _, _, _, ok := s.Take_busiest(20); ok {
+		t.Error("one of three equal peers was taken for a match server")
+	}
+}

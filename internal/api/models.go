@@ -60,6 +60,9 @@ type Recommend_request struct {
 	Route     bool
 	Client_id string // the connection the route goal measures
 	Node_id   string // a server picked by hand
+	// Game is the one game the tunnel is for, by catalog id: the control
+	// plane then picks the node nearest that game's servers.
+	Game string
 }
 
 func (r Recommend_request) query() url.Values {
@@ -84,6 +87,9 @@ func (r Recommend_request) query() url.Values {
 	if r.Node_id != "" {
 		q.Set("node_id", r.Node_id)
 	}
+	if r.Game != "" {
+		q.Set("game", r.Game)
+	}
 	if len(q) == 0 {
 		return nil
 	}
@@ -106,6 +112,12 @@ type Server struct {
 	// the window shows nothing for it. It stays inside the service -- the
 	// window learns a node's latency by node_id, never its address.
 	Host string `json:"host"`
+
+	// Game_rtt_ms is the node's own round trip to each game's region, by
+	// game id, from its last successful check in the control plane's
+	// window. Only games with such a check are present: the second half of
+	// a game's ping, after the first mile to the node.
+	Game_rtt_ms map[string]float64 `json:"game_rtt_ms,omitempty"`
 }
 
 // Reach_target is one entry of the reachability catalog: a host the device

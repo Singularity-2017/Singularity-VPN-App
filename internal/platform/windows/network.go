@@ -118,6 +118,11 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 			return fmt.Errorf("platform/windows: setting DNS: %w", err)
 		}
 	}
+	if len(plan.Dns) > 0 {
+		if err := set_dns_policy(luid, plan.Dns); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -144,6 +149,9 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	}
 	if err := luid.FlushDNS(windows.AF_INET6); err != nil {
 		errs = append(errs, fmt.Errorf("platform/windows: flushing IPv6 DNS: %w", err))
+	}
+	if err := clear_dns_policy(luid); err != nil {
+		errs = append(errs, err)
 	}
 
 	n.mu.Lock()

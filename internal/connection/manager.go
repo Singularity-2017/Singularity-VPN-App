@@ -582,10 +582,12 @@ func (m *Manager) spoken(targets []recovery.Target) []recovery.Target {
 }
 
 // recommend_request is what the control plane is asked for: the stored
-// strategy, and the connection a route goal measures.
+// strategy, the connection a route goal measures, and the game when one
+// alone is chosen -- the control plane takes one, and picking one of
+// several would put the others on a node chosen for someone else.
 func (m *Manager) recommend_request() api.Recommend_request {
 	s := m.local_state.Strategy
-	return api.Recommend_request{
+	request := api.Recommend_request{
 		Anonymity: s.Anonymity,
 		Bypass:    s.Bypass,
 		Country:   s.Country,
@@ -593,6 +595,10 @@ func (m *Manager) recommend_request() api.Recommend_request {
 		Client_id: m.local_state.Client_id,
 		Node_id:   s.Node_id,
 	}
+	if len(m.local_state.Games) == 1 {
+		request.Game = m.local_state.Games[0]
+	}
+	return request
 }
 
 // create_profile provisions a new client_id. Manual mode passes the

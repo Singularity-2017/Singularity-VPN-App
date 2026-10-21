@@ -41,6 +41,16 @@ type Router struct {
 	counts packet_counts
 	// view is the latest port_view follow published, read by capture.
 	view atomic.Pointer[port_view]
+	// running is the selected games that hold a port, as follow last saw.
+	running atomic.Pointer[[]string]
+}
+
+// Running_games names the selected games whose processes hold a port now.
+func (r *Router) Running_games() []string {
+	if p := r.running.Load(); p != nil {
+		return append([]string(nil), (*p)...)
+	}
+	return nil
 }
 
 // packet_counts follows game packets along the split path, so the log can
@@ -136,15 +146,16 @@ func (r *Router) Start(selected []games.Game, splitter *split.Splitter, inject f
 	r.sender = sender
 	r.send_mu.Unlock()
 	r.stop = make(chan struct{})
-	images := map[string]bool{}
+	images := map[string]string{}
 	for _, game := range selected {
 		for _, image := range game.Images {
-			images[strings.ToLower(image)] = true
+			images[strings.ToLower(image)] = game.Id
 		}
 	}
 	events := make(chan socket_event, 1024)
 	r.counts.reset()
 	r.view.Store(nil)
+	r.running.Store(nil)
 	r.done.Add(3)
 	go r.read_sockets(sockets, events, r.stop)
 	go r.follow(images, existing, events, capture, splitter, inject, r.stop)
@@ -182,12 +193,12 @@ func (r *Router) read_sockets(handle *Handle, events chan<- socket_event, stop <
 // follow owns the owner table. It applies socket events, re-reads the
 // system's tables, publishes which ports are a game's for capture to read,
 // and runs capture on the one handle Start opened.
-func (r *Router) follow(images map[string]bool, existing []Owned, events <-chan socket_event, capture *Handle, splitter *split.Splitter, inject func([]byte) bool, stop <-chan struct{}) {
+func (r *Router) follow(images map[string]string, existing []Owned, events <-chan socket_event, capture *Handle, splitter *split.Splitter, inject func([]byte) bool, stop <-chan struct{}) {
 	defer r.done.Done()
 	owners := New_owners()
 	owners.Replace_snapshot(existing)
 	names := map[uint32]string{}
-	is_game := func(pid uint32) bool {
+	game_of := func(pid uint32) string {
 		name, seen := names[pid]
 		if !seen {
 			name = strings.ToLower(Image_name(pid))
@@ -199,6 +210,11 @@ func (r *Router) follow(images map[string]bool, existing []Owned, events <-chan 
 		}
 		return images[name]
 	}
+	is_game := func(pid uint32) bool { return game_of(pid) != "" }
+	ids := map[string]bool{}
+	for _, id := range images {
+		ids[id] = true
+	}
 
 	// The view is published after every change, so a packet held for an
 	// unknown port sees the bind as soon as it is applied. The splitter
@@ -208,6 +224,13 @@ func (r *Router) follow(images map[string]bool, existing []Owned, events <-chan 
 		game := owners.Ports_of(is_game)
 		known := owners.Ports_of(func(uint32) bool { return true })
 		r.view.Store(new_port_view(game, known))
+		var running []string
+		for id := range ids {
+			if len(owners.Ports_of(func(pid uint32) bool { return game_of(pid) == id })) > 0 {
+				running = append(running, id)
+			}
+		}
+		r.running.Store(&running)
 		if len(game) != game_count {
 			game_count = len(game)
 			r.logger.Info("game router: game ports", "ports", game_count)
@@ -416,6 +439,7 @@ func (r *Router) Stop() error {
 	r.sender = nil
 	r.send_mu.Unlock()
 	r.stop, r.sockets = nil, nil
+	r.running.Store(nil)
 	r.logger.Info("game router stopped")
 	return errors.Join(shutdown_err, close_err, sender_err)
 }

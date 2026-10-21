@@ -74,6 +74,9 @@ type Game_router interface {
 	// and, when it took it, handed to inject; one it did not take goes
 	// out unchanged. Start returns once capture is running.
 	Start(selected []games.Game, splitter *split.Splitter, inject func(packet []byte) bool) error
+	// Running_games names the selected games whose processes hold a
+	// port now.
+	Running_games() []string
 	// Deliver injects a reply splitter has already rewritten, inbound on
 	// origin's interface. It must not keep packet.
 	Deliver(packet []byte, origin split.Origin) bool
@@ -128,6 +131,8 @@ type Adapter struct {
 	device  tunnel
 	routing bool // the router is capturing for this tunnel
 	probe   string
+	// game_path is the games-only tunnel's path, for Ping_game.
+	game_path *game_path
 }
 
 // Enable_games gives the adapter the platform's game router and the
@@ -236,6 +241,7 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 
 	games_only := len(config.Split.Games) > 0
 	var splitter *split.Splitter
+	var path *game_path
 	var wrapped *split_tun
 	var wrap device_wrapper
 	if games_only {
@@ -247,9 +253,19 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 			return fmt.Errorf("wireguard: games-only mode needs an IPv4 tunnel address, and the config has none")
 		}
 		splitter = split.New_splitter(tunnel_address, parsed.Mtu)
+		path = new_game_path(splitter)
+		for _, address := range parsed.Dns {
+			if address.Is4() {
+				path.control = address
+				break
+			}
+		}
 		router := a.router
 		wrap = func(inner tun.Device) tun.Device {
 			wrapped = new_split_tun(inner, func(packet []byte) bool {
+				if path.take_reply(packet) {
+					return true
+				}
 				origin, ok := splitter.Inbound(packet)
 				if !ok {
 					return false
@@ -305,12 +321,14 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 		if err := a.router.Start(config.Split.Games, splitter, wrapped.Inject); err != nil {
 			return a.unwind(ctx, device, handle, fmt.Errorf("starting the game router: %w", err))
 		}
+		path.inject = wrapped.Inject
 	}
 
 	a.device = device
 	a.handle = handle
 	a.running = true
 	a.routing = games_only
+	a.game_path = path
 	a.probe = split_probe_target(parsed.Dns, peer.Allowed_ips, games_only)
 	a.since = a.clock()
 	switch {
@@ -415,6 +433,7 @@ func (a *Adapter) Disconnect(ctx context.Context) error {
 
 	a.running = false
 	a.routing = false
+	a.game_path = nil
 	a.probe = ""
 	a.device = nil
 	a.handle = 0

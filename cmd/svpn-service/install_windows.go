@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 
+	winplatform "singularity-vpn-app/internal/platform/windows"
 	"singularity-vpn-app/internal/platform/windows/divert"
 )
 
@@ -203,6 +204,12 @@ func uninstall() {
 	}
 	if err := eventlog.Remove(service_name); err != nil {
 		fmt.Fprintf(os.Stderr, "svpn-service uninstall: warning: removing the event log source: %v\n", err)
+	}
+
+	// A service that died connected left its DNS rule; with the service
+	// gone, nothing else would ever take it away.
+	if err := winplatform.Remove_dns_policy(); err != nil {
+		fmt.Fprintf(os.Stderr, "svpn-service uninstall: warning: %v\n", err)
 	}
 
 	paths, _ := service_paths()

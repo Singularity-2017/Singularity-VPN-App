@@ -169,6 +169,23 @@ func (t Tunnel_mode) Validate() error {
 // empty list carries the whole machine, as before any game was chosen.
 type Games struct {
 	Games []string `json:"games"`
+	// Pings is, in an answer, the last round trip measured to the server
+	// each game was playing on, for the games that have one. A set
+	// request carries none.
+	Pings []Game_ping `json:"pings,omitempty"`
+}
+
+// Game_ping is one game's last measured round trip to its match server,
+// through the tunnel, and when it was measured. When the match server
+// ignores echo, Rtt_ms is the sum of two measurements, both present:
+// First_mile_ms from this machine to the node, and Node_ms from the node
+// to the game's region.
+type Game_ping struct {
+	Game          string    `json:"game"`
+	Rtt_ms        float64   `json:"rtt_ms"`
+	First_mile_ms *float64  `json:"first_mile_ms,omitempty"`
+	Node_ms       *float64  `json:"node_ms,omitempty"`
+	At            time.Time `json:"at"`
 }
 
 // Validate refuses more ids than any catalog has games, and an id that is

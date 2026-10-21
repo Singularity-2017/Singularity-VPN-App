@@ -73,6 +73,7 @@
   let games = null;     // the game cards as the service last reported them; null until read
   let loading_games = false;
   let games_unsupported = false;
+  let games_read_at = 0; // when the game list was last read, for its pings
   let list_request = 0; // the newest list fill; an older answer is dropped
   let analysis = null;  // the last block analysis; null until there is one
   let analysis_request = 0; // the newest analysis call; an older answer is dropped
@@ -259,6 +260,9 @@
     const st = status.state;
     const up = st === "connected" || st === "degraded";
     const moving = st === "connecting" || st === "switching" || st === "disconnecting";
+    // A game that is on gets its ping measured while connected; read it
+    // again every few seconds.
+    if (up && games && games.some((g) => g.on) && Date.now() - games_read_at > 5000) load_games();
     const s = strategy || {};
     const auto = !s.node_id;
 
@@ -664,6 +668,8 @@
     return (value || "").replace(/^\[|\]$/g, "").split(/[\s,]+/).filter(Boolean);
   }
 
+  const tunnel_text = { vpn: "весь трафик", antizapret: "Антизапрет", games: "только игры" };
+
   const event_text = {
     connection_established: ["Подключено", "ok"],
     connection_lost: ["Связь с сервером потеряна", "warn"],
@@ -717,7 +723,13 @@
         return ["Перехват игр остановился — до следующего подключения игры идут напрямую", "warn", a.error];
       case "event": {
         const t = event_text[a.kind];
-        return t ? [t[0], t[1]] : [a.kind, ""];
+        if (!t) return [a.kind, ""];
+        // A tunnel that came up says where and how.
+        if (a.node_id && (a.kind === "connection_established" || a.kind === "switch_completed")) {
+          const how = [node_label(a.node_id), p, tunnel_text[a.tunnel]].filter(Boolean).join(", ");
+          return [t[0] + ": " + how, t[1]];
+        }
+        return [t[0], t[1]];
       }
     }
     const detail = Object.keys(a).map((k) => k + "=" + a[k]).join(" ");
@@ -766,7 +778,7 @@
     let answer = null;
     try { answer = await app.Games(); } catch (e) { answer = null; } finally { loading_games = false; }
     if (answer && answer.error && answer.error.code === "unknown_command") games_unsupported = true;
-    if (answer && !answer.error) { games = answer.games || []; render(); }
+    if (answer && !answer.error) { games = answer.games || []; games_read_at = Date.now(); render(); }
   }
 
   function render_games() {
@@ -775,7 +787,7 @@
     const box = $("game-cards");
     // The tiles are rebuilt only when the list changes, so one under the
     // pointer or the keyboard keeps its hover and its focus.
-    const key = games.map((g) => g.id + (g.on ? "+" : "-")).join(",") + (busy ? "!" : "");
+    const key = games.map((g) => g.id + (g.on ? "+" : "-") + (g.ping_at || "")).join(",") + (busy ? "!" : "");
     if (box.dataset.key === key) return;
     box.dataset.key = key;
     box.textContent = "";
@@ -795,6 +807,26 @@
         sub.dataset.tip = g.touchy
           ? "Античит этой игры реагирует на сетевой драйвер, которым игры отделяются от остального трафика. Пока она включена, драйвера нет, а через сервер идёт весь компьютер."
           : "Для этой игры пока не известно, какие программы отделять. Пока она включена, через сервер идёт весь компьютер.";
+        b.append(sub);
+      }
+      if (g.ping_ms != null && g.ping_at) {
+        // The game's own ping: to the server it was playing on, through
+        // the VPN server, measured while a match was on.
+        const sub = document.createElement("span");
+        sub.className = "tile-sub";
+        const value = document.createElement("span");
+        value.className = "num";
+        value.textContent = Math.round(g.ping_ms) + " мс";
+        value.dataset.tip = g.ping_first_mile_ms != null && g.ping_node_ms != null
+          ? "Сервер матча не отвечает на ping, поэтому пинг сложен из двух замеров: " +
+            Math.round(g.ping_first_mile_ms) + " мс от компьютера до VPN-сервера и " +
+            Math.round(g.ping_node_ms) + " мс от VPN-сервера до региона игры. Меряется, пока идёт матч."
+          : "Пинг до сервера матча через VPN: медиана трёх ICMP-замеров. Меряется, пока идёт матч.";
+        const when = document.createElement("span");
+        when.dataset.time = g.ping_at;
+        when.dataset.tip = full_date(g.ping_at);
+        when.textContent = ago(g.ping_at);
+        sub.append(value, " · ", when);
         b.append(sub);
       }
       b.addEventListener("click", () => toggle_game(g.id));

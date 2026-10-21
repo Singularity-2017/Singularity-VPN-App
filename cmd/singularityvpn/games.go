@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"slices"
+	"time"
 
 	"singularity-vpn-app/internal/games"
 	"singularity-vpn-app/internal/ipc"
@@ -22,6 +23,16 @@ type Game_card struct {
 	Whole_machine bool `json:"whole_machine"`
 	// Touchy is why Whole_machine is set, when it is the anti-cheat.
 	Touchy bool `json:"touchy"`
+	// Ping_ms is the last round trip measured to the server the game was
+	// playing on, through the tunnel, and Ping_at when. Absent until one
+	// was measured.
+	Ping_ms *float64   `json:"ping_ms,omitempty"`
+	Ping_at *time.Time `json:"ping_at,omitempty"`
+	// Ping_first_mile_ms and Ping_node_ms are the two halves Ping_ms was
+	// added up from, when the match server ignored echo: this machine to
+	// the VPN server, and the VPN server to the game's region.
+	Ping_first_mile_ms *float64 `json:"ping_first_mile_ms,omitempty"`
+	Ping_node_ms       *float64 `json:"ping_node_ms,omitempty"`
 }
 
 // Games_view is the game list, or why it could not be read.
@@ -33,16 +44,23 @@ type Games_view struct {
 // game_cards lays the catalog out in its own order and marks the selected
 // games. An id the service holds that the catalog does not know is not
 // drawn: there is nothing to call it.
-func game_cards(catalog games.Catalog, selected []string) []Game_card {
+func game_cards(catalog games.Catalog, selected []string, pings []ipc.Game_ping) []Game_card {
 	cards := make([]Game_card, 0, len(catalog))
 	for _, g := range catalog {
-		cards = append(cards, Game_card{
+		card := Game_card{
 			Id:            g.Id,
 			Name:          g.Name,
 			On:            slices.Contains(selected, g.Id),
 			Whole_machine: g.Touchy_anticheat || len(g.Images) == 0,
 			Touchy:        g.Touchy_anticheat,
-		})
+		}
+		for _, p := range pings {
+			if p.Game == g.Id {
+				card.Ping_ms, card.Ping_at = &p.Rtt_ms, &p.At
+				card.Ping_first_mile_ms, card.Ping_node_ms = p.First_mile_ms, p.Node_ms
+			}
+		}
+		cards = append(cards, card)
 	}
 	return cards
 }
@@ -59,7 +77,7 @@ func (a *App) Games() Games_view {
 	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
 		result, err := c.Games(ctx)
 		if err == nil {
-			view.Games = game_cards(catalog, result.Games)
+			view.Games = game_cards(catalog, result.Games, result.Pings)
 		}
 		return err
 	})

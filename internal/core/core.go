@@ -63,6 +63,7 @@ type Dependencies struct {
 	Prober        diagnostics.Prober
 	Reach_prober  Reach_prober
 	Pinger        platform.Pinger // the latency to every listed server; see Application.Ping_servers
+	Game_pinger   Game_pinger     // a running game's latency to its match server; nil measures none
 	Bus           *events.Bus
 	Config        connection.Config
 	Device_name   string       // what a minted device token is called on the account
@@ -102,6 +103,10 @@ type Application struct {
 	// replaces it on one request while Ping_servers reads it on another.
 	hosts_mu sync.Mutex
 	hosts    map[string]string
+
+	game_pinger Game_pinger
+	game_pings  game_pings
+	node_rtts   node_game_rtts
 }
 
 // New_application builds an Application, refusing a Dependencies missing
@@ -169,6 +174,7 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		now:           now,
 		reach_prober:  dependencies.Reach_prober,
 		pinger:        dependencies.Pinger,
+		game_pinger:   dependencies.Game_pinger,
 		resolve_ip4: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
 		},
@@ -216,6 +222,9 @@ func (a *Application) Start(ctx context.Context) error {
 		_ = a.manager.Run(ctx)
 	}()
 	go a.resume(ctx)
+	if a.game_pinger != nil {
+		go a.measure_games(ctx)
+	}
 
 	channel, unsubscribe := a.bus.Subscribe()
 	go func() {
@@ -228,7 +237,13 @@ func (a *Application) Start(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				a.logger.Info("event", "kind", string(event.Kind), "at", event.At, "session_id", event.Session_id)
+				attrs := []any{"kind", string(event.Kind), "at", event.At, "session_id", event.Session_id}
+				// Which node and protocol a tunnel came up on, while the
+				// session the event names is still the current one.
+				if s, ok := a.manager.Session(); ok && s.Id == event.Session_id {
+					attrs = append(attrs, "node_id", s.Node_id, "protocol", s.Protocol, "tunnel", s.Tunnel)
+				}
+				a.logger.Info("event", attrs...)
 			}
 		}
 	}()

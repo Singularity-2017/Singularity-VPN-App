@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -371,7 +372,27 @@ func Test_servers_fall_back_to_the_older_node_listing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] != (Server{Node_id: "n-1", Name: "Germany", Country: "DE", City: "Frankfurt", Available: true}) || got[1].Available {
+	if len(got) != 2 || !reflect.DeepEqual(got[0], Server{Node_id: "n-1", Name: "Germany", Country: "DE", City: "Frankfurt", Available: true}) || got[1].Available {
+		t.Fatalf("servers = %+v", got)
+	}
+}
+
+// A node's round trip to a game's region comes with the server list, and
+// only for the games it has a measurement for.
+func Test_servers_carry_the_nodes_game_round_trips(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		write_success(w, `{"servers":[{"node_id":"n-1","available":true,"game_rtt_ms":{"pubg":2.2}},{"node_id":"n-2","available":true}]}`)
+	}))
+	defer server.Close()
+	client, err := New(Config{Base_url: server.URL, Sleep: no_sleep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Servers(context.Background(), "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Game_rtt_ms["pubg"] != 2.2 || got[1].Game_rtt_ms != nil {
 		t.Fatalf("servers = %+v", got)
 	}
 }

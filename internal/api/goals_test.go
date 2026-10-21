@@ -20,6 +20,7 @@ func Test_a_recommendation_request_asks_for_exactly_the_goals_that_are_on(t *tes
 		{Recommend_request{Anonymity: "high", Country: "DE"}, "anonymity=high&country=DE&goal=anonymity&goal=geo"},
 		{Recommend_request{Route: true, Client_id: "c-1"}, "client_id=c-1&goal=route"},
 		{Recommend_request{Node_id: "node-2", Route: true}, "goal=route&node_id=node-2"},
+		{Recommend_request{Game: "pubg", Bypass: true}, "game=pubg&goal=bypass"},
 	}
 	for _, c := range cases {
 		if got := c.request.query().Encode(); got != c.want {
