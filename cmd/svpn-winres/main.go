@@ -20,9 +20,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: svpn-winres <main package dir>...")
 		os.Exit(2)
 	}
-	data := appicon.Syso()
 	for _, dir := range dirs {
-		if err := os.WriteFile(filepath.Join(dir, object), data, 0o644); err != nil {
+		// Only the setup carries a manifest: Windows treats it as an
+		// installer by its name. The window keeps none, so nothing about
+		// its scaling changes.
+		manifest := ""
+		if filepath.Base(filepath.Clean(dir)) == "svpn-setup" {
+			manifest = appicon.Setup_manifest
+		}
+		if err := os.WriteFile(filepath.Join(dir, object), appicon.Syso(manifest), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

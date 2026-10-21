@@ -16,10 +16,35 @@ const Icon_group_id = 3
 // Explorer and the taskbar ask for at each scaling, and 256 for large views.
 var sizes = []int{16, 20, 24, 32, 40, 48, 64, 256}
 
-// Syso is a COFF object for amd64 holding the application icon as a
-// resource section. Placed beside a main package as *_windows_amd64.syso,
-// the Go linker links it in, and the executable gets its icon.
-func Syso() []byte {
+// Setup_manifest is the application manifest the setup carries. Windows
+// takes an executable named like a setup for an installer, and one without
+// a manifest naming the Windows versions it supports gets the Program
+// Compatibility Assistant's "did this program install correctly?" after it
+// exits. asInvoker: the setup asks for elevation itself, once.
+const Setup_manifest = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+    </application>
+  </compatibility>
+</assembly>
+`
+
+// Syso is a COFF object for amd64 holding the application icon, and the
+// manifest when one is given, as a resource section. Placed beside a main
+// package as *_windows_amd64.syso, the Go linker links it in.
+func Syso(manifest string) []byte {
 	type resource struct {
 		kind, id uint32
 		data     []byte
@@ -58,11 +83,16 @@ func Syso() []byte {
 		gw(uint16(id))
 	}
 	resources = append(resources, resource{rt_group_icon, Icon_group_id, group.Bytes()})
+	if manifest != "" {
+		const rt_manifest, create_process_manifest = 24, 1
+		resources = append(resources, resource{rt_manifest, create_process_manifest, []byte(manifest)})
+	}
 
 	// The resource tree: type, then id, then language, each a directory
 	// of one level, and a data entry per resource. Types are sorted
-	// ascending, as the loader's binary search expects; RT_ICON (3) comes
-	// before RT_GROUP_ICON (14) and the ids within a type are ascending.
+	// ascending, as the loader's binary search expects; RT_ICON (3), then
+	// RT_GROUP_ICON (14), then RT_MANIFEST (24), the ids within a type
+	// ascending.
 	type kind_group struct {
 		kind  uint32
 		items []resource
