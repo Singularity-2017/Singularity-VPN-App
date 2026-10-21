@@ -63,3 +63,15 @@ func Test_the_install_directory_cannot_be_rewritten_by_its_owner(t *testing.T) {
 		t.Errorf("the temporary %s.new was left behind", service_exe)
 	}
 }
+
+func Test_a_setup_from_the_gamers_page_is_told_by_its_name(t *testing.T) {
+	for name, want := range map[string]bool{
+		"SingularityVPN-gamer-setup.exe":     true,
+		"SingularityVPN-Gamer-setup (1).exe": true,
+		"SingularityVPN-setup-0.1.0.exe":     false,
+	} {
+		if got := is_gamer_setup(name); got != want {
+			t.Errorf("is_gamer_setup(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

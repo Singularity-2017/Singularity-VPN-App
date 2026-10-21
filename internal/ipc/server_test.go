@@ -27,6 +27,7 @@ type fake_service struct {
 	strategy         Strategy
 	games            Games
 	tunnel_mode      Tunnel_mode
+	profile          string
 	set_strategy_err error
 	servers          Servers_result
 	servers_err      error
@@ -142,6 +143,10 @@ func (f *fake_service) Set_games(ctx context.Context, games Games) error {
 	return nil
 }
 
+func (f *fake_service) Answer_match_server(ctx context.Context, answer Match_server_answer) error {
+	return nil
+}
+
 func (f *fake_service) Journal(ctx context.Context) (Journal_result, error) {
 	return Journal_result{}, nil
 }
@@ -152,6 +157,15 @@ func (f *fake_service) Tunnel_mode(ctx context.Context) (Tunnel_mode, error) {
 
 func (f *fake_service) Set_tunnel_mode(ctx context.Context, mode Tunnel_mode) error {
 	f.tunnel_mode = mode
+	return nil
+}
+
+func (f *fake_service) Profiles(ctx context.Context) (Profiles_result, error) {
+	return Profiles_result{Profiles: []Profile{{Id: "pc-1", Label: "PC", Current: true}}}, nil
+}
+
+func (f *fake_service) Set_profile(ctx context.Context, profile Set_profile) error {
+	f.profile = profile.Id
 	return nil
 }
 

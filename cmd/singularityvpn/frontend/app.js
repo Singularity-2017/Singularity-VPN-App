@@ -16,8 +16,9 @@
   const flags = window.flags;
 
   const screens = ["screen-wait", "screen-service", "screen-untrusted", "screen-signin", "screen-main"];
-  const pops = ["menu", "servers", "levels"];
-  const pop_owner = { menu: "menu-button", servers: "chip", levels: "goal-anonymity" };
+  // The anonymity levels' pop-up is out of the window with the goal tiles.
+  const pops = ["menu", "settings", "servers" /* , "levels" */];
+  const pop_owner = { menu: "menu-button", settings: "settings-button", servers: "chip" /* , levels: "goal-anonymity" */ };
   // What the button says. Connected or not is the ring and this label;
   // nothing else on the screen repeats it.
   const power_text = {
@@ -70,10 +71,18 @@
   let journal_entries = null; // the service's operations, oldest first; null until read
   let journal_unsupported = false;
   let loading_journal = false;
+  let in_match = false; // a game is in a match: moving the tunnel now would end it
   let games = null;     // the game cards as the service last reported them; null until read
   let loading_games = false;
   let games_unsupported = false;
   let games_read_at = 0; // when the game list was last read, for its pings
+  let game_region = "";  // the region the selected game is boosted toward; "" for wherever it plays
+  // server_reply is a "no" being written about a card's match server: the
+  // game, the server it is about and the address typed so far. It
+  // outlives a rebuild of the cards.
+  let server_reply = null;
+  let gamer = null;      // gamer mode: the games are shown; null until known
+  let boosting = false;  // a boost is being switched on or off
   let list_request = 0; // the newest list fill; an older answer is dropped
   let analysis = null;  // the last block analysis; null until there is one
   let analysis_request = 0; // the newest analysis call; an older answer is dropped
@@ -157,6 +166,7 @@
     if (!main) main_active = false;
     $("edge").hidden = !main;
     $("menu-button").hidden = !(main || id === "screen-signin") || !(view && view.status && view.status.signed_in);
+    $("settings-button").hidden = !(main || id === "screen-signin");
     if (!main) close_pops();
   }
 
@@ -245,6 +255,7 @@
   }
 
   function render() {
+    apply_theme();
     if (!view) { show_screen("screen-wait"); return; }
     if (view.error && view.error.code === "untrusted_pipe") { show_screen("screen-untrusted"); return; }
     if (!view.service_running) { show_screen("screen-service"); return; }
@@ -266,12 +277,8 @@
     const s = strategy || {};
     const auto = !s.node_id;
 
-    // Until the strategy is known nothing claims to be automatic or not:
-    // drawing a default would state something the service never said.
-    const auto_switch = $("auto");
-    auto_switch.hidden = strategy === null;
-    auto_switch.setAttribute("aria-checked", auto ? "true" : "false");
-    document.querySelector(".goals").hidden = strategy === null;
+    // The goal tiles are out of the window until they work.
+    // document.querySelector(".goals").hidden = strategy === null;
     render_chip(status, s, auto, up);
 
     const power = $("power");
@@ -295,7 +302,9 @@
     row_time("measured", status.measured_at);
 
     render_mode(status, s);
-    render_goals(status, s);
+    // render_goals(status, s);
+    $("gamer").setAttribute("aria-checked", gamer ? "true" : "false");
+    render_account(status);
     render_games();
     render_blocks();
     if (expanded && !journal_unsupported) load_journal();
@@ -338,11 +347,22 @@
         code = c.code;
         title = c.name;
       } else {
-        title = "Любая страна";
+        title = "Все страны";
       }
-      sub.push("любой сервер");
     }
     $("chip").hidden = !title;
+    // Who chooses the server is said on the server itself. Until the
+    // strategy is known nothing claims to be automatic or not.
+    const badge = $("chip-badge");
+    badge.hidden = strategy === null;
+    badge.className = "chip-badge" + (auto ? " auto" : "");
+    badge.textContent = !auto ? "Закреплён" : s.country ? "Авто" : "Авто · страна";
+    badge.dataset.tip = !auto
+      ? "Сервер выбран вами и не меняется сам. Чтобы снова выбирать автоматически, выберите в списке «Авто»."
+      : s.country
+        ? "Сервер в этой стране выбирается автоматически и меняется, если перестал работать. Чтобы закрепить, выберите сервер в списке."
+        : "Страна и сервер выбираются автоматически и меняются, если сервер перестал работать. Чтобы закрепить, выберите страну или сервер в списке.";
+    $("chip").classList.toggle("auto", auto && strategy !== null);
     flag_into($("chip-flag"), code);
     set_text("place", title);
     const chip_sub = $("chip-sub");
@@ -514,6 +534,7 @@
       service_not_running: "Служба не запущена.",
       untrusted_pipe: "Канал к службе не прошёл проверку.",
       server_unavailable: "Этот сервер сейчас не принимает подключения. Выберите другой или включите «Авто».",
+      launch_failed: "Steam не запустил игру. Буст включён: запустите её сами.",
       no_server_in_country: "В этой стране сейчас нет доступного сервера."
     };
     el.textContent = known[outcome.code] || ("Не получилось: " + (outcome.message || outcome.code));
@@ -544,6 +565,12 @@
     const next = Object.assign({}, strategy, edit);
     if (strategy.anonymity === "high" && next.anonymity !== "high") {
       if (!(await ask("Снять высокий уровень анонимности?", "Снять"))) return;
+    }
+    // A match ends when the tunnel moves to another server. Pinning the
+    // server already connected to moves nothing.
+    const moves = ("node_id" in edit && edit.node_id !== live_node()) || ("country" in edit && edit.country !== strategy.country);
+    if (in_match && moves) {
+      if (!(await ask("Идёт матч. Сменить сервер? Матч прервётся.", "Сменить"))) return;
     }
     close_pops();
     busy = true;
@@ -584,10 +611,8 @@
     // What the live tunnel carries, when it is not what was chosen.
     let note = "", tip = "";
     const live = status.session_id ? status.tunnel : "";
-    if (live === "games") {
-      note = "Сейчас только игры";
-      tip = "Выбраны игры: через сервер идут только они, всё остальное — напрямую.";
-    } else if (live && live !== tunnel) {
+    // A boosted game is carried beside the chosen mode, not instead of it.
+    if (live && live !== "games" && live !== tunnel) {
       if (live === "vpn" && s.anonymity) {
         note = "Сейчас весь трафик: включена анонимность";
         tip = "Антизапрет оставляет большую часть трафика без VPN, а это противоречит анонимности. Пока она включена, через сервер идёт всё.";
@@ -668,7 +693,7 @@
     return (value || "").replace(/^\[|\]$/g, "").split(/[\s,]+/).filter(Boolean);
   }
 
-  const tunnel_text = { vpn: "весь трафик", antizapret: "Антизапрет", games: "только игры" };
+  const tunnel_text = { vpn: "весь трафик", antizapret: "Антизапрет", games: "игры и Антизапрет" };
 
   const event_text = {
     connection_established: ["Подключено", "ok"],
@@ -766,9 +791,11 @@
   }
 
   // --- games ---------------------------------------------------------------
-  // One toggle tile per game in the catalog. An on game goes through the
-  // server and the rest of the machine does not -- unless the game cannot be
-  // carried on its own, which its tile says while it is on.
+  // Shown in gamer mode only. A card per game the catalog offers: pressing
+  // the cover boosts the game -- it alone goes through the server, the rest
+  // of the internet as without the VPN -- and starts it. The regions under
+  // the cover boost toward that region's servers without starting anything;
+  // pressing the chosen one again boosts toward wherever the game plays.
 
   async function load_games() {
     if (loading_games || games_unsupported) return;
@@ -778,42 +805,216 @@
     let answer = null;
     try { answer = await app.Games(); } catch (e) { answer = null; } finally { loading_games = false; }
     if (answer && answer.error && answer.error.code === "unknown_command") games_unsupported = true;
-    if (answer && !answer.error) { games = answer.games || []; games_read_at = Date.now(); render(); }
+    if (answer && !answer.error) {
+      games = answer.games || [];
+      game_region = answer.region || "";
+      in_match = !!answer.in_match;
+      games_read_at = Date.now();
+      render();
+    }
   }
 
+  // Gamer mode is the person's choice, kept between runs. Until they make
+  // it, it is what the installation says: on when the setup came from the
+  // gamers' page.
+  async function load_gamer() {
+    let saved = null;
+    try { saved = localStorage.getItem("gamer"); } catch (e) { saved = null; }
+    if (saved === "1" || saved === "0") { gamer = saved === "1"; return; }
+    const app = backend();
+    try { gamer = !!(app && typeof app.Gamer_default === "function" && await app.Gamer_default()); } catch (e) { gamer = false; }
+  }
+
+  function toggle_gamer() {
+    gamer = !gamer;
+    try { localStorage.setItem("gamer", gamer ? "1" : "0"); } catch (e) { /* kept for this run only */ }
+    if (!$("settings").hidden) render_themes();
+    render();
+  }
+
+  // --- themes ----------------------------------------------------------------
+  // A theme is chosen for each mode on its own: the ordinary window keeps
+  // its own, gamer mode its own. Sharp themes have no rounding anywhere.
+  // The calm themes belong to the normal mode, the sharp ones to Gamer
+  // mode; each mode offers only its own.
+  const themes = [
+    { id: "singularity", name: "Сингулярность", note: "бирюза", swatch: "#4be3df" },
+    { id: "graphite", name: "Графит", note: "белое на сером", swatch: "#eef1f3" },
+    { id: "amber", name: "Янтарь", note: "тёплый", swatch: "#ffb547" },
+    { id: "berserk", name: "Берсерк", note: "красный", swatch: "#ff3b5c", sharp: true },
+    { id: "toxin", name: "Токсин", note: "кислотный", swatch: "#a6ff2e", sharp: true },
+    { id: "synthwave", name: "Синтвейв", note: "неон на фиолетовом", swatch: "#ff4fd8", sharp: true },
+  ];
+  const default_theme = { normal: "singularity", gamer: "berserk" };
+
+  function theme_mode() { return gamer ? "gamer" : "normal"; }
+
+  function themes_of(mode) { return themes.filter((t) => !!t.sharp === (mode === "gamer")); }
+
+  function theme_of(mode) {
+    let id = null;
+    try { id = localStorage.getItem("theme." + mode); } catch (e) { id = null; }
+    const own = themes_of(mode);
+    return own.find((t) => t.id === id) || own.find((t) => t.id === default_theme[mode]);
+  }
+
+  function apply_theme() {
+    const t = theme_of(theme_mode());
+    document.documentElement.dataset.theme = t.id;
+    document.documentElement.classList.toggle("sharp", !!t.sharp);
+  }
+
+  function pick_theme(id) {
+    try { localStorage.setItem("theme." + theme_mode(), id); } catch (e) { /* kept for this run only */ }
+    apply_theme();
+    render_themes();
+  }
+
+  // A pop-up shows one level at a time: its own rows, or the list one of
+  // them opens, with the way back on top.
+  function show_level(pop, level) {
+    for (const el of $(pop).querySelectorAll(".pop-level")) el.hidden = el.id !== level;
+  }
+
+  function render_themes() {
+    set_text("theme-title", gamer ? "Тема · Gamer mode" : "Тема · обычный режим");
+    set_text("theme-row-name", gamer ? "Тема · Gamer mode" : "Тема");
+    set_text("theme-value", theme_of(theme_mode()).name);
+    const current = theme_of(theme_mode()).id;
+    const list = $("theme-list");
+    list.textContent = "";
+    for (const t of themes_of(theme_mode())) {
+      const b = option(t.name, t.id === current, () => pick_theme(t.id));
+      const swatch = document.createElement("span");
+      swatch.className = "swatch" + (t.sharp ? " sharp" : "");
+      swatch.style.background = t.swatch;
+      b.prepend(swatch);
+      const name = b.querySelector(".opt-name");
+      name.classList.add("two");
+      const note = document.createElement("span");
+      note.className = "opt-sub";
+      note.textContent = t.note;
+      name.append(note);
+      list.append(b);
+    }
+  }
+
+  function toggle_settings() {
+    const open = $("settings").hidden;
+    close_pops();
+    if (!open) return;
+    render_themes();
+    show_level("settings", "settings-main");
+    open_pop("settings", "settings-button");
+    load_version();
+  }
+
+  // --- profiles ---------------------------------------------------------------
+  // Which of the account's profiles this computer connects with. One
+  // profile on two devices at once moves the older one off, so taking one
+  // that is in use elsewhere is asked first.
+
+  async function load_profiles() {
+    const app = backend();
+    if (!app || typeof app.Profiles !== "function") return;
+    const answer = await app.Profiles();
+    const list = $("profile-list");
+    const note = $("profile-note");
+    list.textContent = "";
+    if (!answer || answer.error) {
+      note.hidden = false;
+      note.textContent = "Список профилей сейчас не получить.";
+      return;
+    }
+    const profiles = answer.profiles || [];
+    const current = profiles.find((p) => p.current);
+    set_text("profile-value", current ? current.label || "Без имени" : "");
+    note.hidden = profiles.length > 0;
+    note.textContent = profiles.length ? "" : "Профиль появится при первом подключении.";
+    for (const p of profiles) {
+      const b = option(p.label || "Без имени", !!p.current, () => choose_profile(p));
+      b.disabled = busy;
+      if (p.online === true && !p.current) {
+        const tag = document.createElement("span");
+        tag.className = "opt-note";
+        tag.textContent = "на другом устройстве";
+        b.append(tag);
+      }
+      list.append(b);
+    }
+  }
+
+  async function choose_profile(p) {
+    if (p.current || busy) return;
+    if (p.online === true && !(await ask("Профиль «" + (p.label || "Без имени") + "» сейчас подключён на другом устройстве. Если взять его здесь, то устройство отключится.", "Взять профиль"))) return;
+    busy = true;
+    render();
+    const outcome = await backend().Set_profile(p.id);
+    busy = false;
+    show_error("action-error", outcome);
+    await load_profiles();
+    await refresh();
+  }
+
+  // render_account fills the account circle and its menu: who is signed in
+  // and as which device. A name the service does not know is not made up.
+  function render_account(status) {
+    const name = status.username || "";
+    $("avatar-letter").textContent = name ? name.slice(0, 1).toUpperCase() : "";
+    $("avatar-anon").style.display = name ? "none" : "";
+    $("menu-button").dataset.tip = name ? "Аккаунт " + name : "Аккаунт";
+    $("account-name").textContent = name || "Аккаунт";
+    $("account-device").hidden = !status.device_name;
+    $("account-device").textContent = status.device_name ? "Устройство: " + status.device_name : "";
+  }
+
+  // game_line is what a card says under the name: what its boost is doing.
+  function game_line(g, st) {
+    if (boosting) return { text: "Включаем буст…" };
+    if (!g.on) return { text: g.launchable ? "Играть с бустом" : "Включить буст", cta: true };
+    const direct = (g.regions || []).find((r) => r.id === game_region && r.direct);
+    if (direct) return { text: "Напрямую · " + direct.name, on: true };
+    if (st === "connecting" || st === "switching") return { text: "Буст включается…" };
+    if (st !== "connected" && st !== "degraded") return { text: "Буст выключен: VPN не подключён" };
+    const region = (g.regions || []).find((r) => r.id === game_region);
+    return { text: "Буст · " + (region ? region.name : "любой регион"), on: true };
+  }
+
+  // The games section stands whenever the catalog offers a game: its
+  // heading is the gamer mode switch, and the cards show in gamer mode.
   function render_games() {
-    $("games").hidden = !(games && games.length);
-    if (!games || !games.length) return;
+    $("games").hidden = !(gamer !== null && games && games.length);
+    $("game-cards").hidden = !gamer;
+    if ($("games").hidden || !gamer) return;
+    const st = view && view.status ? view.status.state : "";
     const box = $("game-cards");
-    // The tiles are rebuilt only when the list changes, so one under the
-    // pointer or the keyboard keeps its hover and its focus.
-    const key = games.map((g) => g.id + (g.on ? "+" : "-") + (g.ping_at || "")).join(",") + (busy ? "!" : "");
+    // The cards are rebuilt only when what they show changes, so one under
+    // the pointer or the keyboard keeps its hover and its focus.
+    const key = games.map((g) => g.id + (g.on ? "+" : "-") + (g.ping_at || "") +
+      (g.server_offer ? "@" + g.server_offer.server : "") + (g.detection_confirmed ? "#" + g.detection_right + "/" + g.detection_confirmed : "")).join(",") +
+      "|" + game_region + "|" + st + (busy ? "!" : "") + (expanded ? "w" : "") + (server_reply ? "?" + server_reply.game + server_reply.server : "");
     if (box.dataset.key === key) return;
     box.dataset.key = key;
     box.textContent = "";
     for (const g of games) {
-      const b = document.createElement("button");
-      b.className = "tile game";
-      b.setAttribute("aria-pressed", g.on ? "true" : "false");
-      b.disabled = busy;
+      const line = game_line(g, st);
+      const card = document.createElement("div");
+      card.className = "game-card" + (line.on ? " on" : "");
+
+      const cover = document.createElement("button");
+      cover.className = "game-cover";
+      cover.style.backgroundImage = "url(covers/" + encodeURIComponent(g.id) + ".svg)";
+      cover.disabled = busy;
+      cover.setAttribute("aria-label", g.name + ": " + line.text);
       const name = document.createElement("span");
-      name.className = "tile-name";
+      name.className = "game-name";
       name.textContent = g.name;
-      b.append(name);
-      if (g.on && g.whole_machine) {
-        const sub = document.createElement("span");
-        sub.className = "tile-sub";
-        sub.textContent = "весь компьютер через VPN";
-        sub.dataset.tip = g.touchy
-          ? "Античит этой игры реагирует на сетевой драйвер, которым игры отделяются от остального трафика. Пока она включена, драйвера нет, а через сервер идёт весь компьютер."
-          : "Для этой игры пока не известно, какие программы отделять. Пока она включена, через сервер идёт весь компьютер.";
-        b.append(sub);
-      }
-      if (g.ping_ms != null && g.ping_at) {
+      const sub = document.createElement("span");
+      sub.className = "game-line" + (line.cta ? " cta" : "");
+      sub.textContent = line.text;
+      if (line.on && g.ping_ms != null && g.ping_at) {
         // The game's own ping: to the server it was playing on, through
         // the VPN server, measured while a match was on.
-        const sub = document.createElement("span");
-        sub.className = "tile-sub";
         const value = document.createElement("span");
         value.className = "num";
         value.textContent = Math.round(g.ping_ms) + " мс";
@@ -826,25 +1027,176 @@
         when.dataset.time = g.ping_at;
         when.dataset.tip = full_date(g.ping_at);
         when.textContent = ago(g.ping_at);
-        sub.append(value, " · ", when);
-        b.append(sub);
+        sub.append(" · ", value, " · ", when);
       }
-      b.addEventListener("click", () => toggle_game(g.id));
-      box.append(b);
+      cover.append(name, sub);
+      // The whole face is one control: it boosts and starts the game, and
+      // pressed again it stops the boost.
+      // What a press does is written across the whole card under the
+      // pointer: switch the boost on, or off.
+      const act = document.createElement("span");
+      act.className = "game-act";
+      act.textContent = g.on ? "Выключить буст" : "Включить буст";
+      act.setAttribute("aria-hidden", "true");
+      cover.append(act);
+      if (g.on) cover.dataset.tip = "Игра пойдёт без буста. Антизапрет или VPN продолжат работать.";
+      cover.addEventListener("click", () => g.on ? stop_boost() : boost(g.id, "", g.launchable));
+      const face = document.createElement("div");
+      face.className = "game-face";
+      face.append(cover);
+
+      if (g.regions && g.regions.length) {
+        // Over the face, at the end of its bottom row.
+        const regions = document.createElement("div");
+        regions.className = "segment game-regions";
+        regions.setAttribute("role", "radiogroup");
+        regions.setAttribute("aria-label", "Регион серверов игры");
+        for (const r of g.regions) {
+          const b = document.createElement("button");
+          b.setAttribute("role", "radio");
+          const chosen = g.on && r.id === game_region;
+          b.setAttribute("aria-checked", chosen ? "true" : "false");
+          b.disabled = busy;
+          b.textContent = r.name;
+          b.dataset.tip = r.direct
+            ? "Игра идёт напрямую, без VPN и его DNS: так она попадает на серверы " + r.name + "." + (chosen ? " Нажмите ещё раз, чтобы снова ускорять через VPN." : " Игра не запускается.")
+            : chosen
+            ? "Буст к серверам " + r.name + ". Нажмите ещё раз, чтобы ускорять к любому региону, где идёт игра."
+            : "Ускорять к серверам " + r.name + ". Игра не запускается.";
+          b.addEventListener("click", () => boost(g.id, chosen ? "" : r.id, false));
+          regions.append(b);
+        }
+        face.append(regions);
+      }
+      card.append(face);
+      if (g.server_offer) card.append(server_ask(g));
+      if (expanded && g.detection_confirmed) {
+        // How often the detected server was the one the game showed, among
+        // the matches the player checked; absent until one was.
+        const tally = document.createElement("div");
+        tally.className = "game-tally";
+        const words = document.createElement("span");
+        words.textContent = "Сервер матча определён верно в " + g.detection_right + " из " + g.detection_confirmed;
+        words.dataset.tip = "Сколько раз сервер, найденный приложением, совпал с тем, что показала игра, среди матчей, которые вы проверили. Пропущенные вопросы не считаются.";
+        tally.append(words);
+        card.append(tally);
+      }
+      box.append(card);
     }
   }
 
-  async function toggle_game(id) {
+  // server_ask is the question under a card: is the match server found the
+  // one the game itself shows? Where the game shows it is the hint.
+  function server_ask(g) {
+    const offer = g.server_offer;
+    const ask_row = document.createElement("div");
+    ask_row.className = "game-ask";
+    const text = document.createElement("span");
+    const server = document.createElement("span");
+    server.className = "num";
+    server.textContent = offer.server;
+    server.dataset.tip = "Адрес, куда игра отправила больше всего пакетов за матч: " + offer.packets + " из " + offer.total +
+      " (" + Math.round(100 * offer.packets / offer.total) + "%)" +
+      (offer.runner_up ? "; следующий адрес — " + offer.runner_up : "") + ".";
+    const question = document.createElement("span");
+    question.textContent = "в игре тот же?";
+    question.dataset.tip = offer.where;
+    text.append("Сервер ", server, " — ", question);
+    ask_row.append(text);
+
+    const replying = server_reply && server_reply.game === g.id && server_reply.server === offer.server;
+    const buttons = document.createElement("div");
+    buttons.className = "game-ask-buttons";
+    if (replying) {
+      const field = document.createElement("input");
+      field.type = "text";
+      field.className = "game-ask-field";
+      field.placeholder = "адрес из игры";
+      field.value = server_reply.shown;
+      field.setAttribute("aria-label", "Адрес сервера, который показывает игра");
+      field.dataset.tip = "Необязательно. Адрес из окна сетевой статистики игры — с ним видно, какой сервер был на самом деле.";
+      field.addEventListener("input", () => { server_reply.shown = field.value; });
+      field.addEventListener("keydown", (e) => { if (e.key === "Enter") answer_server(g.id, offer.server, "no", field.value); });
+      const send = document.createElement("button");
+      send.className = "plain";
+      send.textContent = "Готово";
+      send.addEventListener("click", () => answer_server(g.id, offer.server, "no", field.value));
+      buttons.append(field, send);
+      setTimeout(() => field.focus(), 0);
+    } else {
+      const yes = document.createElement("button");
+      yes.className = "plain";
+      yes.textContent = "Да";
+      yes.addEventListener("click", () => answer_server(g.id, offer.server, "yes", ""));
+      const no = document.createElement("button");
+      no.className = "plain";
+      no.textContent = "Нет";
+      no.addEventListener("click", () => { server_reply = { game: g.id, server: offer.server, shown: "" }; render_games(); });
+      buttons.append(yes, no);
+    }
+    const dismiss = document.createElement("button");
+    dismiss.className = "plain game-ask-dismiss";
+    dismiss.textContent = "×";
+    dismiss.setAttribute("aria-label", "Не отвечать");
+    dismiss.dataset.tip = "Убрать вопрос. Ответ не засчитывается ни как верный, ни как неверный.";
+    dismiss.addEventListener("click", () => answer_server(g.id, offer.server, "dismiss", ""));
+    buttons.append(dismiss);
+    ask_row.append(buttons);
+    return ask_row;
+  }
+
+  async function answer_server(game, server, answer, shown) {
+    const app = backend();
+    if (!app || typeof app.Answer_match_server !== "function") return;
+    server_reply = null;
+    let outcome = null;
+    try { outcome = await app.Answer_match_server(game, server, answer, (shown || "").trim()); } catch (e) { outcome = null; }
+    // An offer that moved on meanwhile is read again rather than reported:
+    // the card then asks about the server it now names.
+    show_error("action-error", outcome && outcome.code !== "offer_changed" ? outcome : null);
+    await load_games();
+  }
+
+  // boost puts the game alone through the server toward region, connects
+  // if nothing is up, and starts the game when launch is set.
+  async function boost(id, region, launch) {
     if (games === null || busy) return;
-    const ids = games.filter((g) => g.on !== (g.id === id)).map((g) => g.id);
+    const game = games.find((g) => g.id === id);
+    const same = game && game.on && games.every((g) => g.on === (g.id === id)) && region === game_region;
+    // Another game set or another region moves the tunnel, which ends a match.
+    if (!same && in_match && !(await ask("Идёт матч. Переключить буст? Соединение перестроится, и матч прервётся.", "Переключить"))) return;
     close_pops();
-    busy = true;
+    busy = boosting = true;
     show_error("action-error", null);
     render();
-    const outcome = await backend().Set_games(ids);
-    busy = false;
-    // The record stands even when rebuilding the tunnel failed; read back
-    // what the service now holds rather than assuming.
+    let outcome = same ? {} : await backend().Set_games([id], region);
+    const st = view && view.status ? view.status.state : "";
+    const off = !(st === "connected" || st === "degraded" || st === "connecting" || st === "switching");
+    // A region played from home needs no tunnel for the game: nothing is
+    // connected for it.
+    const direct = !!(game && (game.regions || []).find((r) => r.id === region && r.direct));
+    if (!(outcome && outcome.code) && off && !direct) outcome = await backend().Connect();
+    if (!(outcome && outcome.code) && launch) outcome = await backend().Launch_game(id);
+    busy = boosting = false;
+    // The record stands even when connecting failed; read back what the
+    // service now holds rather than assuming.
+    await load_games();
+    show_error("action-error", outcome);
+    await refresh();
+  }
+
+  // stop_boost turns the VPN off and forgets the game, so that the next
+  // press of the power button is a plain VPN again.
+  async function stop_boost() {
+    if (busy) return;
+    if (in_match && !(await ask("Идёт матч. Выключить буст? Матч прервётся.", "Выключить"))) return;
+    busy = boosting = true;
+    show_error("action-error", null);
+    render();
+    // The service rebuilds the tunnel for the chosen mode; nothing is
+    // disconnected.
+    const outcome = await backend().Set_games([], "");
+    busy = boosting = false;
     await load_games();
     show_error("action-error", outcome);
     await refresh();
@@ -908,7 +1260,7 @@
     return best;
   }
 
-  const ping_tip = "Ping с этого компьютера напрямую, мимо туннеля; пока меню открыто, обновляется каждую секунду.";
+  const ping_tip = "Ping с этого компьютера напрямую, мимо туннеля; пока меню открыто, обновляется раз в 5 секунд.";
 
   // ping_into writes a ping as its number, followed by how long ago it was
   // taken once it is no longer this second's; the full date is the hint.
@@ -950,6 +1302,19 @@
     return st && st.session_id ? st.node_id || "" : "";
   }
 
+  // auto_option is the automatic choice in the list, drawn as the same
+  // badge the server plate wears when it is chosen automatically, after
+  // what it chooses: a country or a server.
+  function auto_option(what, selected, tip, on_pick) {
+    const b = option(what + " ", selected, on_pick);
+    const badge = document.createElement("span");
+    badge.className = "chip-badge auto";
+    badge.textContent = "Авто";
+    b.querySelector(".opt-name").append(badge);
+    b.dataset.tip = tip;
+    return b;
+  }
+
   function option(text, selected, on_pick) {
     const b = document.createElement("button");
     b.className = "opt line";
@@ -973,7 +1338,7 @@
     const strategy_code = flags.country_code(s.country);
     const live = live_node();
 
-    list.append(option("Любая страна", auto && !strategy_code, () => change({ country: "", node_id: "" })));
+    list.append(auto_option("Страна", auto && !strategy_code, "Страна и сервер выбираются автоматически.", () => change({ country: "", node_id: "" })));
 
     for (const group of group_servers()) {
       const open = open_groups.has(group.key);
@@ -1006,7 +1371,7 @@
       const rows = [];
       // The country itself can only be asked for by its code.
       if (group.code) {
-        rows.push(option("Любой сервер", auto && group.code === strategy_code, () => change({ country: group.code, node_id: "" })));
+        rows.push(auto_option("Сервер", auto && group.code === strategy_code, "Сервер в этой стране выбирается автоматически.", () => change({ country: group.code, node_id: "" })));
       }
       for (const server of group.servers) {
         const b = option(label_of(server), s.node_id === server.node_id, () => change({ node_id: server.node_id }));
@@ -1041,7 +1406,7 @@
   }
 
   // update_pings rewrites only the numbers, so the menu does not rebuild
-  // under the pointer once a second.
+  // under the pointer at every ping.
   function update_pings() {
     for (const el of $("server-list").querySelectorAll("[data-node]")) {
       ping_into(el, pings[el.dataset.node]);
@@ -1067,12 +1432,12 @@
     if (!$("servers").hidden) update_pings();
   }
 
-  // While the menu is open every server is pinged each second; while it is
-  // closed, once in a while, so the numbers it opens with are recent.
+  // While the menu is open every server is pinged every five seconds; while
+  // it is closed, once in a while, so the numbers it opens with are recent.
   function start_pings() {
     stop_pings();
     ping_once();
-    ping_timer = setInterval(ping_once, 1000);
+    ping_timer = setInterval(ping_once, 5000);
   }
   function stop_pings() {
     if (ping_timer) clearInterval(ping_timer);
@@ -1134,14 +1499,6 @@
   // the server the tunnel is on -- the service sees the same node and does
   // not reconnect; with no tunnel there is nothing to keep, so it opens the
   // menu to pick one.
-  function on_auto() {
-    if (strategy === null || busy) return;
-    if (strategy.node_id) { change({ node_id: "" }); return; }
-    const live = live_node();
-    if (live) { close_pops(); change({ node_id: live }); }
-    else open_servers();
-  }
-
   function open_levels() {
     if (!$("levels").hidden) { close_pops(); return; }
     close_pops();
@@ -1277,7 +1634,14 @@
     const open = $("menu").hidden;
     close_pops();
     if (!open) return;
+    show_level("menu", "menu-main");
     open_pop("menu", "menu-button");
+    load_profiles();
+  }
+
+  // The build is the application's, not the account's: it is said in the
+  // settings, and only what the build supplied.
+  async function load_version() {
     const v = await backend().Version();
     const parts = [];
     if (v.version) parts.push("Версия " + v.version);
@@ -1292,16 +1656,22 @@
     $("sign-out").addEventListener("click", on_sign_out);
     $("menu-button").addEventListener("click", toggle_menu);
     $("chip").addEventListener("click", open_servers);
-    $("auto").addEventListener("click", on_auto);
-    $("goal-bypass").addEventListener("click", () => change({ bypass: !strategy.bypass }));
-    $("goal-route").addEventListener("click", () => change({ route: !strategy.route }));
-    $("goal-anonymity").addEventListener("click", open_levels);
+    $("gamer").addEventListener("click", toggle_gamer);
+    $("settings-button").addEventListener("click", toggle_settings);
+    $("theme-row").addEventListener("click", () => show_level("settings", "theme-panel"));
+    $("theme-back").addEventListener("click", () => show_level("settings", "settings-main"));
+    $("profile-row").addEventListener("click", () => { show_level("menu", "profile-panel"); load_profiles(); });
+    $("profile-back").addEventListener("click", () => show_level("menu", "menu-main"));
+    // The goal tiles are out of the window until they work.
+    // $("goal-bypass").addEventListener("click", () => change({ bypass: !strategy.bypass }));
+    // $("goal-route").addEventListener("click", () => change({ route: !strategy.route }));
+    // $("goal-anonymity").addEventListener("click", open_levels);
     for (const b of $("mode").querySelectorAll("[data-mode]")) {
       b.addEventListener("click", () => change_tunnel(b.dataset.mode));
     }
-    for (const b of $("levels").querySelectorAll("[data-level]")) {
-      b.addEventListener("click", () => change({ anonymity: b.dataset.level }));
-    }
+    // for (const b of $("levels").querySelectorAll("[data-level]")) {
+    //   b.addEventListener("click", () => change({ anonymity: b.dataset.level }));
+    // }
     $("edge").addEventListener("click", toggle_expanded);
     wide_query.addEventListener("change", () => {
       expanded = wide_query.matches;
@@ -1316,7 +1686,7 @@
     document.addEventListener("click", (e) => {
       const path = e.composedPath();
       for (const id of pops) {
-        if (!$(id).hidden && !path.includes($(id)) && !path.includes($(pop_owner[id])) && !($(id) === $("servers") && path.includes($("auto")))) {
+        if (!$(id).hidden && !path.includes($(id)) && !path.includes($(pop_owner[id]))) {
           close_pop(id);
         }
       }
@@ -1331,6 +1701,9 @@
     load_pings();
     setInterval(background_ping, 60000);
     restore_expanded();
+    const app = backend();
+    if (app && typeof app.Stick_to_edges === "function") app.Stick_to_edges();
+    load_gamer().then(() => { if (view) render(); });
     refresh();
   }
 

@@ -8,6 +8,7 @@ import (
 
 	"fyne.io/systray"
 
+	"singularity-vpn-app/internal/appicon"
 	"singularity-vpn-app/internal/ipc"
 )
 
@@ -35,7 +36,7 @@ func start_tray(app *App) *tray {
 }
 
 func (t *tray) on_ready() {
-	systray.SetIcon(icon_ico(false))
+	systray.SetIcon(appicon.Tray_ico(appicon.Look_idle))
 	systray.SetTooltip("Singularity VPN")
 	// A left click opens the window, a right click the menu. The handler
 	// runs on the tray's message loop, so the window is shown off it.
@@ -86,11 +87,17 @@ func (t *tray) show_status(status *ipc.Status_result) {
 
 	tooltip := "Singularity VPN — служба не запущена"
 	connected, offer := false, "Подключить"
+	look := appicon.Look_idle
 	if status != nil {
 		switch status.State {
 		case "connected", "degraded":
 			connected, offer = true, "Отключить"
+			look = appicon.Look_up
 			tooltip = "Singularity VPN — подключено"
+			if status.State == "degraded" {
+				look = appicon.Look_trouble
+				tooltip = "Singularity VPN — связь ухудшилась"
+			}
 			if place := place_of(status); place != "" {
 				tooltip += ": " + place
 			}
@@ -99,7 +106,11 @@ func (t *tray) show_status(status *ipc.Status_result) {
 			}
 		case "connecting", "switching":
 			connected, offer = true, "Отключить"
+			look = appicon.Look_up
 			tooltip = "Singularity VPN — подключение…"
+		case "failed":
+			look = appicon.Look_trouble
+			tooltip = "Singularity VPN — подключиться не удалось"
 		case "disconnecting":
 			tooltip = "Singularity VPN — отключение…"
 		default:
@@ -114,7 +125,7 @@ func (t *tray) show_status(status *ipc.Status_result) {
 	t.connected = connected
 	t.mu.Unlock()
 
-	systray.SetIcon(icon_ico(connected))
+	systray.SetIcon(appicon.Tray_ico(look))
 	systray.SetTooltip(tooltip)
 	t.toggle.SetTitle(offer)
 	if status == nil || !status.Signed_in {

@@ -15,6 +15,7 @@ import (
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/journal"
+	"singularity-vpn-app/internal/matchserver"
 	"singularity-vpn-app/internal/platform"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/reach"
@@ -71,6 +72,9 @@ type Dependencies struct {
 	// Journal is what Command_journal reads; the logger above feeds it.
 	// nil means an empty journal.
 	Journal *journal.Journal
+	// Matches is where the servers detected for matches, and the
+	// player's confirmations of them, are kept; nil keeps them in memory.
+	Matches *matchserver.Store
 	Now     func() time.Time
 }
 
@@ -107,6 +111,7 @@ type Application struct {
 	game_pinger Game_pinger
 	game_pings  game_pings
 	node_rtts   node_game_rtts
+	matches     *matchserver.Detector
 }
 
 // New_application builds an Application, refusing a Dependencies missing
@@ -162,6 +167,11 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		return nil, fmt.Errorf("core: building the connection manager: %w", err)
 	}
 
+	matches := dependencies.Matches
+	if matches == nil {
+		matches, _ = matchserver.Open_store("")
+	}
+
 	return &Application{
 		manager:       manager,
 		control_plane: dependencies.Control_plane,
@@ -175,6 +185,7 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		reach_prober:  dependencies.Reach_prober,
 		pinger:        dependencies.Pinger,
 		game_pinger:   dependencies.Game_pinger,
+		matches:       matchserver.New_detector(matches),
 		resolve_ip4: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
 		},

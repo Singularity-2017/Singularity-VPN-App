@@ -14,11 +14,12 @@ func Test_what_the_tunnel_carries(t *testing.T) {
 		driver_banned bool
 	}{
 		{"nothing chosen", state.State{}, 0, false},
-		{"a game alone", state.State{Games: []string{"pubg"}}, 1, false},
+		{"a game alone", state.State{Games: []string{"pubg"}, Tunnel_mode: Tunnel_antizapret}, 1, false},
+		{"a game in full vpn", state.State{Games: []string{"pubg"}, Tunnel_mode: Tunnel_vpn}, 0, false},
 		{"a game and anonymity", state.State{Games: []string{"pubg"}, Strategy: state.Strategy{Anonymity: "high"}}, 0, false},
 		{"a game and getting past blocks", state.State{Games: []string{"pubg"}, Strategy: state.Strategy{Bypass: true}}, 0, false},
-		{"a game and a fast route", state.State{Games: []string{"pubg"}, Strategy: state.Strategy{Route: true}}, 1, false},
-		{"a touchy game", state.State{Games: []string{"pubg", "cod"}}, 0, true},
+		{"a game and a fast route", state.State{Games: []string{"pubg"}, Tunnel_mode: Tunnel_antizapret, Strategy: state.Strategy{Route: true}}, 1, false},
+		{"a touchy game", state.State{Games: []string{"pubg", "cod"}, Tunnel_mode: Tunnel_antizapret}, 0, true},
 		{"a game the catalog no longer has", state.State{Games: []string{"gone"}}, 0, false},
 	}
 	for _, c := range cases {

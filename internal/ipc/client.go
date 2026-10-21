@@ -186,6 +186,14 @@ func (c *Client) Set_games(ctx context.Context, games Games) error {
 	return decode_result(resp, nil)
 }
 
+func (c *Client) Answer_match_server(ctx context.Context, answer Match_server_answer) error {
+	resp, err := c.call(ctx, Command_answer_match_server, answer)
+	if err != nil {
+		return err
+	}
+	return decode_result(resp, nil)
+}
+
 func (c *Client) Journal(ctx context.Context) (Journal_result, error) {
 	var result Journal_result
 	resp, err := c.call(ctx, Command_journal, nil)
@@ -202,6 +210,23 @@ func (c *Client) Tunnel_mode(ctx context.Context) (Tunnel_mode, error) {
 		return result, err
 	}
 	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Profiles(ctx context.Context) (Profiles_result, error) {
+	var result Profiles_result
+	resp, err := c.call(ctx, Command_profiles, nil)
+	if err != nil {
+		return result, err
+	}
+	return result, decode_result(resp, &result)
+}
+
+func (c *Client) Set_profile(ctx context.Context, profile Set_profile) error {
+	resp, err := c.call(ctx, Command_set_profile, profile)
+	if err != nil {
+		return err
+	}
+	return decode_result(resp, nil)
 }
 
 func (c *Client) Set_tunnel_mode(ctx context.Context, mode Tunnel_mode) error {

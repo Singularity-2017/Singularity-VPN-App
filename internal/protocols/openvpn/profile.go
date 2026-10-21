@@ -219,6 +219,7 @@ type progress struct {
 	phase     phase
 	transport string // "UDP" or "TCP", once one was tried
 	fatal     string // the line that ended the attempt, addresses removed
+	carried   carried
 }
 
 // fatal_markers end an attempt for good: openvpn.exe exits after them, or
@@ -237,6 +238,7 @@ var fatal_markers = []string{
 
 // read takes one log line into account.
 func (p *progress) read(line string) {
+	p.carried.read_push(line)
 	switch {
 	case strings.Contains(line, "Initialization Sequence Completed"):
 		p.phase = phase_up

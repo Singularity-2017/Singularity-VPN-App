@@ -85,6 +85,10 @@ $console = @($Target | Where-Object { $_ -ne $gui })
 
 Push-Location $root
 try {
+    # The icon the window and the setup carry is drawn, not stored: write
+    # it as a resource object beside both before they are built.
+    & go run ./cmd/svpn-winres ./cmd/singularityvpn ./cmd/svpn-setup
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if ($console.Count -gt 0) {
         & go build -ldflags ($ldflags -join " ") -o $out_dir @console
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

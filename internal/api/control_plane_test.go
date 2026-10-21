@@ -396,3 +396,29 @@ func Test_servers_carry_the_nodes_game_round_trips(t *testing.T) {
 		t.Fatalf("servers = %+v", got)
 	}
 }
+
+func Test_profiles_are_read_from_me_and_a_label_is_patched(t *testing.T) {
+	var method, path, query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, query = r.Method, r.URL.Path, r.URL.RawQuery
+		if r.Method == "PATCH" {
+			write_success(w, `{"label":"PC"}`)
+			return
+		}
+		write_success(w, `{"username":"alice","clients":[{"id":"c-1","label":"PC","protocol":"wireguard","online":true},{"id":"c-2","label":""}]}`)
+	}))
+	defer server.Close()
+	client, err := New(Config{Base_url: server.URL, Sleep: no_sleep})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got, err := client.Profiles(context.Background(), "token")
+	if err != nil || path != "/api/v1/me" || len(got) != 2 || got[0].Label != "PC" || got[0].Online == nil || !*got[0].Online || got[1].Online != nil {
+		t.Fatalf("Profiles = %+v, %v (path %s), want two with the first online and the second unknown", got, err, path)
+	}
+	label, err := client.Label_profile(context.Background(), "token", "c-2", "PC")
+	if err != nil || label != "PC" || method != "PATCH" || path != "/api/v1/vpn" || query != "client_id=c-2" {
+		t.Fatalf("Label_profile = %q, %v (%s %s?%s)", label, err, method, path, query)
+	}
+}

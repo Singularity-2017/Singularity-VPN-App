@@ -80,6 +80,13 @@ type Connect_budgeter interface {
 	Connect_budget() time.Duration
 }
 
+// Whole_machine is implemented by a protocol that carries the whole
+// machine whatever Connection_config.Split asks: it cannot put the games
+// through the tunnel alone.
+type Whole_machine interface {
+	Whole_machine_only()
+}
+
 // Manager hands out a Protocol by name, and lists what is available.
 type Manager interface {
 	Get(name string) (Protocol, error)

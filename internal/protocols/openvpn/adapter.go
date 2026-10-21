@@ -106,6 +106,10 @@ func New_adapter(start starter, new_device device_factory, device_name, profile_
 
 func (a *Adapter) Name() string { return Name }
 
+// Whole_machine_only implements protocols.Whole_machine: the games-only
+// split needs the packet driver, which only the WireGuard path drives.
+func (a *Adapter) Whole_machine_only() {}
+
 // Connect_budget implements protocols.Connect_budgeter.
 func (a *Adapter) Connect_budget() time.Duration { return connect_budget }
 
@@ -161,6 +165,9 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 	if err := check_profile(config.Data); err != nil {
 		return err
 	}
+	a.mu.Lock()
+	a.progress.carried.read_profile(config.Data)
+	a.mu.Unlock()
 	if len(config.Split.Games) > 0 {
 		a.logger.Info("openvpn carries the whole machine; games-only mode is not available over it")
 	}

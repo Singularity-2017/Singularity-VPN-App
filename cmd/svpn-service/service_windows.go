@@ -24,6 +24,7 @@ import (
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/journal"
+	"singularity-vpn-app/internal/matchserver"
 	"singularity-vpn-app/internal/platform"
 	winplatform "singularity-vpn-app/internal/platform/windows"
 	"singularity-vpn-app/internal/platform/windows/divert"
@@ -409,9 +410,19 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 	}
 	adapters := []protocols.Protocol{adapter, wireguard.Amnezia{Adapter: adapter}}
 	tunnel_up := func() bool { return adapter.Status().Running }
+	probe_target := adapter.Probe_target
 	if ovpn := openvpn_adapter(p, logger); ovpn != nil {
 		adapters = append(adapters, ovpn)
 		tunnel_up = func() bool { return adapter.Status().Running || ovpn.Status().Running }
+		// The WireGuard tunnel, when it is up, is the one the connection
+		// is: OpenVPN may run beside it only to carry AntiZapret next to
+		// games, and the probe measures the connection, not that one.
+		probe_target = func() string {
+			if adapter.Status().Running {
+				return adapter.Probe_target()
+			}
+			return ovpn.Probe_target()
+		}
 	}
 	registry, err := protocols.New_registry(adapters...)
 	if err != nil {
@@ -423,10 +434,18 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Dial_target: probe_dial_target,
 		// A tunnel that carries only part of the traffic drops the
 		// static target; the adapter names one it does carry.
-		Dial_target_now: adapter.Probe_target,
+		Dial_target_now: probe_target,
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// The match servers and the player's answers about them stay on this
+	// machine, beside the state.
+	matches, err := matchserver.Open_store(p.root)
+	if err != nil {
+		logger.Warn("match server answers not read; counting from none", "error", err.Error())
+		matches = nil
 	}
 
 	return core.New_application(core.Dependencies{
@@ -442,6 +461,7 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Device_name:   device_name(),
 		Logger:        logger,
 		Journal:       operations,
+		Matches:       matches,
 	})
 }
 

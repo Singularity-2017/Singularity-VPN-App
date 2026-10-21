@@ -46,6 +46,13 @@ func main() {
 		os.Exit(2)
 	}
 
+	// The person who started setup is asked first; the elevated copy it
+	// starts and an update run by the service are not asked again.
+	if !elevated_child && !quiet && !confirm(verb, purge) {
+		warn("Отменено; ничего не изменено.")
+		return
+	}
+
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		forwarded := []string{verb, elevated_flag}
 		if purge {
@@ -121,6 +128,17 @@ func take(args *[]string, flag string) bool {
 	return false
 }
 
+// gamer_mark is the file in the installation directory that says the
+// application came from the gamers' page. The window reads it under the
+// same name.
+const gamer_mark = "gamer"
+
+// is_gamer_setup reports whether a setup's file name says it came from the
+// gamers' page.
+func is_gamer_setup(name string) bool {
+	return strings.Contains(strings.ToLower(name), "gamer")
+}
+
 func install() error {
 	files, err := payload_contents(payload_source())
 	if err != nil {
@@ -140,6 +158,15 @@ func install() error {
 	}
 	if err := secure_install_dir(dir); err != nil {
 		return fmt.Errorf("protecting %s: %w", dir, err)
+	}
+	// A setup downloaded from the gamers' page carries "gamer" in its name,
+	// and the window then opens in gamer mode until the person turns it
+	// off. The mark is left alone by any other setup, an update's included:
+	// it says where the application first came from.
+	if self, err := os.Executable(); err == nil && is_gamer_setup(filepath.Base(self)) {
+		if err := os.WriteFile(filepath.Join(dir, gamer_mark), nil, 0o644); err != nil {
+			warn("  не удалось отметить геймерскую установку: %v", err)
+		}
 	}
 
 	if !quiet {

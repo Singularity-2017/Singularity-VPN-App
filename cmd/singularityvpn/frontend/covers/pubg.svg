@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 180" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f3a"/>
+      <stop offset=".45" stop-color="#8a5a2b"/>
+      <stop offset=".78" stop-color="#e09a35"/>
+      <stop offset="1" stop-color="#f6c75a"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.72" cy="0.86" r="0.42">
+      <stop offset="0" stop-color="#fff1c2" stop-opacity=".95"/>
+      <stop offset=".25" stop-color="#ffd27a" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#ffd27a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="smoke" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#d8433a" stop-opacity=".85"/>
+      <stop offset="1" stop-color="#d8433a" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="180" fill="url(#sky)"/>
+  <rect width="480" height="180" fill="url(#sun)"/>
+
+  <!-- the flight path and the plane -->
+  <path d="M-10 40 L490 4" stroke="#fff5dc" stroke-opacity=".55" stroke-width="1.4" stroke-dasharray="7 6"/>
+  <g transform="translate(372 13) rotate(-4)" fill="#1b1d22">
+    <path d="M-16 0 C-10 -2 10 -2 18 -.6 C20 0 20 1 18 1.6 C10 2.6 -10 2.6 -16 1.2 Z"/>
+    <path d="M-2 0 L-8 -9 L-4 -9 L5 0 Z"/>
+    <path d="M-2 1.4 L-7 9 L-3 9 L5 1.4 Z"/>
+    <path d="M-15 0 L-19 -6 L-16 -6 L-11 0 Z"/>
+  </g>
+
+  <!-- parachutes coming down -->
+  <g fill="none" stroke="#1b1d22" stroke-width=".9" stroke-opacity=".85">
+    <g transform="translate(118 58)">
+      <path d="M-11 0 A11 7 0 0 1 11 0 Z" fill="#1b1d22" fill-opacity=".85"/>
+      <path d="M-11 0 L0 14 M11 0 L0 14 M0 0 L0 14"/>
+      <circle cx="0" cy="16" r="2" fill="#1b1d22"/>
+    </g>
+    <g transform="translate(176 84) scale(.75)">
+      <path d="M-11 0 A11 7 0 0 1 11 0 Z" fill="#1b1d22" fill-opacity=".85"/>
+      <path d="M-11 0 L0 14 M11 0 L0 14 M0 0 L0 14"/>
+      <circle cx="0" cy="16" r="2" fill="#1b1d22"/>
+    </g>
+    <g transform="translate(86 96) scale(.55)">
+      <path d="M-11 0 A11 7 0 0 1 11 0 Z" fill="#1b1d22" fill-opacity=".85"/>
+      <path d="M-11 0 L0 14 M11 0 L0 14 M0 0 L0 14"/>
+      <circle cx="0" cy="16" r="2" fill="#1b1d22"/>
+    </g>
+  </g>
+
+  <!-- the far ridge and the near ground -->
+  <path d="M0 140 C40 128 70 132 110 124 C150 116 180 126 220 120 C270 112 300 128 340 122 C390 114 430 126 480 118 L480 180 L0 180 Z" fill="#4a3a2a" fill-opacity=".75"/>
+  <path d="M0 158 C60 146 110 154 170 148 C230 142 280 156 340 150 C400 144 440 152 480 146 L480 180 L0 180 Z" fill="#1f1d1c"/>
+
+  <!-- a lone tower on the ridge -->
+  <g fill="#1f1d1c">
+    <rect x="248" y="96" width="5" height="26"/>
+    <path d="M244 96 L257 96 L254 90 L247 90 Z"/>
+  </g>
+
+  <!-- the airdrop with its red smoke -->
+  <path d="M410 148 C404 128 418 116 410 96 C404 82 414 70 408 56 L422 56 C428 72 418 84 424 98 C432 118 418 130 424 148 Z" fill="url(#smoke)"/>
+  <g transform="translate(406 140)">
+    <rect width="20" height="13" rx="1.5" fill="#2a5aa8"/>
+    <rect y="4.5" width="20" height="3" fill="#d8433a"/>
+    <rect x="8.5" width="3" height="13" fill="#d8433a"/>
+  </g>
+</svg>

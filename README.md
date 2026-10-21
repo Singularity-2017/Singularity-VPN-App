@@ -34,6 +34,30 @@ scripts/build.ps1
 `go build` produces a binary that connects nowhere, on purpose. `build.ps1`
 supplies the real values at link time.
 
+## Releasing
+
+Versions stay 0.x until the application reliably gets through
+Roskomnadzor's blocking; that is 1.0. The first release is v0.1.0.
+
+```
+scripts/release.ps1 -Version v1.2.3 [-Minimum v1.2.0] [-Urgent] [-Mirror https://...]
+```
+
+It refuses a tree with uncommitted changes, tags it, builds the setup from
+the tag, signs it with `local/release-keys/primary.key` into
+`local/release-v1.2.3/`, and verifies the signature the way an installation
+will. Only a build from a clean tagged tree carries a version, and only a
+build with a version updates itself.
+
+Two steps are left to whoever publishes, and the script prints both:
+pushing the tag, and `deploy app-release local/release-v1.2.3` from the
+control plane's repository. That command checks the release, puts it into
+the control plane's `APP_RELEASE_DIR` without a half-published moment, and
+verifies from outside that `/api/v1/app/update` serves exactly these
+files. `deploy app-release --withdraw` stops a release from spreading;
+installations that already took it stay on it, and the remedy is a higher
+version.
+
 ## The control plane address is not in the source
 
 `internal/buildinfo.Control_plane` carries an address from the RFC 5737

@@ -3,6 +3,8 @@ package split
 import (
 	"net/netip"
 	"sync"
+
+	"singularity-vpn-app/internal/matchserver"
 )
 
 // Origin is where a game's flow really came from: the address its packets
@@ -28,15 +30,15 @@ type Splitter struct {
 
 	mu    sync.Mutex
 	flows map[flow_key]Origin
-	// sent counts the UDP packets carried to each address since the last
-	// Take_busiest: a match server is where a game sends most.
-	sent map[netip.Addr]int
+	// sent counts the UDP packets carried to each address and port since
+	// the last Take_sent: a match server is where a game sends most.
+	sent map[netip.AddrPort]int
 }
 
 // New_splitter prepares the path for a tunnel with the given IPv4 address
 // and MTU. The MSS is the MTU less the 40 bytes of IPv4 and TCP headers.
 func New_splitter(tunnel netip.Addr, mtu int) *Splitter {
-	return &Splitter{tunnel: tunnel, mss: uint16(mtu - 40), flows: map[flow_key]Origin{}, sent: map[netip.Addr]int{}}
+	return &Splitter{tunnel: tunnel, mss: uint16(mtu - 40), flows: map[flow_key]Origin{}, sent: map[netip.AddrPort]int{}}
 }
 
 // Outbound turns a captured game packet into one wireguard-go can carry:
@@ -73,33 +75,32 @@ func (s *Splitter) Outbound(packet []byte, origin Origin) bool {
 	if to := flow.Destination.Addr(); flow.Protocol == Protocol_udp && to.IsGlobalUnicast() && !to.IsPrivate() {
 		// Bounded: a game talking to many peers, or nobody asking,
 		// must not grow this without end.
-		if _, counted := s.sent[to]; counted || len(s.sent) < sent_most {
-			s.sent[to]++
+		if _, counted := s.sent[flow.Destination]; counted || len(s.sent) < sent_most {
+			s.sent[flow.Destination]++
 		}
 	}
 	s.mu.Unlock()
 	return true
 }
 
-// sent_most bounds how many addresses Take_busiest counts at once.
+// sent_most bounds how many destinations Take_sent counts at once.
 const sent_most = 1024
 
-// Take_busiest names the public address the games sent the most UDP
-// packets to since it was last asked, and starts counting again. It names
-// one only if that was at least least packets and more than half of all
-// counted: a match streams many packets a second to one server, while a
-// lobby's lookups or a spread of peers do not single one out.
-func (s *Splitter) Take_busiest(least int) (busiest netip.Addr, most, total int, ok bool) {
+// Take_sent gives the UDP packets the games sent each public address and
+// port since it was last asked, and starts counting again.
+func (s *Splitter) Take_sent() map[netip.AddrPort]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for address, n := range s.sent {
-		total += n
-		if n > most {
-			busiest, most = address, n
-		}
-	}
-	clear(s.sent)
-	return busiest, most, total, most >= least && most > 0 && 2*most > total
+	sent := s.sent
+	s.sent = map[netip.AddrPort]int{}
+	return sent
+}
+
+// Take_busiest names the public address the games sent the most UDP
+// packets to since it was last asked, by matchserver.Busiest, and starts
+// counting again.
+func (s *Splitter) Take_busiest(least int) (busiest netip.Addr, most, total int, ok bool) {
+	return matchserver.Busiest(s.Take_sent(), least)
 }
 
 // Tunnel is the tunnel address the games' packets leave with.

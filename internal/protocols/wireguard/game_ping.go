@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"singularity-vpn-app/internal/gameping"
+	"singularity-vpn-app/internal/matchserver"
 	"singularity-vpn-app/internal/split"
 )
 
@@ -22,9 +23,12 @@ import (
 const game_echo_id = 0x5356
 
 // game_packets_least is how many UDP packets a game must have sent one
-// server since the last measurement for that server to count as a match:
-// a match streams tens a second, a lobby's lookups do not.
-const game_packets_least = 50
+// server since the last measurement, five seconds before, for that server
+// to count as a match: 30 a second. Measured on PUBG (2026-10-21): its
+// menu streams about 11 a second to a lobby server for half a minute,
+// which 50 let through as a match and named the wrong server; a match,
+// warm-up included, streams about 70 a second to the match server.
+const game_packets_least = 150
 
 // game_echoes is how many echoes one measurement sends, and game_echo_wait
 // how long each waits for its reply.
@@ -142,27 +146,30 @@ func (a *Adapter) Ping_game(ctx context.Context) gameping.Measurement {
 	if path == nil || router == nil {
 		return gameping.Measurement{Why: "not games-only"}
 	}
-	server, most, total, busy := path.splitter.Take_busiest(game_packets_least)
+	sent := path.splitter.Take_sent()
+	server, most, total, busy := matchserver.Busiest(sent, game_packets_least)
 	running := router.Running_games()
-	if len(running) != 1 {
-		return gameping.Measurement{Why: "not one game running", Attrs: []slog.Attr{slog.Int("running", len(running))}}
-	}
 	if !busy {
-		return gameping.Measurement{Why: "no match server", Attrs: []slog.Attr{slog.Int("busiest", most), slog.Int("packets", total)}}
+		return gameping.Measurement{Sent: sent, Why: "no match server", Attrs: []slog.Attr{slog.Int("running", len(running)), slog.Int("busiest", most), slog.Int("packets", total)}}
+	}
+	// A match is on from here, however many games run; only the number
+	// needs it to be one.
+	if len(running) != 1 {
+		return gameping.Measurement{Match: true, Sent: sent, Why: "not one game running", Attrs: []slog.Attr{slog.Int("running", len(running))}}
 	}
 	game := running[0]
 	if rtt, ok := path.median_echo(ctx, server); ok {
-		return gameping.Measurement{Game: game, Rtt: rtt, To_match_server: true, Measured: true, Why: "measured",
+		return gameping.Measurement{Game: game, Rtt: rtt, To_match_server: true, Measured: true, Match: true, Sent: sent, Why: "measured",
 			Attrs: []slog.Attr{slog.String("server", server.String())}}
 	}
 	attrs := []slog.Attr{slog.String("server", server.String()), slog.Int("packets", most)}
 	if !path.control.IsValid() {
-		return gameping.Measurement{Game: game, Why: "the match server did not answer, and the tunnel has no DNS server to ask", Attrs: attrs}
+		return gameping.Measurement{Game: game, Match: true, Sent: sent, Why: "the match server did not answer, and the tunnel has no DNS server to ask", Attrs: attrs}
 	}
 	rtt, ok := path.median_echo(ctx, path.control)
 	if !ok {
-		return gameping.Measurement{Game: game, Why: "neither the match server nor the tunnel's DNS server answered", Attrs: attrs}
+		return gameping.Measurement{Game: game, Match: true, Sent: sent, Why: "neither the match server nor the tunnel's DNS server answered", Attrs: attrs}
 	}
 	attrs = append(attrs, slog.Duration("first_mile", rtt))
-	return gameping.Measurement{Game: game, Rtt: rtt, Measured: true, Why: "the match server did not answer; the first mile did", Attrs: attrs}
+	return gameping.Measurement{Game: game, Rtt: rtt, Measured: true, Match: true, Sent: sent, Why: "the match server did not answer; the first mile did", Attrs: attrs}
 }

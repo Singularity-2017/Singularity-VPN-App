@@ -236,3 +236,47 @@ func Test_a_manual_connect_does_not_borrow_an_earlier_recommendation(t *testing.
 		t.Fatalf("manual session carries reason %q goals %+v from an earlier recommendation", session.Reason, session.Goals)
 	}
 }
+
+// A region boosted toward is asked for under the key the control plane
+// measures it by; a region that is not the selected game's is refused.
+func Test_the_game_region_goes_into_the_recommendation(t *testing.T) {
+	for region, want := range map[string]string{"": "pubg", "eu": "pubg", "ru": ""} {
+		env := new_test_env(t)
+		manager := env.build()
+		if err := manager.Set_games([]string{"pubg"}, region); err != nil {
+			t.Fatalf("Set_games(pubg, %q) error = %v", region, err)
+		}
+		if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+			t.Fatalf("Connect() error = %v", err)
+		}
+		if got := env.control_plane.recommend_requests[0].Game; got != want {
+			t.Errorf("region %q asked for game %q, want %q", region, got, want)
+		}
+		if _, got, _ := manager.Games(); got != region {
+			t.Errorf("Games() region = %q, want %q", got, region)
+		}
+	}
+	manager := new_test_env(t).build()
+	for _, bad := range [][]string{{"pubg", "cs2"}, {"cs2"}, {}} {
+		if err := manager.Set_games(bad, "eu"); err == nil {
+			t.Errorf("Set_games(%v, eu) accepted a region the selection does not have", bad)
+		}
+	}
+	if err := manager.Set_games([]string{"pubg"}, "mars"); err == nil {
+		t.Error("Set_games(pubg, mars) accepted an unknown region")
+	}
+}
+
+func Test_a_region_played_from_home_keeps_the_game_out_of_the_tunnel(t *testing.T) {
+	ru := state.State{Games: []string{"pubg"}, Game_region: "ru", Tunnel_mode: Tunnel_antizapret}
+	if split := split_for(ru); len(split.Games) != 0 {
+		t.Fatalf("RU split = %+v, want the game left out of the tunnel", split)
+	}
+	if mode := effective_mode(ru); mode != Tunnel_antizapret {
+		t.Fatalf("RU mode = %s, want the person's own AntiZapret", mode)
+	}
+	eu := state.State{Games: []string{"pubg"}, Game_region: "eu", Tunnel_mode: Tunnel_antizapret}
+	if split := split_for(eu); len(split.Games) == 0 {
+		t.Fatal("EU split carries no game; the boost toward EU goes through the tunnel")
+	}
+}

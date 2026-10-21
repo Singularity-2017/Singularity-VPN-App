@@ -3,7 +3,15 @@
     "id": "pubg",
     "name": "PUBG: BATTLEGROUNDS",
     "images": ["TslGame.exe", "TslGame_BE.exe", "BEService.exe", "ExecPubg.exe", "zksvc.exe", "TslGame_UC.exe"],
-    "touchy_anticheat": false
+    "touchy_anticheat": false,
+    "offered": true,
+    "launch": "steam://rungameid/578080",
+    "server_shown": "В PUBG: Настройки → Игровой процесс → Прочее → «Сбор данных сетевой статистики» → «Запустить». Окно статистики показывает адрес сервера матча.",
+    "regions": [
+      {"id": "ru",
+          "direct": true, "name": "RU", "target": "pubg_ru"},
+      {"id": "eu", "name": "EU", "target": "pubg"}
+    ]
   },
   {
     "id": "cs2",

@@ -10,6 +10,7 @@ import (
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/gameping"
+	"singularity-vpn-app/internal/games"
 	"singularity-vpn-app/internal/ipc"
 )
 
@@ -53,6 +54,48 @@ func (g *game_pings) record(ping ipc.Game_ping) {
 		g.last = map[string]ipc.Game_ping{}
 	}
 	g.last[ping.Game] = ping
+}
+
+// match_quiet is how long the games may go without streaming to one server
+// before their match is taken to have ended. A match has quiet stretches --
+// a loading screen, a reconnect -- that one quiet measurement must not end.
+const match_quiet = 30 * time.Second
+
+// match_watch turns measurements, each saying whether the games streamed,
+// into a match that starts at the first stream and ends match_quiet after
+// the last.
+type match_watch struct {
+	on   bool
+	last time.Time // the last measurement that streamed
+}
+
+// observe takes one measurement at now and says whether a match is on, and
+// whether that changed.
+func (w *match_watch) observe(now time.Time, streaming bool) (on, changed bool) {
+	was := w.on
+	if streaming {
+		w.on, w.last = true, now
+	} else if w.on && now.Sub(w.last) >= match_quiet {
+		w.on = false
+	}
+	return w.on, w.on != was
+}
+
+// match_detected closes the match the detector was counting, records it
+// and logs what it named.
+func (a *Application) match_detected() {
+	c, ok, err := a.matches.End()
+	if err != nil {
+		a.logger.Warn("recording the match server failed", "error", err.Error())
+	}
+	if !ok {
+		return
+	}
+	attrs := []any{"game", c.Game, "packets", c.Packets, "runner_up", c.Runner_up, "total", c.Total}
+	if c.Named() {
+		attrs = append(attrs, "server", c.Server.String())
+	}
+	a.logger.Info("match server detected", attrs...)
 }
 
 // node_game_rtt_every is how long the nodes' game round trips are kept
@@ -126,6 +169,7 @@ func (a *Application) measure_games(ctx context.Context) {
 	// Only a change of outcome is logged: a match would otherwise write a
 	// line every few seconds.
 	last_why := ""
+	var match match_watch
 	for {
 		select {
 		case <-ctx.Done():
@@ -137,6 +181,19 @@ func (a *Application) measure_games(ctx context.Context) {
 			}
 			a.game_pings.follow(session)
 			m := a.game_pinger.Ping_game(ctx)
+			if m.Match {
+				_, region, _ := a.manager.Games()
+				a.matches.Stream(a.now(), m.Game, region, m.Sent)
+			}
+			if on, changed := match.observe(a.now(), m.Match); changed {
+				a.manager.Set_in_match(on)
+				if on {
+					a.logger.Info("match started", "game", m.Game)
+				} else {
+					a.logger.Info("match ended")
+					a.match_detected()
+				}
+			}
 			why, attrs := m.Why, m.Attrs
 			switch {
 			case !m.Measured:
@@ -145,7 +202,15 @@ func (a *Application) measure_games(ctx context.Context) {
 			default:
 				// The first mile alone is not the game's ping, so it is
 				// shown only with the node's half beside it.
-				node_ms, ok := a.node_rtts.lookup(ctx, a.now(), a.servers_now, node, m.Game)
+				// The node measures toward the region boosted to, under
+				// the key the control plane knows it by.
+				key := m.Game
+				if _, region, err := a.manager.Games(); err == nil {
+					if catalog, err := games.Load_catalog(); err == nil {
+						key = catalog.Target(m.Game, region)
+					}
+				}
+				node_ms, ok := a.node_rtts.lookup(ctx, a.now(), a.servers_now, node, key)
 				if !ok {
 					why += ", and the node has no measurement for the game"
 					break

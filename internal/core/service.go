@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
+	"slices"
 	"time"
 
 	"singularity-vpn-app/internal/api"
@@ -12,6 +14,7 @@ import (
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/journal"
+	"singularity-vpn-app/internal/matchserver"
 	"singularity-vpn-app/internal/security"
 	"singularity-vpn-app/internal/state"
 )
@@ -36,6 +39,14 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 	result := ipc.Status_result{
 		State:     string(a.manager.State()),
 		Signed_in: signed_in,
+	}
+	if signed_in {
+		// Who is signed in, for the account menu. A state that cannot be
+		// read leaves the name out rather than failing the status.
+		if local, err := a.store.Load(); err == nil {
+			result.Username = local.Username
+		}
+		result.Device_name = a.device_name
 	}
 
 	session, ok := a.manager.Session()
@@ -203,6 +214,7 @@ func (a *Application) Sign_in(ctx context.Context, params ipc.Sign_in_params) (i
 		return ipc.Sign_in_result{}, fmt.Errorf("core: loading the local state: %w", err)
 	}
 	local.Device_id = device.Device_id
+	local.Username = params.Username
 	if err := a.store.Save(local); err != nil {
 		return ipc.Sign_in_result{}, fmt.Errorf("core: saving the local state: %w", err)
 	}
@@ -273,6 +285,7 @@ func (a *Application) Sign_out(ctx context.Context) error {
 		return fmt.Errorf("core: loading the local state: %w", err)
 	}
 	local.Device_id = ""
+	local.Username = ""
 	if err := a.store.Save(local); err != nil {
 		return fmt.Errorf("core: saving the local state: %w", err)
 	}
@@ -336,11 +349,55 @@ func (a *Application) Set_strategy(ctx context.Context, strategy ipc.Strategy) e
 // Games answers Command_games: the games carried through the tunnel, as
 // last recorded.
 func (a *Application) Games(ctx context.Context) (ipc.Games, error) {
-	ids, err := a.manager.Games()
+	ids, region, err := a.manager.Games()
 	if err != nil {
 		return ipc.Games{}, map_error(err)
 	}
-	return ipc.Games{Games: append([]string{}, ids...), Pings: a.game_pings.list(ids)}, nil
+	return ipc.Games{Games: append([]string{}, ids...), Region: region, Pings: a.game_pings.list(ids), In_match: a.manager.In_match(), Match_servers: a.match_servers(ids)}, nil
+}
+
+// match_servers is, for each of ids, the server waiting for the player to
+// confirm and the tally so far, for the games that have either.
+func (a *Application) match_servers(ids []string) []ipc.Match_server {
+	var out []ipc.Match_server
+	for _, id := range ids {
+		m := ipc.Match_server{Game: id}
+		tally := a.matches.Tally(id)
+		m.Right, m.Confirmed = tally.Right, tally.Confirmed
+		c, offered := a.matches.Offer(id)
+		if offered {
+			m.Server, m.Packets, m.Runner_up, m.Total = c.Server.String(), c.Packets, c.Runner_up, c.Total
+		}
+		if offered || m.Confirmed > 0 {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// Answer_match_server answers Command_answer_match_server: it records the
+// player's word on the server offered for a game. An offer that has moved
+// on meanwhile is refused, so an answer is never put to a server the
+// player was not shown.
+func (a *Application) Answer_match_server(ctx context.Context, answer ipc.Match_server_answer) error {
+	server, err := netip.ParseAddrPort(answer.Server)
+	if err != nil {
+		return err
+	}
+	shown, err := matchserver.Parse_shown(answer.Shown)
+	if err != nil {
+		return err
+	}
+	c, err := a.matches.Answer(answer.Game, server, matchserver.Answer(answer.Answer), shown, a.now())
+	if errors.Is(err, matchserver.Error_offer_changed) {
+		return fmt.Errorf("%w: %w", ipc.Err_offer_changed, err)
+	}
+	if err != nil {
+		a.logger.Warn("recording a match server answer failed", "error", err.Error())
+		return err
+	}
+	a.logger.Info("match server answered", "game", c.Game, "detected", c.Detected.String(), "verdict", string(c.Verdict))
+	return nil
 }
 
 // Set_games answers Command_set_games: it records the games and, if a
@@ -351,11 +408,20 @@ func (a *Application) Set_games(ctx context.Context, games ipc.Games) error {
 	if err := games.Validate(); err != nil {
 		return err
 	}
-	a.logger.Info("games set", "games", games.Games)
-	if err := a.manager.Set_games(games.Games); err != nil {
+	a.logger.Info("games set", "games", games.Games, "region", games.Region)
+	_, was, _ := a.manager.Games()
+	if err := a.manager.Set_games(games.Games, games.Region); err != nil {
 		return map_error(err)
 	}
-	return map_error(a.manager.Apply_games(ctx))
+	if err := a.manager.Apply_games(ctx); err != nil {
+		return map_error(err)
+	}
+	// Another region is another place to be near: an automatic choice is
+	// asked for again, and moves only if the answer is somewhere else.
+	if games.Region != was {
+		return map_error(a.manager.Apply_strategy(ctx))
+	}
+	return nil
 }
 
 // Journal answers Command_journal: the operations the service has logged
@@ -391,6 +457,57 @@ func (a *Application) Set_tunnel_mode(ctx context.Context, mode ipc.Tunnel_mode)
 		return map_error(err)
 	}
 	return map_error(a.manager.Apply_tunnel(ctx))
+}
+
+// Profiles answers Command_profiles: the account's profiles, and which one
+// this installation connects with.
+func (a *Application) Profiles(ctx context.Context) (ipc.Profiles_result, error) {
+	list, err := a.account_profiles(ctx)
+	if err != nil {
+		return ipc.Profiles_result{}, err
+	}
+	current, err := a.manager.Client_id()
+	if err != nil {
+		return ipc.Profiles_result{}, map_error(err)
+	}
+	result := ipc.Profiles_result{Profiles: make([]ipc.Profile, 0, len(list))}
+	for _, p := range list {
+		result.Profiles = append(result.Profiles, ipc.Profile{Id: p.Id, Label: p.Label, Online: p.Online, Current: p.Id == current})
+	}
+	return result, nil
+}
+
+// Set_profile answers Command_set_profile: only one of the account's own
+// profiles is taken, and a tunnel that is up is rebuilt with it.
+func (a *Application) Set_profile(ctx context.Context, profile ipc.Set_profile) error {
+	if err := profile.Validate(); err != nil {
+		return err
+	}
+	list, err := a.account_profiles(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(list, func(p api.Account_profile) bool { return p.Id == profile.Id }) {
+		return fmt.Errorf("core: profile %s is not this account's", profile.Id)
+	}
+	a.logger.Info("profile set", "client_id", profile.Id)
+	return map_error(a.manager.Set_profile(ctx, profile.Id))
+}
+
+func (a *Application) account_profiles(ctx context.Context) ([]api.Account_profile, error) {
+	book, ok := a.control_plane.(connection.Profile_book)
+	if !ok {
+		return nil, errors.New("core: this control plane does not list profiles")
+	}
+	token, err := (&token_source{secrets: a.secrets}).Token(ctx)
+	if err != nil {
+		return nil, map_error(err)
+	}
+	list, err := book.Profiles(ctx, token)
+	if err != nil {
+		return nil, map_error(err)
+	}
+	return list, nil
 }
 
 // Servers answers Command_servers: the servers this account may be put on,

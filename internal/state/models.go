@@ -8,9 +8,13 @@ import "time"
 // token, a password have no business in this type; they belong to security,
 // and that is the invariant a future field will be tempted to break.
 type State struct {
-	Version          int
-	Client_id        string
-	Device_id        string
+	Version   int
+	Client_id string
+	Device_id string
+	// Username is the account name the person signed in with, shown to
+	// them in the account menu; "" when signed out or signed in before
+	// this field existed.
+	Username         string
 	Last_node_id     string
 	Last_protocol    string
 	Connect_on_start bool
@@ -18,6 +22,9 @@ type State struct {
 	// Games are the catalog ids of the games the person wants carried
 	// through the tunnel, in the order they chose them.
 	Games []string
+	// Game_region is the region of the one selected game the person boosts
+	// toward, a region id from the catalog; "" for wherever it plays.
+	Game_region string
 	// Tunnel_mode is which profile of the node the person wants: "" or
 	// "vpn" for the full tunnel (so a state file from before this field
 	// reads as full VPN), "antizapret" for only the blocked destinations.

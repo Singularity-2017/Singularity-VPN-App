@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"singularity-vpn-app/internal/journal"
+	"singularity-vpn-app/internal/matchserver"
 )
 
 // Pipe_name is the one address this protocol is spoken on.
@@ -90,9 +92,17 @@ const (
 	Command_ping_servers = "ping_servers"
 	Command_games        = "games"
 	Command_set_games    = "set_games"
-	Command_tunnel_mode  = "tunnel_mode"
+	// Command_answer_match_server is the player's answer about the match
+	// server offered on a game's card.
+	Command_answer_match_server = "answer_match_server"
+	Command_tunnel_mode         = "tunnel_mode"
 
 	Command_set_tunnel_mode = "set_tunnel_mode"
+
+	// Command_profiles lists the account's profiles; Command_set_profile
+	// makes this installation connect with another of them.
+	Command_profiles    = "profiles"
+	Command_set_profile = "set_profile"
 
 	Command_analyze  = "analyze"
 	Command_analysis = "analysis"
@@ -169,10 +179,68 @@ func (t Tunnel_mode) Validate() error {
 // empty list carries the whole machine, as before any game was chosen.
 type Games struct {
 	Games []string `json:"games"`
+	// Region is the region of the one selected game the person boosts
+	// toward, a region id from the catalog; empty for wherever it plays.
+	Region string `json:"region,omitempty"`
 	// Pings is, in an answer, the last round trip measured to the server
 	// each game was playing on, for the games that have one. A set
 	// request carries none.
 	Pings []Game_ping `json:"pings,omitempty"`
+	// In_match is, in an answer, whether a game is in a match: changing
+	// the server or the games would end it.
+	In_match bool `json:"in_match,omitempty"`
+	// Match_servers is, in an answer, per selected game, the match server
+	// waiting for the player to confirm and how often the detection was
+	// right; a game with neither is absent.
+	Match_servers []Match_server `json:"match_servers,omitempty"`
+}
+
+// Match_server is one game's detected match server and its record.
+type Match_server struct {
+	Game string `json:"game"`
+	// Server is the address and port the games streamed the most to in
+	// the current or last match, offered for the player to check against
+	// what the game shows; empty when nothing waits for an answer.
+	// Packets of Total went to its address, Runner_up to the next one.
+	Server    string `json:"server,omitempty"`
+	Packets   int    `json:"packets,omitempty"`
+	Runner_up int    `json:"runner_up,omitempty"`
+	Total     int    `json:"total,omitempty"`
+	// Right of Confirmed answers found the detection right; a dismissal
+	// is in neither.
+	Right     int `json:"right,omitempty"`
+	Confirmed int `json:"confirmed,omitempty"`
+}
+
+// Match_server_answer is the player's answer about the server offered for
+// a game: Answer is "yes", "no" or "dismiss", Server the one they were
+// shown, and Shown, on a "no", the address the game shows if they typed it.
+type Match_server_answer struct {
+	Game   string `json:"game"`
+	Server string `json:"server"`
+	Answer string `json:"answer"`
+	Shown  string `json:"shown,omitempty"`
+}
+
+// Validate refuses an answer that is not one of the three, a game id that
+// is not a token, and a server or address that does not parse.
+func (m Match_server_answer) Validate() error {
+	if !is_game_token(m.Game) {
+		return fmt.Errorf("ipc: match server answer: game %q is not a game id", m.Game)
+	}
+	if _, err := netip.ParseAddrPort(m.Server); err != nil {
+		return fmt.Errorf("ipc: match server answer: server %q is not an address and port", m.Server)
+	}
+	switch m.Answer {
+	case "yes", "dismiss":
+	case "no":
+		if _, err := matchserver.Parse_shown(m.Shown); err != nil {
+			return fmt.Errorf("ipc: match server answer: %w", err)
+		}
+	default:
+		return fmt.Errorf("ipc: match server answer: %q is not yes, no or dismiss", m.Answer)
+	}
+	return nil
 }
 
 // Game_ping is one game's last measured round trip to its match server,
@@ -188,24 +256,35 @@ type Game_ping struct {
 	At            time.Time `json:"at"`
 }
 
-// Validate refuses more ids than any catalog has games, and an id that is
-// not a short lower-case token. Whether the catalog knows the id is the
-// service's to say.
+// Validate refuses more ids than any catalog has games, and an id or a
+// region that is not a short lower-case token. Whether the catalog knows
+// them is the service's to say.
 func (g Games) Validate() error {
 	if len(g.Games) > 64 {
 		return errors.New("ipc: games: too many games")
 	}
 	for _, id := range g.Games {
-		if id == "" || len(id) > 32 {
-			return fmt.Errorf("ipc: games: id %q is empty or too long", id)
-		}
-		for _, c := range id {
-			if !(c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z') {
-				return fmt.Errorf("ipc: games: id %q carries a character a game id does not", id)
-			}
+		if !is_game_token(id) {
+			return fmt.Errorf("ipc: games: id %q is empty, too long or carries a character a game id does not", id)
 		}
 	}
+	if g.Region != "" && !is_game_token(g.Region) {
+		return fmt.Errorf("ipc: games: region %q is too long or carries a character a region does not", g.Region)
+	}
 	return nil
+}
+
+// is_game_token reports whether s is a short lower-case token.
+func is_game_token(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
+	}
+	for _, c := range s {
+		if !(c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z') {
+			return false
+		}
+	}
+	return true
 }
 
 // Goal_outcome is the control plane's account of one goal, passed on as it
@@ -378,8 +457,15 @@ type Sign_in_result struct {
 // time.Time -- encoding/json does not consider a zero time.Time empty, only
 // a nil pointer.
 type Status_result struct {
-	State      string     `json:"state"`
-	Signed_in  bool       `json:"signed_in"`
+	State     string `json:"state"`
+	Signed_in bool   `json:"signed_in"`
+
+	// Username and Device_name say who is signed in and as which device,
+	// for the account menu; present only while signed in, and Username
+	// only when the sign-in recorded it.
+	Username    string `json:"username,omitempty"`
+	Device_name string `json:"device_name,omitempty"`
+
 	Node_id    string     `json:"node_id,omitempty"`
 	Protocol   string     `json:"protocol,omitempty"`
 	Session_id string     `json:"session_id,omitempty"`
@@ -433,6 +519,7 @@ const (
 	Error_tunnel_up            = "tunnel_up"            // the analysis needs the tunnel down, or the connection moved while it ran
 	Error_server_unavailable   = "server_unavailable"   // the chosen server cannot take a connection now
 	Error_no_server_in_country = "no_server_in_country" // no server in the chosen country can
+	Error_offer_changed        = "offer_changed"        // the match server offered is not the one answered about
 )
 
 // The sentinel errors a Service implementation returns, so the server can
@@ -456,6 +543,8 @@ var (
 
 	Err_server_unavailable   = errors.New("ipc: the chosen server cannot take a connection right now")
 	Err_no_server_in_country = errors.New("ipc: no server in the chosen country can take a connection right now")
+
+	Err_offer_changed = errors.New("ipc: the match server offered has changed")
 )
 
 // Max_frame_bytes bounds one line. A caller on the other side of the pipe
@@ -470,3 +559,37 @@ const Max_frame_bytes = 1 << 20
 // not be able to wedge the service behind a full pipe buffer: the write
 // fails, the connection is closed, and everything else carries on.
 const Write_timeout = 5 * time.Second
+
+// Profile is one of the account's profiles: what a device connects as. One
+// profile on two devices at once moves the older one off.
+type Profile struct {
+	Id    string `json:"id"`
+	Label string `json:"label"`
+	// Online is present only when the control plane knows: true when some
+	// device is connected with this profile now.
+	Online *bool `json:"online,omitempty"`
+	// Current marks the profile this installation connects with.
+	Current bool `json:"current,omitempty"`
+}
+
+// Profiles_result answers Command_profiles, newest first.
+type Profiles_result struct {
+	Profiles []Profile `json:"profiles"`
+}
+
+// Set_profile is Command_set_profile's parameter: the profile's id.
+type Set_profile struct {
+	Id string `json:"id"`
+}
+
+func (p Set_profile) Validate() error {
+	if p.Id == "" || len(p.Id) > 64 {
+		return fmt.Errorf("ipc: profile id of %d bytes", len(p.Id))
+	}
+	for _, r := range p.Id {
+		if r < 0x21 || r > 0x7e {
+			return fmt.Errorf("ipc: profile id %q is not printable ASCII", p.Id)
+		}
+	}
+	return nil
+}

@@ -49,7 +49,7 @@ func udp_to(server string) []byte {
 }
 
 func Test_a_match_server_that_answers_gives_the_game_its_ping(t *testing.T) {
-	a := &Adapter{router: &fake_router{running: []string{"pubg"}}, game_path: streamed(t, "203.0.113.9", 60, true)}
+	a := &Adapter{router: &fake_router{running: []string{"pubg"}}, game_path: streamed(t, "203.0.113.9", 350, true)}
 	m := a.Ping_game(context.Background())
 	if !m.Measured || !m.To_match_server || m.Game != "pubg" || m.Rtt < 0 || m.Rtt > time.Second {
 		t.Fatalf("got %+v", m)
@@ -59,8 +59,11 @@ func Test_a_match_server_that_answers_gives_the_game_its_ping(t *testing.T) {
 func Test_no_number_without_a_match_one_game_or_an_answer(t *testing.T) {
 	cases := map[string]*Adapter{
 		"no match, only a trickle": {router: &fake_router{running: []string{"pubg"}}, game_path: streamed(t, "203.0.113.9", 5, true)},
-		"two games running":        {router: &fake_router{running: []string{"pubg", "cs2"}}, game_path: streamed(t, "203.0.113.9", 60, true)},
-		"no tunnel of games":       {router: &fake_router{running: []string{"pubg"}}},
+		// PUBG's menu, measured: 55 packets in five seconds to a lobby
+		// server. Not a match, and not the server to name.
+		"the menu's lobby stream": {router: &fake_router{running: []string{"pubg"}}, game_path: streamed(t, "203.0.113.9", 55, true)},
+		"two games running":       {router: &fake_router{running: []string{"pubg", "cs2"}}, game_path: streamed(t, "203.0.113.9", 350, true)},
+		"no tunnel of games":      {router: &fake_router{running: []string{"pubg"}}},
 	}
 	for name, a := range cases {
 		if a.Ping_game(context.Background()).Measured {
@@ -73,7 +76,7 @@ func Test_a_server_that_does_not_answer_gives_no_number(t *testing.T) {
 	if testing.Short() {
 		t.Skip("waits out the echo timeouts")
 	}
-	a := &Adapter{router: &fake_router{running: []string{"pubg"}}, game_path: streamed(t, "203.0.113.9", 60, false)}
+	a := &Adapter{router: &fake_router{running: []string{"pubg"}}, game_path: streamed(t, "203.0.113.9", 350, false)}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	if a.Ping_game(ctx).Measured {
@@ -85,7 +88,7 @@ func Test_a_silent_server_leaves_the_first_mile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("waits out the echo timeouts")
 	}
-	path := streamed(t, "203.0.113.9", 60, false)
+	path := streamed(t, "203.0.113.9", 350, false)
 	path.control = netip.MustParseAddr("10.29.8.1")
 	path.inject = func(request []byte) bool {
 		if netip.AddrFrom4([4]byte(request[16:20])) == path.control {

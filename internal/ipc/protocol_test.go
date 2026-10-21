@@ -143,3 +143,29 @@ func Test_sign_in_params_refuse_an_empty_username_or_password(t *testing.T) {
 		t.Fatalf("Validate() = %v, want a complete sign_in request to pass", err)
 	}
 }
+
+func Test_a_match_server_answer_is_one_of_three_about_a_real_server(t *testing.T) {
+	good := []Match_server_answer{
+		{Game: "pubg", Server: "203.0.113.10:7086", Answer: "yes"},
+		{Game: "pubg", Server: "203.0.113.10:7086", Answer: "no"},
+		{Game: "pubg", Server: "203.0.113.10:7086", Answer: "no", Shown: "203.0.113.99"},
+		{Game: "pubg", Server: "203.0.113.10:7086", Answer: "no", Shown: "203.0.113.99:7086"},
+		{Game: "pubg", Server: "203.0.113.10:7086", Answer: "dismiss"},
+	}
+	for _, a := range good {
+		if err := a.Validate(); err != nil {
+			t.Errorf("%+v refused: %v", a, err)
+		}
+	}
+	bad := []Match_server_answer{
+		{Game: "PUBG", Server: "203.0.113.10:7086", Answer: "yes"},
+		{Game: "pubg", Server: "203.0.113.10", Answer: "yes"},
+		{Game: "pubg", Server: "203.0.113.10:7086", Answer: "maybe"},
+		{Game: "pubg", Server: "203.0.113.10:7086", Answer: "no", Shown: "not an address"},
+	}
+	for _, a := range bad {
+		if err := a.Validate(); err == nil {
+			t.Errorf("%+v accepted", a)
+		}
+	}
+}

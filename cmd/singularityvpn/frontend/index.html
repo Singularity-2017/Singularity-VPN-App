@@ -13,16 +13,45 @@
 
   <header class="bar">
     <div class="brand">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M17 5.5C15.6 4.5 13.9 4 12 4 8.7 4 6.5 5.8 6.5 8.2c0 5.3 11 3 11 8.3C17.5 19 15 20 12 20c-2.2 0-4.1-.6-5.5-1.7" stroke="#4be3df" stroke-width="2.6" stroke-linecap="round"/></svg>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M17 5.5C15.6 4.5 13.9 4 12 4 8.7 4 6.5 5.8 6.5 8.2c0 5.3 11 3 11 8.3C17.5 19 15 20 12 20c-2.2 0-4.1-.6-5.5-1.7" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
       <span>Singularity VPN</span>
     </div>
-    <button class="icon" id="menu-button" aria-label="Меню" aria-expanded="false" hidden>
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#c9d3da" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    <div class="bar-end">
+    <button class="icon" id="settings-button" aria-label="Настройки" aria-expanded="false" data-tip="Настройки" hidden>
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
     </button>
+    <button class="avatar" id="menu-button" aria-label="Аккаунт" aria-expanded="false" hidden>
+      <span id="avatar-letter"></span>
+      <svg id="avatar-anon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c1.2-3.6 3.8-5.5 7-5.5s5.8 1.9 7 5.5"/></svg>
+    </button>
+    </div>
     <div class="pop" id="menu" hidden>
-      <div class="pop-title">Аккаунт</div>
-      <button class="opt" id="sign-out">Выйти из аккаунта</button>
-      <div class="pop-foot" id="version" hidden></div>
+      <div class="account-head">
+        <div class="account-name" id="account-name"></div>
+        <div class="account-device" id="account-device" hidden></div>
+      </div>
+      <div class="pop-level" id="menu-main">
+        <button class="opt line opt-row" id="profile-row" data-tip="Профиль — это подключение вашего аккаунта, с которым работает это устройство. Один профиль нельзя использовать на двух устройствах одновременно: когда подключится второе, первое отключится.">
+          <span class="opt-name">Профиль</span><span class="opt-value" id="profile-value"></span><svg class="chev-right" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+        </button>
+        <button class="opt" id="sign-out">Выйти из аккаунта</button>
+      </div>
+      <div class="pop-level" id="profile-panel" hidden>
+        <button class="pop-back" id="profile-back"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg><span>Профиль</span></button>
+        <div id="profile-list" role="listbox" aria-label="Профиль"></div>
+        <div class="pop-note" id="profile-note" hidden></div>
+      </div>
+    </div>
+    <div class="pop" id="settings" hidden>
+      <div class="pop-level" id="settings-main">
+        <button class="opt line opt-row" id="theme-row">
+          <span class="opt-name" id="theme-row-name">Тема</span><span class="opt-value" id="theme-value"></span><svg class="chev-right" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+        </button>
+      </div>
+      <div class="pop-level" id="theme-panel" hidden>
+        <button class="pop-back" id="theme-back"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg><span id="theme-title">Тема</span></button>
+        <div id="theme-list" role="listbox" aria-labelledby="theme-title"></div>
+      </div>
     </div>
   </header>
 
@@ -66,6 +95,11 @@
           <svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>
           <span id="power-label">Подключиться</span>
         </button>
+        <div class="segment mode-pick" id="mode" role="radiogroup" aria-label="Режим" hidden>
+          <button role="radio" aria-checked="false" data-mode="antizapret" data-tip="Через сервер идут только сайты, заблокированные в России, остальное — напрямую: местные сайты и банки работают как без VPN.">Антизапрет</button>
+          <button role="radio" aria-checked="false" data-mode="vpn" data-tip="Весь трафик компьютера идёт через сервер.">VPN</button>
+        </div>
+        <span class="mode-note" id="mode-note" hidden></span>
         <div class="trouble-line" id="trouble" hidden></div>
         <div class="error" id="action-error" role="alert" hidden></div>
       </div>
@@ -86,19 +120,11 @@
       <div class="server">
         <div class="server-head">
           <span class="server-label">Сервер</span>
-          <button class="switch" id="auto" role="switch" aria-checked="true" data-tip="Сервер выбирается автоматически и меняется, если перестал работать. Выключить — закрепить текущий.">
-            <span class="knob"></span><span>Авто</span>
-          </button>
-          <div class="segment" id="mode" role="radiogroup" aria-label="Режим" hidden>
-            <button role="radio" aria-checked="false" data-mode="vpn" data-tip="Весь трафик компьютера идёт через сервер.">VPN</button>
-            <button role="radio" aria-checked="false" data-mode="antizapret" data-tip="Через сервер идут только сайты, заблокированные в России, остальное — напрямую: местные сайты и банки работают как без VPN.">Антизапрет</button>
-          </div>
         </div>
-        <span class="mode-note" id="mode-note" hidden></span>
         <button class="chip" id="chip" aria-haspopup="listbox" aria-expanded="false">
           <span class="chip-flag" id="chip-flag"></span>
           <span class="chip-text">
-            <span class="chip-name" id="place"></span>
+            <span class="chip-title"><span class="chip-name" id="place"></span><span class="chip-badge" id="chip-badge" hidden></span></span>
             <span class="chip-sub" id="chip-sub" hidden></span>
             <span class="chip-sub" id="reason" hidden></span>
           </span>
@@ -110,6 +136,7 @@
         </div>
       </div>
 
+      <!-- Unfinished, out of the window until they do what they say:
       <div class="goals">
         <button class="tile" id="goal-bypass" aria-pressed="false" data-tip="Протокол подбирается под вашу сеть, чтобы его не блокировали.">
           <span class="tile-name">Обход блокировок</span>
@@ -137,9 +164,12 @@
           <button class="opt" data-level="high" data-tip="Пока ни один сервер не даёт дополнительной анонимности: уровень запомнится и начнёт действовать, когда это появится.">Высокая</button>
         </div>
       </div>
+      -->
 
       <div class="games" id="games" hidden>
-        <span class="server-label" data-tip="Включённая игра идёт через сервер, остальное — как без неё. Если включены анонимность или обход блокировок, через сервер идёт весь компьютер.">Игры</span>
+        <button class="games-head" id="gamer" role="switch" aria-checked="false" data-tip="Gamer mode: игры, буст для них и своя тема. Нажмите на игру — включится буст и она запустится; Антизапрет или VPN при этом продолжают работать.">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10l4 4.5V17l-2.5 1.5L15 15H9l-3.5 3.5L3 17v-5.5z"/><path d="M7.5 10v3M6 11.5h3" stroke-linecap="square"/><path d="M15.5 10.5h.01M17.5 12.5h.01" stroke-width="2.4" stroke-linecap="square"/></svg><span>Игры</span>
+        </button>
         <div class="game-cards" id="game-cards"></div>
       </div>
 
@@ -163,6 +193,7 @@
     </div>
   </div>
 
+  <div class="app-version num" id="version" hidden></div>
   <div class="tip" id="tip" role="tooltip" hidden></div>
 </div>
 <button class="edge" id="edge" aria-label="Подробный режим" aria-pressed="false" hidden>

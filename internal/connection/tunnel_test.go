@@ -19,7 +19,7 @@ func Test_what_a_connect_asks_the_control_plane_for(t *testing.T) {
 		{"vpn chosen", state.State{Tunnel_mode: "vpn"}, Tunnel_vpn},
 		{"antizapret chosen", state.State{Tunnel_mode: anti}, Tunnel_antizapret},
 		{"antizapret and anonymity", state.State{Tunnel_mode: anti, Strategy: state.Strategy{Anonymity: "light"}}, Tunnel_vpn},
-		{"a game alone", state.State{Games: []string{"pubg"}}, Tunnel_games},
+		{"a game in full vpn", state.State{Games: []string{"pubg"}}, Tunnel_vpn},
 		{"a game beats antizapret", state.State{Games: []string{"pubg"}, Tunnel_mode: anti}, Tunnel_games},
 		{"a game and anonymity", state.State{Games: []string{"pubg"}, Tunnel_mode: anti, Strategy: state.Strategy{Anonymity: "high"}}, Tunnel_vpn},
 		{"a touchy game and antizapret", state.State{Games: []string{"pubg", "cod"}, Tunnel_mode: anti}, Tunnel_antizapret},

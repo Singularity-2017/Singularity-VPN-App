@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -62,6 +63,22 @@ type fake_control_plane struct {
 	fetch_config_result   api.Vpn_config
 	fetch_config_err      error
 	fetch_config_sequence []fetch_config_response
+
+	// profiles is the account's profiles as /me lists them; labels are
+	// the names given, as "client_id=label".
+	profiles      []api.Account_profile
+	profiles_err  error
+	fetch_clients []string
+	labels        []string
+}
+
+func (f *fake_control_plane) Profiles(ctx context.Context, token string) ([]api.Account_profile, error) {
+	return f.profiles, f.profiles_err
+}
+
+func (f *fake_control_plane) Label_profile(ctx context.Context, token, client_id, label string) (string, error) {
+	f.labels = append(f.labels, client_id+"="+label)
+	return label, nil
 }
 
 func (f *fake_control_plane) Recommend(ctx context.Context, token string, request api.Recommend_request) (api.Recommendation, error) {
@@ -87,6 +104,7 @@ func (f *fake_control_plane) Fetch_config(ctx context.Context, token, client_id,
 	f.fetch_config_calls++
 	f.asked_protocols = append(f.asked_protocols, protocol)
 	f.asked_modes = append(f.asked_modes, mode)
+	f.fetch_clients = append(f.fetch_clients, client_id)
 	if index < len(f.fetch_config_sequence) {
 		response := f.fetch_config_sequence[index]
 		return response.config, response.err
@@ -1194,5 +1212,128 @@ func Test_network_changed_while_disconnected_does_nothing(t *testing.T) {
 
 	if repinner.repin_calls != 0 || env.prober.calls != 0 {
 		t.Fatalf("repin = %d, probes = %d; want neither", repinner.repin_calls, env.prober.calls)
+	}
+}
+
+// A match holds a worse but working connection where it is: leaving the
+// node would end the match. When the match ends the switch goes ahead.
+func Test_a_match_holds_a_degraded_connection_on_its_node(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	env.control_plane.recommend_result.Alternatives = []api.Alternative{{Node: "nl-02", Protocol: "wireguard"}}
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	before, _ := manager.Session()
+	manager.Set_in_match(true)
+
+	degraded_sample := diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Packet_loss: 0.5}
+	env.prober.set([]prober_response{{sample: degraded_sample}})
+	manager.Tick(context.Background(), env.clock.advance(40*time.Second))
+	manager.Tick(context.Background(), env.clock.advance(16*time.Second))
+	manager.Tick(context.Background(), env.clock.advance(16*time.Second))
+
+	if manager.State() != State_degraded {
+		t.Fatalf("State() = %v, want State_degraded: held on the node", manager.State())
+	}
+	if after, _ := manager.Session(); after.Node_id != before.Node_id {
+		t.Fatalf("switched to %q during a match", after.Node_id)
+	}
+
+	manager.Set_in_match(false)
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
+	if after, _ := manager.Session(); after.Node_id != "nl-02" {
+		t.Fatalf("Session() node = %q after the match, want the switch to nl-02", after.Node_id)
+	}
+}
+
+// A better node is not offered during a match.
+func Test_no_better_option_is_offered_during_a_match(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	env.config.Reevaluation_interval = time.Minute
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	env.control_plane.recommend_result = api.Recommendation{Node_id: "nl-02", Protocol: "wireguard"}
+	manager.Set_in_match(true)
+
+	ch, unsubscribe := env.bus.Subscribe()
+	defer unsubscribe()
+	manager.Tick(context.Background(), env.clock.advance(90*time.Second))
+	if got := drain_events(ch); contains_kind(got, events.Kind_better_option) {
+		t.Fatalf("events = %v, want no offer during a match", kinds_of(got))
+	}
+
+	manager.Set_in_match(false)
+	manager.Tick(context.Background(), env.clock.advance(time.Second))
+	if got := drain_events(ch); !contains_kind(got, events.Kind_better_option) {
+		t.Fatalf("events = %v, want the offer once the match ended", kinds_of(got))
+	}
+}
+
+func Test_a_rebuild_shows_as_switching_and_a_lost_manual_tunnel_is_not_connected(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_manual, Node_id: "de-01", Protocol: "wireguard"}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	ch, unsubscribe := env.bus.Subscribe()
+	defer unsubscribe()
+
+	// Lost, and the retry on the chosen server does not come back.
+	env.protocol.connect_err = errors.New("no handshake")
+	env.prober.set([]prober_response{{sample: diagnostics.Sample{Tunnel_up: false}}})
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
+
+	if state := manager.State(); state == State_connected || state == State_degraded || state == State_switching {
+		t.Fatalf("State() = %v after the chosen server stopped answering, want it no longer connected", state)
+	}
+	var states []State
+	for _, e := range drain_events(ch) {
+		if change, ok := e.Data.(State_change); ok && e.Kind == events.Kind_state_changed {
+			states = append(states, change.To)
+		}
+	}
+	saw_switching := false
+	for _, state := range states {
+		saw_switching = saw_switching || state == State_switching
+	}
+	if !saw_switching {
+		t.Fatalf("states published = %v, want switching while the tunnel was rebuilt", states)
+	}
+}
+
+func Test_a_target_lost_again_soon_after_a_retry_is_not_retried_again(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_manual, Node_id: "de-01", Protocol: "wireguard"}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	lost := prober_response{sample: diagnostics.Sample{Tunnel_up: false}}
+	env.prober.set([]prober_response{lost, {sample: healthy_sample}, lost})
+
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second)) // lost, retried, verified
+	if manager.State() != State_connected || env.protocol.connect_calls != 2 {
+		t.Fatalf("after the first loss: state %v, connects %d; want connected after one retry", manager.State(), env.protocol.connect_calls)
+	}
+	manager.Tick(context.Background(), env.clock.advance(8*time.Second)) // lost again at once
+	if env.protocol.connect_calls != 2 {
+		t.Fatalf("connects = %d, want no second retry of a target that just dropped again", env.protocol.connect_calls)
+	}
+	if manager.State() == State_connected {
+		t.Fatal("still connected after the chosen server dropped twice")
+	}
+}
+
+func Test_amneziawg_orders_before_plain_wireguard(t *testing.T) {
+	offered := []recovery.Target{{Node_id: "n", Protocol: "wireguard"}, {Node_id: "n", Protocol: "amneziawg"}}
+	slices.SortStableFunc(offered, func(a, b recovery.Target) int { return obfuscated_first(a.Protocol) - obfuscated_first(b.Protocol) })
+	if offered[0].Protocol != "amneziawg" {
+		t.Fatalf("first = %s, want amneziawg", offered[0].Protocol)
 	}
 }

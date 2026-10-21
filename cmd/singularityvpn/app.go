@@ -185,6 +185,35 @@ func (a *App) Tunnel_mode() Tunnel_mode_view {
 	return view
 }
 
+// Profiles_view is the account's profiles, or why they could not be read.
+type Profiles_view struct {
+	Profiles []ipc.Profile `json:"profiles"`
+	Error    *Outcome      `json:"error,omitempty"`
+}
+
+func (a *App) Profiles() Profiles_view {
+	view := Profiles_view{Profiles: []ipc.Profile{}}
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		p, err := c.Profiles(ctx)
+		if err == nil && p.Profiles != nil {
+			view.Profiles = p.Profiles
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
+// Set_profile makes this installation connect with another of the
+// account's profiles; a tunnel that is up is rebuilt with it.
+func (a *App) Set_profile(id string) Outcome {
+	return a.act(func(ctx context.Context, c *ipc.Client) error {
+		return c.Set_profile(ctx, ipc.Set_profile{Id: id})
+	})
+}
+
 // Set_tunnel_mode records which profile of the node to use. If a tunnel is
 // up the service rebuilds it, which is why this can take as long as a
 // connect.

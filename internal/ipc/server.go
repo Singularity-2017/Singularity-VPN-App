@@ -258,6 +258,18 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 		}
 		h.reply(req.Id, nil, h.service.Set_games(ctx, params))
 
+	case Command_answer_match_server:
+		params, err := decode_params[Match_server_answer](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		h.reply(req.Id, nil, h.service.Answer_match_server(ctx, params))
+
 	case Command_tunnel_mode:
 		result, err := h.service.Tunnel_mode(ctx)
 		h.reply(req.Id, result, err)
@@ -277,6 +289,22 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 			return
 		}
 		h.reply(req.Id, nil, h.service.Set_tunnel_mode(ctx, params))
+
+	case Command_profiles:
+		result, err := h.service.Profiles(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_set_profile:
+		params, err := decode_params[Set_profile](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		h.reply(req.Id, nil, h.service.Set_profile(ctx, params))
 
 	case Command_servers:
 		result, err := h.service.Servers(ctx)
@@ -436,6 +464,8 @@ func error_body_for(err error) *Error_body {
 		return &Error_body{Code: Error_server_unavailable, Message: err.Error()}
 	case errors.Is(err, Err_no_server_in_country):
 		return &Error_body{Code: Error_no_server_in_country, Message: err.Error()}
+	case errors.Is(err, Err_offer_changed):
+		return &Error_body{Code: Error_offer_changed, Message: err.Error()}
 	default:
 		return &Error_body{Code: Error_internal, Message: err.Error()}
 	}

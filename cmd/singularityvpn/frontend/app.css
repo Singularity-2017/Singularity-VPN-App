@@ -6,9 +6,15 @@
   --text: #e8eef2;
   --muted: #9fb0bb;
   --accent: #4be3df;
+  --accent-rgb: 75,227,223;
   --accent-ink: #0d2a29;
   --warn: #f0b45a;
   --bad: #ff8a80;
+  /* The connection getting worse: a red that reads at a glance and still
+     sits on the dark ground. A theme whose accent is red moves it toward
+     orange, so trouble never looks like "on". */
+  --trouble: #ff5f5f;
+  --trouble-rgb: 255,95,95;
   --hover: #323a42;
   --hot: #ffffff;
   --branch: #3a454f;
@@ -39,6 +45,14 @@ html, body {
 body { display: flex; }
 
 button, input { font: inherit; color: inherit; }
+
+/* Scroll bars that belong to a dark window: thin, no track, a thumb that
+   shows itself under the pointer. */
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 [hidden] { display: none !important; }
@@ -53,11 +67,45 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 22px;
-  background: linear-gradient(180deg, #252c32 0%, #20262b 100%);
+  background: linear-gradient(180deg, var(--surface) -40%, var(--ground) 60%);
 }
 
 .bar { position: relative; display: flex; justify-content: space-between; align-items: center; }
+.bar-end { display: flex; align-items: center; gap: 8px; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+.brand svg { color: var(--accent); }
+
+/* The account circle: the first letter of the name signed in with. */
+.avatar {
+  width: 34px; height: 34px; border-radius: 50%; padding: 0; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); font-size: 15px; font-weight: 600;
+}
+.avatar:hover, .avatar[aria-expanded="true"] { border-color: var(--hot); color: var(--hot); }
+.account-head { padding: 8px 12px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.account-name { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.account-device { font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+
+/* The games heading is the gamer mode switch: a gamepad and the word, quiet
+   until it is on, then in the gamer colour. */
+.games-head {
+  align-self: flex-start; display: flex; align-items: center; gap: 7px; padding: 2px 8px 2px 4px; margin-left: -4px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted);
+  font-size: 12px; text-transform: uppercase; letter-spacing: .8px; transition: color .2s, border-color .2s;
+}
+.games-head svg { color: #5d6a74; transition: color .2s, filter .2s; }
+.games-head:hover, .games-head:hover svg { color: #ff4d6d; border-color: rgba(255,77,109,.4); }
+.games-head[aria-checked="true"] { color: var(--text); }
+.games-head[aria-checked="true"] svg { color: #ff4d6d; filter: drop-shadow(0 0 5px rgba(255,77,109,.7)); }
+
+/* A row that opens a list a level below, and the way back from it. */
+.opt-row .opt-value { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.opt-row .chev-right { flex: none; color: var(--muted); }
+.pop-back {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px 6px; border: 0; background: transparent;
+  color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; text-align: left;
+  border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.pop-back:hover { color: var(--hot); }
 .icon { width: 44px; height: 44px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; border-radius: 10px; }
 .icon:hover { background: #2c343b; }
 
@@ -70,7 +118,9 @@ button { cursor: pointer; }
 }
 .pop.list { width: 300px; max-height: 330px; overflow-y: auto; }
 .pop-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; padding: 8px 12px 4px; }
-.pop-foot { font-size: 12px; color: var(--muted); padding: 8px 12px 6px; border-top: 1px solid var(--line); margin-top: 4px; }
+/* The version sits at the very bottom of the window, centred, below
+   everything else; a long page pushes it down rather than covering it. */
+.app-version { margin-top: auto; align-self: center; font-size: 11px; color: var(--muted); opacity: .7; }
 .pop-note { font-size: 12px; color: var(--muted); padding: 8px 12px 6px; line-height: 1.4; }
 
 .opt {
@@ -84,6 +134,11 @@ button { cursor: pointer; }
 .opt:disabled:hover { background: transparent; }
 .opt.line { flex-direction: row; align-items: center; gap: 10px; }
 .opt-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt-note { flex: none; font-size: 11px; color: var(--muted); }
+.opt-name.two { display: flex; flex-direction: column; gap: 1px; white-space: normal; }
+.opt-sub { font-size: 11px; color: var(--muted); }
+.swatch { flex: none; width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255,255,255,.2); }
+.swatch.sharp { border-radius: 2px; }
 
 /* --- screens ------------------------------------------------------------- */
 
@@ -104,7 +159,7 @@ button { cursor: pointer; }
 .signin input:focus { outline: none; border-color: var(--accent); }
 .primary {
   min-height: 46px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-ink);
-  font-weight: 600; box-shadow: 0 0 18px rgba(75,227,223,.35);
+  font-weight: 600; box-shadow: 0 0 18px rgba(var(--accent-rgb),.35);
 }
 .primary:disabled { opacity: .6; cursor: default; }
 .error { color: var(--bad); font-size: 13px; line-height: 1.4; text-align: center; }
@@ -118,8 +173,8 @@ button { cursor: pointer; }
 .power {
   position: relative; --ring: 7px;
   width: 212px; height: 212px; border-radius: 50%;
-  border: var(--ring) solid #4a545d; color: #6b7680;
-  background: radial-gradient(circle at 50% 40%, #323a41 0%, #262d33 70%);
+  border: var(--ring) solid var(--line); color: var(--muted);
+  background: radial-gradient(circle at 50% 40%, var(--surface) 0%, var(--ground) 70%);
   box-shadow: 0 10px 30px rgba(0,0,0,.4);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
   transition: border-color .25s, box-shadow .25s, color .25s;
@@ -127,7 +182,7 @@ button { cursor: pointer; }
 .power span { color: var(--text); font-size: 18px; font-weight: 600; }
 .power.on {
   border-color: var(--accent); color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(75,227,223,.4), 0 0 36px rgba(75,227,223,.55), 0 0 90px rgba(75,227,223,.25), inset 0 0 24px rgba(75,227,223,.15);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb),.4), 0 0 36px rgba(var(--accent-rgb),.55), 0 0 90px rgba(var(--accent-rgb),.25), inset 0 0 24px rgba(var(--accent-rgb),.15);
 }
 /* In progress is not connected: the ring stays grey and unlit, and an arc
    runs round it. Only a tunnel that is up lights the whole ring. */
@@ -136,7 +191,7 @@ button { cursor: pointer; }
   border: var(--ring) solid transparent; border-top-color: var(--accent);
   animation: spin 1.1s linear infinite;
 }
-.power.trouble { border-color: var(--warn); color: var(--warn); box-shadow: 0 0 36px rgba(240,180,90,.35); }
+.power.trouble { border-color: var(--trouble); color: var(--trouble); box-shadow: 0 0 36px rgba(var(--trouble-rgb),.4); }
 .power:hover:not(:disabled) { border-color: var(--hot); color: var(--hot); }
 .power.on:hover:not(:disabled) { box-shadow: 0 0 0 1px rgba(255,255,255,.4), 0 0 36px rgba(255,255,255,.35), 0 0 90px rgba(255,255,255,.15), inset 0 0 24px rgba(255,255,255,.1); }
 .power:disabled { cursor: default; }
@@ -144,7 +199,7 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .power.busy::before { animation: none; border-right-color: var(--accent); }
 }
-.trouble-line { font-size: 13px; color: var(--warn); }
+.trouble-line { font-size: 13px; color: var(--trouble); }
 
 .details {
   align-self: stretch; display: flex; flex-direction: column; gap: 8px;
@@ -165,7 +220,7 @@ button { cursor: pointer; }
 .journal-list li { display: flex; gap: 10px; font-size: 12px; line-height: 1.35; }
 .journal-list .when { flex: none; width: 74px; color: var(--muted); }
 .journal-list .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.journal-list li.warn .what { color: var(--warn); }
+.journal-list li.warn .what { color: var(--trouble); }
 .journal-list li.ok .what { color: var(--accent); }
 
 /* --- server: country and server in one chip, one menu -------------------- */
@@ -179,8 +234,8 @@ button { cursor: pointer; }
 }
 .switch .knob { width: 22px; height: 14px; border-radius: 7px; background: var(--line); position: relative; transition: background .2s; }
 .switch .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 5px; background: #c9d3da; transition: left .2s; }
-.switch[aria-checked="true"] { color: var(--accent); border-color: rgba(75,227,223,.45); }
-.switch[aria-checked="true"] .knob { background: rgba(75,227,223,.45); }
+.switch[aria-checked="true"] { color: var(--accent); border-color: rgba(var(--accent-rgb),.45); }
+.switch[aria-checked="true"] .knob { background: rgba(var(--accent-rgb),.45); }
 .switch[aria-checked="true"] .knob::after { left: 10px; background: var(--accent); }
 .switch:hover:not(:disabled) { color: var(--hot); border-color: var(--hot); }
 .switch:hover:not(:disabled) .knob::after { background: var(--hot); }
@@ -191,11 +246,13 @@ button { cursor: pointer; }
   min-height: 26px; padding: 0 12px; border: 0; border-radius: 13px; background: transparent;
   font-size: 12px; color: var(--muted);
 }
-.segment button[aria-checked="true"] { background: rgba(75,227,223,.16); color: var(--accent); font-weight: 600; box-shadow: inset 0 0 0 1px rgba(75,227,223,.45); }
+.segment button[aria-checked="true"] { background: rgba(var(--accent-rgb),.16); color: var(--accent); font-weight: 600; box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb),.45); }
 .segment button:hover:not(:disabled) { color: var(--hot); }
 .segment button[aria-checked="true"]:hover:not(:disabled) { background: rgba(255,255,255,.1); box-shadow: inset 0 0 0 1px var(--hot); }
 .segment button:disabled { cursor: default; }
-.mode-note { font-size: 12px; color: var(--warn); }
+.mode-note { font-size: 12px; color: var(--warn); text-align: center; }
+.segment.mode-pick { margin: 4px auto 0; padding: 3px; border-radius: 19px; }
+.segment.mode-pick button { min-width: 118px; min-height: 34px; padding: 0 18px; border-radius: 16px; font-size: 14px; }
 
 .chip {
   display: flex; align-items: center; gap: 12px; width: 100%; min-height: 58px; padding: 10px 14px;
@@ -209,6 +266,18 @@ button { cursor: pointer; }
 .chip-flag .flag.code { width: 28px; height: 20px; }
 .chip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chip-name { font-size: 15px; font-weight: 600; }
+.chip-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chip-badge {
+  flex: none; padding: 1px 7px; border-radius: 9px; font-size: 10px; font-weight: 700;
+  letter-spacing: .8px; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line);
+  text-decoration: none !important;
+}
+.chip-badge.auto { color: var(--accent); border-color: rgba(var(--accent-rgb),.5); background: rgba(var(--accent-rgb),.1); }
+/* In the list only the automatic choice in force is lit; the others wait. */
+.opt[aria-selected="false"] .chip-badge.auto { color: var(--muted); border-color: var(--line); background: transparent; }
+/* Chosen automatically: the plate's edge is dashed, the way a route not
+   fixed in advance is drawn. */
+.chip.auto { border-style: dashed; border-color: rgba(var(--accent-rgb),.45); }
 .chip-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .server-icon { width: 12px; height: 12px; margin: 0 4px -2px 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .chip > .chev { flex: none; color: var(--muted); transition: transform .15s; }
@@ -236,8 +305,8 @@ button { cursor: pointer; }
    sits on a tinted row with a dot at its right, so its name stays in line
    with the others. */
 .group.live .group-name, .opt.live .opt-name { color: var(--accent); font-weight: 600; }
-.opt.live { background: rgba(75,227,223,.08); }
-.opt.live:hover { background: rgba(75,227,223,.14); }
+.opt.live { background: rgba(var(--accent-rgb),.08); }
+.opt.live:hover { background: rgba(var(--accent-rgb),.14); }
 .live-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
 /* The branch from a country's flag to its servers, drawn like a thread of
@@ -257,7 +326,12 @@ button { cursor: pointer; }
   content: ""; position: absolute; left: 43px; top: 50%; bottom: 0;
   border-left: 1.5px solid var(--branch);
 }
-.group.live[aria-expanded="true"]::after, .opt.inner.trail::before, .opt.inner.trail:not(.last)::after, .opt.inner.live::before { border-color: var(--accent); }
+/* A row the lit stretch only passes by keeps its curve unlit: the light
+   runs straight through it, over the curve's upper half. A curve is lit
+   only into the row connected to or the row picked. */
+.opt.inner.trail::after { top: 0; }
+.group.live[aria-expanded="true"]::after, .opt.inner.trail::after, .opt.inner.live::before,
+.opt.inner.trail[aria-selected="true"]::before { border-color: var(--accent); }
 /* An unavailable server fades its words, not the branch passing by it. */
 .opt.inner:disabled { opacity: 1; }
 .opt.inner:disabled > * { opacity: .5; }
@@ -283,7 +357,7 @@ button { cursor: pointer; }
 .tile-value { font-size: 12px; color: var(--muted); }
 .tile-sub { font-size: 11px; color: var(--warn); line-height: 1.3; }
 .tile-sub.ok { color: var(--accent); }
-.tile[aria-pressed="true"], .tile.on { border-color: rgba(75,227,223,.55); box-shadow: inset 0 0 0 1px rgba(75,227,223,.2); }
+.tile[aria-pressed="true"], .tile.on { border-color: rgba(var(--accent-rgb),.55); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb),.2); }
 .tile[aria-pressed="true"] .tile-name, .tile.on .tile-name, .tile.on .tile-value { color: var(--accent); }
 .tile:not(.selector):hover:not(:disabled) { border-color: var(--hot); box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
 .tile:not(.selector):hover:not(:disabled) .tile-name, .tile:not(.selector):hover:not(:disabled) .tile-value { color: var(--hot); }
@@ -292,10 +366,61 @@ button { cursor: pointer; }
 .tile.selector[aria-expanded="true"] .tile-pick .chev { transform: rotate(180deg); }
 .pop.list.goal-pop { top: auto; bottom: calc(100% + 8px); right: 0; }
 
-/* Games: a toggle tile per game in the catalog, under the goals. */
+/* Games, in gamer mode: a card per offered game. The cover boosts and
+   starts the game; the regions under it boost without starting it. */
 .games { display: flex; flex-direction: column; gap: 8px; }
-.games .server-label { align-self: flex-start; }
-.game-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+
+.game-cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.game-card {
+  display: flex; flex-direction: column; border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--surface); transition: border-color .2s, box-shadow .2s;
+}
+.game-card.on { border-color: rgba(var(--accent-rgb),.6); box-shadow: 0 0 0 1px rgba(var(--accent-rgb),.25), 0 0 22px rgba(var(--accent-rgb),.12); }
+.game-cover {
+  position: relative; display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-start; gap: 2px;
+  min-height: 140px; padding: 12px 14px; border: 0; border-radius: 0; text-align: left;
+  background-color: #2b2f3a; background-size: cover; background-position: center 35%;
+}
+/* A scrim under the words, so they read over any sky. */
+.game-cover::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to top, rgba(14,16,20,.88) 0%, rgba(14,16,20,.35) 48%, rgba(14,16,20,0) 75%);
+  transition: background .2s;
+}
+.game-cover > * { position: relative; }
+.game-cover:hover:not(:disabled)::before { background: linear-gradient(to top, rgba(14,16,20,.8) 0%, rgba(14,16,20,.2) 55%, rgba(14,16,20,0) 80%); }
+.game-cover:disabled { cursor: default; }
+.game-name { font-size: 17px; font-weight: 700; letter-spacing: .02em; color: #fff; text-shadow: 0 1px 6px rgba(0,0,0,.6); }
+.game-line { font-size: 12px; color: #d9e2e8; }
+.game-line.cta { color: #f6c75a; font-weight: 600; }
+.game-card.on .game-line { color: var(--accent); }
+.game-cover:hover:not(:disabled) .game-line.cta { color: var(--hot); }
+.game-face { position: relative; display: flex; flex-direction: column; }
+.game-face .game-cover { flex: 1; padding-right: 120px; }
+/* The regions sit over the face, at the end of its bottom row, on no
+   background of their own. */
+.segment.game-regions {
+  position: absolute; right: 12px; bottom: 10px; margin: 0;
+  background: transparent; border-color: rgba(255,255,255,.28);
+}
+.segment.game-regions button { color: #e3eaef; }
+/* The press, written across the whole card while the pointer is on it. */
+.game-cover > .game-act {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding-bottom: 28px;
+  font-size: 22px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--hot);
+  text-shadow: 0 2px 12px rgba(0,0,0,.8); background: rgba(10,12,15,.5);
+  opacity: 0; pointer-events: none; transition: opacity .15s;
+}
+.game-card.on .game-cover > .game-act { color: var(--accent); }
+.game-cover:hover:not(:disabled) > .game-act, .game-cover:focus-visible > .game-act { opacity: 1; }
+/* The question about the match server, and how often it was right. */
+.game-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 0 10px 8px; font-size: 12px; color: var(--muted); }
+.game-ask-buttons { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.game-ask .plain { min-height: 26px; padding: 0 10px; border-radius: 13px; font-size: 12px; }
+.game-ask .plain:hover:not(:disabled) { color: var(--hot); border-color: var(--hot); }
+.game-ask .game-ask-dismiss { padding: 0 8px; border-color: transparent; }
+.game-ask-field { width: 130px; min-height: 26px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); color: inherit; font: inherit; }
+.game-tally { padding: 0 10px 8px; font-size: 12px; color: var(--muted); }
 
 .blocks { align-self: stretch; display: flex; flex-direction: column; gap: 8px; }
 .blocks-line { font-size: 12px; color: var(--warn); line-height: 1.4; }
@@ -346,3 +471,74 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
 .window.expanded .power svg { width: 46px; height: 46px; }
 .window.expanded .power span { font-size: 16px; }
 .window.expanded .choices { padding-top: 4px; }
+/* The journal runs the whole width under both columns. */
+.window.expanded .side { display: contents; }
+.window.expanded .screen.main { row-gap: 14px; }
+.window.expanded .power-wrap, .window.expanded .details { grid-column: 1; }
+.window.expanded .choices { grid-column: 2; grid-row: 1 / span 2; }
+.window.expanded .journal { grid-column: 1 / -1; grid-row: 3; }
+
+/* --- themes ----------------------------------------------------------------- */
+/* Chosen in the settings, for the ordinary window and for gamer mode each on
+   its own. A theme is a palette; a sharp theme also drops every rounding and
+   sets its words in Bahnschrift, which ships with Windows. */
+
+:root[data-theme="graphite"] {
+  --ground: #1c1d1f; --surface: #27292c; --inset: #161719; --line: #3b3e42;
+  --text: #eef1f3; --muted: #a2a7ad; --hover: #303337; --branch: #464a4f;
+  --accent: #eef1f3; --accent-rgb: 238,241,243; --accent-ink: #1c1d1f;
+  --trouble: #ff6262; --trouble-rgb: 255,98,98;
+}
+:root[data-theme="amber"] {
+  --ground: #1f1a15; --surface: #2b241d; --inset: #191511; --line: #45392d;
+  --text: #f3ebe1; --muted: #b8a893; --hover: #352c23; --branch: #4e4134;
+  --accent: #ffb547; --accent-rgb: 255,181,71; --accent-ink: #2b1a00;
+  --trouble: #ff5a4a; --trouble-rgb: 255,90,74;
+}
+:root[data-theme="berserk"] {
+  --ground: #121316; --surface: #1b1d22; --inset: #0d0e11; --line: #3b2c33;
+  --text: #ece6e8; --muted: #a0939a; --hover: #26191e; --branch: #47323a;
+  --accent: #ff3b5c; --accent-rgb: 255,59,92; --accent-ink: #2a0910;
+  --trouble: #ff8a2a; --trouble-rgb: 255,138,42;
+}
+:root[data-theme="toxin"] {
+  --ground: #0f120f; --surface: #181d18; --inset: #0a0d0a; --line: #2c3a2a;
+  --text: #e6f2e0; --muted: #93a68c; --hover: #1d261b; --branch: #34452f;
+  --accent: #a6ff2e; --accent-rgb: 166,255,46; --accent-ink: #142200;
+  --trouble: #ff4d4d; --trouble-rgb: 255,77,77;
+}
+:root[data-theme="synthwave"] {
+  --ground: #150e22; --surface: #22173b; --inset: #100a1b; --line: #3e2d64;
+  --text: #f1e8ff; --muted: #ad9cc9; --hover: #2a1d47; --branch: #4a3675;
+  --accent: #ff4fd8; --accent-rgb: 255,79,216; --accent-ink: #2b0627;
+  --trouble: #ff5c45; --trouble-rgb: 255,92,69;
+}
+
+/* The sharp themes' ground carries a texture of its own. */
+:root[data-theme="berserk"] .window, :root[data-theme="toxin"] .window {
+  background:
+    repeating-linear-gradient(135deg, rgba(255,255,255,.018) 0 2px, transparent 2px 9px),
+    linear-gradient(180deg, var(--surface) -40%, var(--ground) 60%);
+}
+:root[data-theme="synthwave"] .window {
+  background:
+    repeating-linear-gradient(0deg, rgba(var(--accent-rgb),.05) 0 1px, transparent 1px 28px),
+    linear-gradient(180deg, #2a1550 -30%, var(--ground) 65%);
+}
+
+:root.sharp body { font-family: "Bahnschrift", "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+:root.sharp *, :root.sharp *::before, :root.sharp *::after { border-radius: 0 !important; }
+:root.sharp ::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb),.45); background-clip: padding-box; }
+:root.sharp .server-label, :root.sharp .pop-title { letter-spacing: 2px; font-weight: 600; }
+:root.sharp .brand span, :root.sharp .game-name, :root.sharp .power span { text-transform: uppercase; letter-spacing: 1.5px; }
+:root.sharp .game-card { border-left: 3px solid var(--accent); }
+/* A square button has no arc to run round it: while connecting its edge
+   glows and fades instead. */
+:root.sharp .power.busy::before {
+  border-color: var(--accent); animation: edge-glow 1.2s ease-in-out infinite;
+  box-shadow: 0 0 18px rgba(var(--accent-rgb),.5), inset 0 0 12px rgba(var(--accent-rgb),.3);
+}
+@keyframes edge-glow { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  :root.sharp .power.busy::before { animation: none; opacity: .7; }
+}

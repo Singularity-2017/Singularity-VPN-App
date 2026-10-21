@@ -35,9 +35,12 @@ type Service interface {
 
 	Games(ctx context.Context) (Games, error)
 	Set_games(ctx context.Context, games Games) error
+	Answer_match_server(ctx context.Context, answer Match_server_answer) error
 
 	Tunnel_mode(ctx context.Context) (Tunnel_mode, error)
 	Set_tunnel_mode(ctx context.Context, mode Tunnel_mode) error
+	Profiles(ctx context.Context) (Profiles_result, error)
+	Set_profile(ctx context.Context, profile Set_profile) error
 
 	Analyze(ctx context.Context) (Analysis_result, error)
 	Analysis(ctx context.Context) (Last_analysis, error)

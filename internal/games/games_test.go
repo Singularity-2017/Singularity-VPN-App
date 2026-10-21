@@ -32,12 +32,40 @@ func Test_the_embedded_catalog_loads(t *testing.T) {
 	}
 }
 
+func Test_only_pubg_is_offered_and_it_boosts_toward_ru_and_eu(t *testing.T) {
+	catalog, err := Load_catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, game := range catalog {
+		if game.Offered != (game.Id == "pubg") {
+			t.Errorf("%s offered = %v", game.Id, game.Offered)
+		}
+	}
+	// EU keeps the key the control plane already measures.
+	if got := catalog.Target("pubg", "eu"); got != "pubg" {
+		t.Errorf("Target(pubg, eu) = %q", got)
+	}
+	if got := catalog.Target("pubg", "ru"); got != "pubg_ru" {
+		t.Errorf("Target(pubg, ru) = %q", got)
+	}
+	for _, region := range []string{"", "mars"} {
+		if got := catalog.Target("pubg", region); got != "pubg" {
+			t.Errorf("Target(pubg, %q) = %q; want the game's own id", region, got)
+		}
+	}
+}
+
 func Test_an_ambiguous_catalog_is_refused(t *testing.T) {
 	cases := map[string]string{
 		"empty id":     `[{"id": ""}]`,
 		"repeated id":  `[{"id": "a"}, {"id": "a"}]`,
 		"shared image": `[{"id": "a", "images": ["X.exe"]}, {"id": "b", "images": ["x.EXE"]}]`,
 		"not json":     `{`,
+		"launch":       `[{"id": "a", "launch": "cmd.exe /c calc"}]`,
+		"region id":    `[{"id": "a", "regions": [{"id": "", "target": "a"}]}]`,
+		"region twice": `[{"id": "a", "regions": [{"id": "eu", "target": "a"}, {"id": "eu", "target": "b"}]}]`,
+		"target":       `[{"id": "a", "regions": [{"id": "eu", "target": "a&b"}]}]`,
 	}
 	for name, data := range cases {
 		if _, err := parse_catalog([]byte(data)); err == nil {

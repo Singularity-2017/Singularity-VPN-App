@@ -221,6 +221,25 @@ func (s *failing_store) Delete(key string) error        { return s.err }
 
 // --- sign in -------------------------------------------------------------
 
+func Test_the_status_names_who_is_signed_in_and_forgets_it_on_sign_out(t *testing.T) {
+	f := new_fixture(t)
+	if got, _ := f.app.Status(context.Background()); got.Username != "" || got.Device_name != "" {
+		t.Fatalf("Status() signed out = %q on %q, want neither", got.Username, got.Device_name)
+	}
+	if _, err := f.app.Sign_in(context.Background(), sign_in_params()); err != nil {
+		t.Fatalf("Sign_in: %v", err)
+	}
+	if got, _ := f.app.Status(context.Background()); got.Username != "alice" || got.Device_name != "test machine" {
+		t.Fatalf("Status() signed in = %q on %q, want alice on test machine", got.Username, got.Device_name)
+	}
+	if err := f.app.Sign_out(context.Background()); err != nil {
+		t.Fatalf("Sign_out: %v", err)
+	}
+	if local, _ := f.store.Load(); local.Username != "" {
+		t.Fatalf("the state keeps %q after sign-out", local.Username)
+	}
+}
+
 func Test_sign_in_stores_the_device_token_and_not_the_password(t *testing.T) {
 	f := new_fixture(t)
 
