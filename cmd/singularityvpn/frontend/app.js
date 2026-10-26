@@ -17,8 +17,8 @@
 
   const screens = ["screen-wait", "screen-service", "screen-untrusted", "screen-signin", "screen-main"];
   // The anonymity levels' pop-up is out of the window with the goal tiles.
-  const pops = ["menu", "settings", "servers" /* , "levels" */];
-  const pop_owner = { menu: "menu-button", settings: "settings-button", servers: "chip" /* , levels: "goal-anonymity" */ };
+  const pops = ["menu", "help", "settings", "servers" /* , "levels" */];
+  const pop_owner = { help: "help-button", menu: "menu-button", settings: "settings-button", servers: "chip" /* , levels: "goal-anonymity" */ };
   // What the button says. Connected or not is the ring and this label;
   // nothing else on the screen repeats it.
   const power_text = {
@@ -32,7 +32,7 @@
   };
   // The line under the button, only where the button alone would mislead.
   const trouble_text = {
-    degraded: "Связь ухудшилась — проверяем",
+    degraded: "Проверяем соединение",
     failed: "Не удалось подключиться"
   };
   const level_text = { "": "Выкл", light: "Лёгкая", standard: "Средняя", high: "Высокая" };
@@ -43,7 +43,6 @@
   };
   const verdict_text = { open: "открыт", no_answer: "не отвечает", no_network: "не отвечает" };
   const method_text = { dns: "блок по DNS", tcp: "блок по IP", tls: "блок по SNI" };
-  const analysis_max_age_ms = 6 * 60 * 60 * 1000;
   const why_text = {
     not_supported: "серверы пока этого не дают",
     no_reach_evidence: "о вашей сети пока нет данных",
@@ -70,6 +69,9 @@
   let tunnel_unsupported = false;
   let journal_entries = null; // the service's operations, oldest first; null until read
   let journal_unsupported = false;
+  let journal_error = false;
+  let compact_journal = false;
+  try { compact_journal = localStorage.getItem("compact.panel") === "journal"; } catch (e) {}
   let loading_journal = false;
   let in_match = false; // a game is in a match: moving the tunnel now would end it
   let games = null;     // the game cards as the service last reported them; null until read
@@ -161,12 +163,14 @@
   }
 
   function show_screen(id) {
+    if (window.account_ui) window.account_ui.update(id === "screen-main", view && view.status && view.status.username || "");
     for (const s of screens) $(s).hidden = s !== id;
     const main = id === "screen-main";
-    if (!main) main_active = false;
+    if (!main) { main_active = false; if (window.statistics_ui) window.statistics_ui.update(null); }
     $("edge").hidden = !main;
     $("menu-button").hidden = !(main || id === "screen-signin") || !(view && view.status && view.status.signed_in);
     $("settings-button").hidden = !(main || id === "screen-signin");
+    $("help-button").hidden = !main;
     if (!main) close_pops();
   }
 
@@ -226,6 +230,7 @@
   }
 
   function tick_times() {
+    window.statistics_ui.tick();
     for (const el of document.querySelectorAll("[data-time]")) el.textContent = ago(el.dataset.time);
   }
 
@@ -287,7 +292,7 @@
     const offers_off = up || st === "connecting" || st === "switching";
     power.setAttribute("aria-label", offers_off ? "Отключить VPN" : "Подключить VPN");
     power.disabled = busy || st === "disconnecting";
-    const trouble = trouble_text[st] || "";
+    const trouble = st === "degraded" ? window.health_text.degraded(status) : trouble_text[st] || "";
     $("trouble").hidden = !trouble;
     set_text("trouble", trouble);
 
@@ -295,10 +300,11 @@
     // Which server and how fast are on the server chip and not repeated here.
     const has_session = !!status.session_id;
     $("details").hidden = !(expanded && has_session);
-    row_time("since", status.since);
+    window.statistics_ui.update(status);
     row("loss", status.loss_percent === undefined ? "" : Math.round(status.loss_percent) + "%");
     $("row-loss").querySelector(".l").dataset.tip = "Доля неудачных из четырёх TCP-соединений " +
       (status.tunnel === "antizapret" ? "с DNS сервера" : "с внешним адресом") + " через туннель, а не потери пакетов.";
+    row("udp", status.udp_loss_percent === undefined ? "" : Math.round(status.udp_loss_percent) + "%" + (status.udp_rtt_ms === undefined ? "" : " · " + Math.round(status.udp_rtt_ms) + " мс"));
     row_time("measured", status.measured_at);
 
     render_mode(status, s);
@@ -307,13 +313,36 @@
     render_account(status);
     render_games();
     render_blocks();
-    if (expanded && !journal_unsupported) load_journal();
+    if ((expanded || compact_journal) && !journal_unsupported) load_journal();
     render_journal();
 
     $("window").classList.toggle("expanded", expanded);
     const edge = $("edge");
     edge.setAttribute("aria-pressed", expanded ? "true" : "false");
     edge.setAttribute("aria-label", expanded ? "Простой режим" : "Подробный режим");
+    fit_height_when_layout_changes();
+  }
+
+  // The narrow window is as tall as what it shows, top to bottom: fitted
+  // once whenever that changes shape -- the first main screen, games
+  // arriving, gamer mode on or off -- and never continuously, so nothing
+  // the window does by itself fights a person resizing it.
+  let fitted_layout = "";
+  function fit_height_when_layout_changes() {
+    if (expanded) { fitted_layout = ""; return; }
+    const layout = [gamer, games ? games.length : -1, compact_journal].join("|");
+    if (layout === fitted_layout) return;
+    fitted_layout = layout;
+    setTimeout(fit_height, 0);
+  }
+  function fit_height() {
+    const app = window.go && window.go.main && window.go.main.App;
+    if (!app || typeof app.Set_window_height !== "function") return;
+    const box = $("window");
+    box.classList.add("measuring");
+    const needed = Math.ceil(box.getBoundingClientRect().height);
+    box.classList.remove("measuring");
+    if (needed > 0) app.Set_window_height(needed);
   }
 
   // render_chip: what it is connected to; otherwise what was picked;
@@ -414,65 +443,129 @@
     }
   }
 
-  // render_blocks draws the blocks line from the last analysis. Light mode
-  // shows it only when something was found; the detailed mode also says when
-  // nothing was, and opens one row per target under the line. With no
-  // analysis -- or no targets in it -- nothing is drawn, never a placeholder.
+  // Preserve historical direct checks in both layouts, including unknown states.
+  let services_editing = false, services_list = null, services_busy = false, services_message = "";
+  const services_errors = { invalid_host: "Это не похоже на адрес сайта.", too_many: "Своих сервисов уже слишком много.", duplicate: "Такой сервис уже в списке.", not_removable: "Этот адрес нужен для самой проверки, его не убрать.", unknown_service: "Такого сервиса в списке уже нет." };
+  let services_open = false, analysis_loading = false, analysis_error = false, analysis_stale = false;
+  try { services_open = localStorage.getItem("services.open") === "1"; } catch (e) {}
   function render_blocks() {
     const el = $("blocks");
+    el.hidden = false;
     const checks = analysis && analysis.checks ? analysis.checks : [];
-    if (checks.length === 0) { el.hidden = true; return; }
-    const blocked = checks.filter((c) => c.verdict === "blocked");
-    let text = "";
-    if (blocked.length > 0) text = "Блокируются: " + blocked.map((c) => c.label || c.host).join(", ");
-    else if (analysis.control === "failed") text = "Сайты внутри страны не отвечают — похоже, нет сети или сбой у провайдера. VPN тут не поможет.";
-    else if (expanded) text = "Блокировок не найдено";
-    el.hidden = !text;
-    if (!text) return;
-    const line = set_text("blocks-line", text);
-    line.classList.toggle("clear", blocked.length === 0 && analysis.control !== "failed");
-    let hint = "Проверено напрямую, без VPN: DNS, соединение и TLS-рукопожатие. Не проверялось: обрыв после 16–20 КБ, белые списки подсетей.";
-    if (analysis.control === "absent") hint += " Без контрольных сайтов внутри страны отказ нельзя уверенно назвать блокировкой.";
-    line.dataset.tip = hint;
-
-    $("blocks-details").hidden = !expanded;
-    if (!expanded) return;
+    const unavailable = checks.filter(c => ["blocked", "no_answer", "no_network"].includes(c.verdict));
+    const unknown = checks.some(c => !["open", "blocked", "no_answer", "no_network"].includes(c.verdict));
+    const text = analysis_loading ? "Сервисы · проверяем…" : !checks.length ? "Сервисы · нет проверки" : unavailable.length ? "Сервисы · недоступны: " + unavailable.length : unknown ? "Сервисы · часть не проверена" : "Сервисы · проверенные доступны";
+    const line = set_text("blocks-line", text + (analysis_stale && checks.length ? " · прошлый замер" : "") + (services_open ? " ‹" : " ›"));
+    line.setAttribute("aria-expanded", String(services_open));
+    line.classList.toggle("clear", unavailable.length === 0);
+    line.dataset.tip = "Последняя проверка напрямую, без VPN. Результат не описывает доступность через подключённый сервер." + (analysis_stale ? " После проверки сеть могла измениться." : "");
+    $("blocks-details").hidden = !services_open;
+    const refresh = $("blocks-refresh");
+    const down = view && view.status && ["disconnected", "failed"].includes(view.status.state);
+    refresh.disabled = analysis_loading || !down;
+    refresh.dataset.tip = down ? "Проверить DNS, TCP и TLS напрямую" : "Прямая проверка доступна после отключения VPN";
+    if (!services_open) return;
     const rows = $("blocks-rows");
-    rows.textContent = "";
-    for (const c of checks) {
-      const r = document.createElement("div");
-      r.className = "row";
-      const l = document.createElement("span");
-      l.className = "l";
-      l.textContent = c.label || c.host;
-      const v = document.createElement("span");
-      v.textContent = c.verdict === "blocked" ? (method_text[c.method] || "заблокирован") : (verdict_text[c.verdict] || "");
-      if (c.verdict !== "open") v.className = "bad";
-      r.append(l, v);
+    rows.replaceChildren();
+    if (!checks.length || analysis_error || analysis_stale) {
+      const note = document.createElement("div"); note.className = "pop-note";
+      note.textContent = analysis_error ? "Не удалось обновить проверку." : !checks.length ? "Сервисы ещё не проверены." : "Показан предыдущий замер; сеть могла измениться.";
+      rows.append(note);
+    }
+    // With the person's list at hand, it decides what is shown: a service
+    // taken out disappears at once, one just added waits for a measurement.
+    const listed = services_list && services_list.targets ? services_list.targets.filter(t => !t.control) : null;
+    const shown = listed ? listed.map(t => checks.find(c => c.key === t.key) || { key: t.key, label: t.label || t.host }) : checks;
+    for (const c of [...shown].sort((a,b) => Number(a.verdict === "open") - Number(b.verdict === "open"))) {
+      const r = document.createElement("div"); r.className = "row";
+      const label = document.createElement("span"); label.className = "l"; label.textContent = c.label || c.host;
+      const value = document.createElement("span");
+      value.textContent = c.verdict === "blocked" ? (method_text[c.method] || "заблокирован") : (verdict_text[c.verdict] || "не проверено");
+      if (c.verdict !== "open") value.className = "bad";
+      r.append(label, value);
+      if (services_editing && listed) {
+        const remove = document.createElement("button");
+        remove.type = "button"; remove.className = "service-remove"; remove.textContent = "×";
+        remove.disabled = services_busy;
+        remove.setAttribute("aria-label", "Убрать " + (c.label || c.host));
+        remove.addEventListener("click", () => services_call(() => backend().Remove_service(c.key)));
+        r.append(remove);
+      }
       rows.append(r);
     }
-    row_time("blocks-measured", analysis.measured_at);
+    const edit = $("services-edit");
+    edit.textContent = services_editing ? "Готово" : "Изменить список";
+    edit.setAttribute("aria-expanded", String(services_editing));
+    $("services-editor").hidden = !services_editing;
+    const removed = services_list && services_list.removed_popular > 0 ? services_list.removed_popular : 0;
+    const restore = $("services-restore");
+    restore.hidden = !removed;
+    restore.disabled = services_busy;
+    restore.textContent = "Вернуть популярные · " + removed;
+    $("services-status").hidden = !services_message;
+    $("services-status").textContent = services_message;
+    row_time("blocks-measured", analysis && analysis.measured_at);
+  }
+
+  // The list of services is the person's: the popular ones minus those taken
+  // out, plus their own. It is changed in place, in the open services list.
+
+  async function services_call(action) {
+    if (services_busy) return false;
+    services_busy = true; render_blocks();
+    let answer;
+    try { answer = await action(); } catch (e) { answer = null; }
+    services_busy = false;
+    const ok = !!answer && !answer.error;
+    if (ok) { services_list = answer.services || answer; services_message = ""; }
+    else services_message = answer && answer.error && services_errors[answer.error.code] || "Не удалось получить или изменить список.";
+    render_blocks();
+    return ok;
+  }
+
+  // load_services reads the list quietly: without it the measured checks
+  // are shown as they are.
+  async function load_services() {
+    await services_call(() => backend().Services());
+    if (!services_editing) services_message = "";
+    render_blocks();
+  }
+
+  async function toggle_services_edit() {
+    services_editing = !services_editing;
+    services_message = "";
+    if (services_editing) { await services_call(() => backend().Services()); if (services_editing) $("services-host").focus(); }
+    else render_blocks();
+  }
+
+  async function refresh_analysis() {
+    if (analysis_loading || !view || !view.status || !["disconnected", "failed"].includes(view.status.state)) return;
+    // Anything else bending the path would be measured instead of the provider.
+    const go = await ask("Проверка идёт напрямую. Перед ней выключите сторонние VPN, Антизапрет и обход DPI (zapret, GoodbyeDPI и подобные) — иначе замер покажет их, а не вашего провайдера.", "Проверить");
+    if (!go || analysis_loading || !view || !view.status || !["disconnected", "failed"].includes(view.status.state)) return;
+    analysis_loading = true; analysis_error = false; render_blocks();
+    const request = ++analysis_request;
+    let answer;
+    try { answer = await backend().Analyze(); } catch (e) { answer = null; }
+    analysis_loading = false;
+    if (request !== analysis_request) return;
+    analysis_error = !answer || !!answer.error || !answer.result;
+    if (!analysis_error && answer.result) { analysis = answer.result; analysis_stale = false; }
+    render_blocks();
   }
 
   // load_analysis runs when the main screen comes up: it reads what the
-  // service holds and, if there is nothing or it is old and no connection
-  // is up, asks for one measurement in the background. Any error leaves the
-  // line hidden. A newer call makes an older answer irrelevant.
+  // service holds. The service measures on its own, once a day per network
+  // while no connection is up; the window never starts one unasked. Any
+  // error leaves the previous result visible. A newer call makes an older
+  // answer irrelevant.
   async function load_analysis() {
     const request = ++analysis_request;
     let answer;
     try { answer = await backend().Analysis(); } catch (e) { answer = { error: { code: "failed" } }; }
     if (request !== analysis_request) return;
-    analysis = answer && !answer.error && answer.result ? answer.result : null;
-    render();
-    if (answer && answer.error) return;
-
-    const measured = analysis ? new Date(analysis.measured_at).getTime() : NaN;
-    const fresh = !isNaN(measured) && Date.now() - measured < analysis_max_age_ms;
-    if (fresh || !view || !view.status || view.status.state !== "disconnected") return;
-    try { answer = await backend().Analyze(); } catch (e) { answer = { error: { code: "failed" } }; }
-    if (request !== analysis_request) return;
-    analysis = answer && !answer.error && answer.result ? answer.result : null;
+    analysis_error = !!(answer && answer.error);
+    if (!analysis_error) { analysis = answer && answer.result || null; analysis_stale = !!(answer && answer.stale); }
     render();
   }
 
@@ -490,7 +583,8 @@
     const incoming = new Date(answer.result.measured_at).getTime();
     if (isNaN(incoming)) return;
     const shown = analysis ? new Date(analysis.measured_at).getTime() : NaN;
-    if (!isNaN(shown) && incoming <= shown) return;
+    if (!isNaN(shown) && (incoming < shown || (incoming === shown && analysis_stale === !!answer.stale))) return;
+    analysis_stale = !!answer.stale;
     analysis = answer.result;
     render();
   }
@@ -546,9 +640,15 @@
     return new Promise((resolve) => {
       set_text("confirm-text", text);
       set_text("confirm-yes", yes);
+      const previous_focus = document.activeElement;
       $("confirm").hidden = false;
+      const keydown = (event) => { if (event.key === "Escape") { event.stopImmediatePropagation(); done(false); } };
+      document.addEventListener("keydown", keydown, true);
+      $("confirm-no").focus();
       const done = (answer) => {
         $("confirm").hidden = true;
+        document.removeEventListener("keydown", keydown, true);
+        if (previous_focus && previous_focus.getClientRects().length) previous_focus.focus();
         $("confirm-yes").onclick = null;
         $("confirm-no").onclick = null;
         resolve(answer);
@@ -650,14 +750,16 @@
     const app = backend();
     if (!app || typeof app.Journal !== "function") { journal_unsupported = true; return; }
     loading_journal = true;
+    render_journal();
     let answer = null;
     try { answer = await app.Journal(); } catch (e) { answer = null; } finally { loading_journal = false; }
-    if (answer && answer.error && answer.error.code === "unknown_command") { journal_unsupported = true; return; }
+    if (answer && answer.error && answer.error.code === "unknown_command") { journal_unsupported = true; render_journal(); return; }
+    journal_error = !answer || !!answer.error;
     if (answer && !answer.error) {
       journal_entries = answer.entries || [];
       if (servers === null && journal_entries.some((e) => e.attrs && e.attrs.node_id)) load_servers().then(render_journal);
-      render_journal();
     }
+    render_journal();
   }
 
   function node_label(id) {
@@ -696,9 +798,11 @@
   const tunnel_text = { vpn: "весь трафик", antizapret: "Антизапрет", games: "игры и Антизапрет" };
 
   const event_text = {
+    profile_changed: ["Профиль изменён", "ok"],
+    network_changed: ["Сеть изменилась", ""],
     connection_established: ["Подключено", "ok"],
     connection_lost: ["Связь с сервером потеряна", "warn"],
-    connection_degraded: ["Связь ухудшилась", "warn"],
+    connection_degraded: ["Проверяем соединение", "warn"],
     switch_started: ["Переключение на другой сервер", ""],
     switch_completed: ["Переключено", "ok"],
     switch_failed: ["Переключиться не удалось", "warn"]
@@ -712,6 +816,9 @@
     const p = protocol_label(a.protocol);
     switch (e.message) {
       case "service starting": return ["Служба запущена", ""];
+      case "service stopped": return ["Служба остановлена", ""];
+      case "service stopped with an error": return ["Служба остановлена с ошибкой", "warn", a.error];
+      case "service ended without stopping": return ["Служба завершилась, не остановившись: сбой или выключение компьютера", "warn"];
       case "connect requested": return [a.node_id ? "Подключение к " + node_label(a.node_id) : "Подключение, сервер выбирается автоматически", ""];
       case "disconnect requested": return ["Отключение по вашей команде", ""];
       case "control plane recommendation": {
@@ -747,6 +854,9 @@
       case "game router: capture stopped; games go direct until the next connect":
         return ["Перехват игр остановился — до следующего подключения игры идут напрямую", "warn", a.error];
       case "event": {
+        if (a.kind === "connection_degraded") return [window.health_text.degraded(a), "warn"];
+        // One bad sample the next check did not confirm: shown, not alarming.
+        if (a.kind === "connection_blip") return ["Короткий провал · " + window.health_text.degraded(a), ""];
         const t = event_text[a.kind];
         if (!t) return [a.kind, ""];
         // A tunnel that came up says where and how.
@@ -761,19 +871,46 @@
     return [e.message, e.level === "info" ? "" : "warn", detail];
   }
 
+  const is_blip = (e) => e.message === "event" && !!e.attrs && e.attrs.kind === "connection_blip";
+  const clock_time = (at) => new Date(at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  function span_text(ms) {
+    const minutes = Math.max(1, Math.round(ms / 60000));
+    return minutes < 60 ? minutes + " мин" : Math.round(minutes / 60) + " ч";
+  }
+
   function render_journal() {
     const box = $("journal");
-    const show = expanded && journal_entries !== null && journal_entries.length > 0;
+    const show = expanded ? !!(journal_entries && journal_entries.length) : compact_journal;
+    const parent = expanded ? document.querySelector(".side") : $("games");
+    if (box.parentElement !== parent) parent.append(box);
+    $("compact-journal").hidden = expanded;
+    $("compact-journal").setAttribute("aria-expanded", String(!expanded && compact_journal));
+    $("journal-title").disabled = expanded;
+    $("journal-note").textContent = journal_unsupported || journal_error ? "Журнал недоступен" : journal_entries === null && loading_journal ? "Загрузка…" : !journal_entries || !journal_entries.length ? "Записей пока нет" : "";
+    $("journal-note").hidden = !$("journal-note").textContent;
+    $("journal-retry").hidden = !journal_error || journal_unsupported;
     box.hidden = !show;
     if (!show) return;
     const list = $("journal-list");
-    const key = journal_entries.length + ":" + (journal_entries[journal_entries.length - 1] || {}).at + ":" + (servers ? servers.length : -1);
+    const entries = journal_entries || [];
+    const key = entries.length + ":" + (entries[entries.length - 1] || {}).at + ":" + (servers ? servers.length : -1);
     if (list.dataset.key === key) return;
     list.dataset.key = key;
     list.textContent = "";
-    for (let i = journal_entries.length - 1; i >= 0; i--) {
-      const e = journal_entries[i];
-      const [text, tone, tip] = journal_line(e);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      let [text, tone, tip] = journal_line(e);
+      // Short blips with nothing between them are one line. Each is still
+      // counted in the statistics, and each is listed on hover.
+      let run = 1;
+      while (is_blip(e) && i - run >= 0 && is_blip(entries[i - run])) run++;
+      if (run > 1) {
+        const lines = [];
+        for (let k = i; k > i - run; k--) lines.push(clock_time(entries[k].at) + " — " + journal_line(entries[k])[0].replace(/^Короткий провал · /, ""));
+        text = "Короткие провалы ×" + run + " за " + span_text(Date.parse(e.at) - Date.parse(entries[i - run + 1].at));
+        tip = lines.slice(0, 12).join("\n") + (lines.length > 12 ? "\n…и ещё " + (lines.length - 12) : "");
+        i -= run - 1;
+      }
       const li = document.createElement("li");
       if (tone) li.className = tone;
       const when = document.createElement("span");
@@ -825,7 +962,44 @@
     try { gamer = !!(app && typeof app.Gamer_default === "function" && await app.Gamer_default()); } catch (e) { gamer = false; }
   }
 
+  // A window made so short that the journal has under two lines left folds
+  // it back to the games. Only shrinking does: a journal just opened, before
+  // the window has grown for it, is not folded.
+  const journal_min_px = 48;
+  let last_window_height = 0;
+  new ResizeObserver(() => {
+    const height = $("window").clientHeight;
+    const shrank = height < last_window_height;
+    last_window_height = height;
+    if (!shrank || expanded || !compact_journal || $("journal").hidden || $("window").classList.contains("measuring")) return;
+    if ($("journal-list").getBoundingClientRect().height < journal_min_px) toggle_journal();
+  }).observe($("window"));
+
+  function toggle_journal() {
+    const old = compact_journal ? $("journal") : $("game-cards");
+    const parent = $("games");
+    const rect = old.getBoundingClientRect(), base = parent.getBoundingClientRect();
+    const snapshot = old.cloneNode(true);
+    snapshot.removeAttribute("id");
+    snapshot.querySelectorAll("[id]").forEach(el => el.removeAttribute("id"));
+    snapshot.setAttribute("aria-hidden", "true");
+    snapshot.inert = true;
+    snapshot.style.cssText = `position:absolute;left:${rect.left-base.left}px;top:${rect.top-base.top}px;width:${rect.width}px;height:${rect.height}px;pointer-events:none;z-index:1;`;
+    compact_journal = !compact_journal;
+    try { localStorage.setItem("compact.panel", compact_journal ? "journal" : "games"); } catch (e) {}
+    render();
+    const next = compact_journal ? $("journal") : $("game-cards");
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      parent.append(snapshot);
+      const duration = 100;
+      next.animate([{ opacity: 0 }, { opacity: 1 }], { duration, easing: "ease-out" });
+      snapshot.animate([{ opacity: 1 }, { opacity: 0 }], { duration, easing: "ease-out" }).finished.then(() => snapshot.remove(), () => snapshot.remove());
+    }
+    if (!compact_journal) $("compact-journal").focus();
+  }
+
   function toggle_gamer() {
+    if (!expanded && compact_journal) { toggle_journal(); return; }
     gamer = !gamer;
     try { localStorage.setItem("gamer", gamer ? "1" : "0"); } catch (e) { /* kept for this run only */ }
     if (!$("settings").hidden) render_themes();
@@ -849,11 +1023,10 @@
 
   function theme_mode() { return gamer ? "gamer" : "normal"; }
 
-  function themes_of(mode) { return themes.filter((t) => !!t.sharp === (mode === "gamer")); }
+  function themes_of(mode) { return [...themes.filter((t) => !!t.sharp === (mode === "gamer")), ...theme_editor.store.custom_themes(mode)]; }
 
   function theme_of(mode) {
-    let id = null;
-    try { id = localStorage.getItem("theme." + mode); } catch (e) { id = null; }
+    const id = theme_editor.store.selected(mode);
     const own = themes_of(mode);
     return own.find((t) => t.id === id) || own.find((t) => t.id === default_theme[mode]);
   }
@@ -862,10 +1035,11 @@
     const t = theme_of(theme_mode());
     document.documentElement.dataset.theme = t.id;
     document.documentElement.classList.toggle("sharp", !!t.sharp);
+    theme_editor.apply(theme_mode(), t.id);
   }
 
   function pick_theme(id) {
-    try { localStorage.setItem("theme." + theme_mode(), id); } catch (e) { /* kept for this run only */ }
+    theme_editor.store.select(theme_mode(), id);
     apply_theme();
     render_themes();
   }
@@ -881,13 +1055,14 @@
     set_text("theme-row-name", gamer ? "Тема · Gamer mode" : "Тема");
     set_text("theme-value", theme_of(theme_mode()).name);
     const current = theme_of(theme_mode()).id;
+    theme_editor.render(theme_mode(), current);
     const list = $("theme-list");
     list.textContent = "";
     for (const t of themes_of(theme_mode())) {
       const b = option(t.name, t.id === current, () => pick_theme(t.id));
       const swatch = document.createElement("span");
       swatch.className = "swatch" + (t.sharp ? " sharp" : "");
-      swatch.style.background = t.swatch;
+      swatch.style.background = theme_editor.settings(theme_mode(), t.id).accent;
       b.prepend(swatch);
       const name = b.querySelector(".opt-name");
       name.classList.add("two");
@@ -945,13 +1120,15 @@
   }
 
   async function choose_profile(p) {
-    if (p.current || busy) return;
+    if (busy) return;
+    if (p.current) { close_pops(); return; }
     if (p.online === true && !(await ask("Профиль «" + (p.label || "Без имени") + "» сейчас подключён на другом устройстве. Если взять его здесь, то устройство отключится.", "Взять профиль"))) return;
     busy = true;
     render();
     const outcome = await backend().Set_profile(p.id);
     busy = false;
     show_error("action-error", outcome);
+    if (!outcome || (!outcome.code && !outcome.error)) close_pops();
     await load_profiles();
     await refresh();
   }
@@ -959,19 +1136,13 @@
   // render_account fills the account circle and its menu: who is signed in
   // and as which device. A name the service does not know is not made up.
   function render_account(status) {
-    const name = status.username || "";
-    $("avatar-letter").textContent = name ? name.slice(0, 1).toUpperCase() : "";
-    $("avatar-anon").style.display = name ? "none" : "";
-    $("menu-button").dataset.tip = name ? "Аккаунт " + name : "Аккаунт";
-    $("account-name").textContent = name || "Аккаунт";
-    $("account-device").hidden = !status.device_name;
-    $("account-device").textContent = status.device_name ? "Устройство: " + status.device_name : "";
+    window.account_ui.render_identity(status);
   }
 
   // game_line is what a card says under the name: what its boost is doing.
   function game_line(g, st) {
     if (boosting) return { text: "Включаем буст…" };
-    if (!g.on) return { text: g.launchable ? "Играть с бустом" : "Включить буст", cta: true };
+    if (!g.on) return { text: "" };
     const direct = (g.regions || []).find((r) => r.id === game_region && r.direct);
     if (direct) return { text: "Напрямую · " + direct.name, on: true };
     if (st === "connecting" || st === "switching") return { text: "Буст включается…" };
@@ -983,8 +1154,9 @@
   // The games section stands whenever the catalog offers a game: its
   // heading is the gamer mode switch, and the cards show in gamer mode.
   function render_games() {
-    $("games").hidden = !(gamer !== null && games && games.length);
-    $("game-cards").hidden = !gamer;
+    $("games").hidden = !(gamer !== null && games && games.length) && !(!expanded && compact_journal);
+    $("gamer").hidden = !(games && games.length);
+    $("game-cards").hidden = !gamer || (!expanded && compact_journal);
     if ($("games").hidden || !gamer) return;
     const st = view && view.status ? view.status.state : "";
     const box = $("game-cards");
@@ -1000,10 +1172,17 @@
       const line = game_line(g, st);
       const card = document.createElement("div");
       card.className = "game-card" + (line.on ? " on" : "");
+      const content = document.createElement("div");
+      content.className = "game-card-content";
+      content.tabIndex = 0;
+      content.setAttribute("role", "group");
+      content.setAttribute("aria-label", g.name);
+      card.append(content);
 
       const cover = document.createElement("button");
       cover.className = "game-cover";
       cover.style.backgroundImage = "url(covers/" + encodeURIComponent(g.id) + ".svg)";
+      card.style.setProperty("--game-art", cover.style.backgroundImage);
       cover.disabled = busy;
       cover.setAttribute("aria-label", g.name + ": " + line.text);
       const name = document.createElement("span");
@@ -1012,6 +1191,7 @@
       const sub = document.createElement("span");
       sub.className = "game-line" + (line.cta ? " cta" : "");
       sub.textContent = line.text;
+      sub.hidden = !line.text;
       if (line.on && g.ping_ms != null && g.ping_at) {
         // The game's own ping: to the server it was playing on, through
         // the VPN server, measured while a match was on.
@@ -1036,7 +1216,7 @@
       // pointer: switch the boost on, or off.
       const act = document.createElement("span");
       act.className = "game-act";
-      act.textContent = g.on ? "Выключить буст" : "Включить буст";
+      act.textContent = g.on ? "Выключить буст" : g.launchable ? "Играть" : "Включить буст";
       act.setAttribute("aria-hidden", "true");
       cover.append(act);
       if (g.on) cover.dataset.tip = "Игра пойдёт без буста. Антизапрет или VPN продолжат работать.";
@@ -1068,8 +1248,8 @@
         }
         face.append(regions);
       }
-      card.append(face);
-      if (g.server_offer) card.append(server_ask(g));
+      content.append(face);
+      if (g.server_offer) content.append(server_ask(g));
       if (expanded && g.detection_confirmed) {
         // How often the detected server was the one the game showed, among
         // the matches the player checked; absent until one was.
@@ -1079,7 +1259,7 @@
         words.textContent = "Сервер матча определён верно в " + g.detection_right + " из " + g.detection_confirmed;
         words.dataset.tip = "Сколько раз сервер, найденный приложением, совпал с тем, что показала игра, среди матчей, которые вы проверили. Пропущенные вопросы не считаются.";
         tally.append(words);
-        card.append(tally);
+        content.append(tally);
       }
       box.append(card);
     }
@@ -1621,6 +1801,7 @@
   }
 
   async function on_sign_out() {
+    if (!await ask("Выйти из аккаунта? Сейчас войти снова можно только зная пароль. Убедитесь, что вы его помните.", "Выйти")) return;
     close_pops();
     const outcome = await backend().Sign_out();
     show_error("action-error", outcome);
@@ -1655,11 +1836,50 @@
     $("signin").addEventListener("submit", on_sign_in);
     $("sign-out").addEventListener("click", on_sign_out);
     $("menu-button").addEventListener("click", toggle_menu);
+    window.addEventListener("account-plan-open", () => { close_pops(); open_pop("menu", "menu-button"); });
+    $("help-button").addEventListener("click", () => {
+      const opening = $("help").hidden;
+      close_pops();
+      if (opening) {
+        open_pop("help", "help-button");
+        window.help_ui.open();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const id = pops.find((name) => !$(name).hidden);
+      if (id) $(pop_owner[id]).focus();
+    }, true);
+
     $("chip").addEventListener("click", open_servers);
     $("gamer").addEventListener("click", toggle_gamer);
+    $("compact-journal").addEventListener("click", toggle_journal);
+    $("journal-title").addEventListener("click", () => { if (!expanded) toggle_journal(); });
+    $("journal-retry").addEventListener("click", load_journal);
     $("settings-button").addEventListener("click", toggle_settings);
     $("theme-row").addEventListener("click", () => show_level("settings", "theme-panel"));
     $("theme-back").addEventListener("click", () => show_level("settings", "settings-main"));
+    theme_editor.bind(theme_mode, () => theme_of(theme_mode()).id, () => {
+      apply_theme();
+      render_themes();
+    }, show_level);
+    $("statistics-row").addEventListener("click", () => show_level("settings", "statistics-panel"));
+    $("statistics-back").addEventListener("click", () => show_level("settings", "settings-main"));
+    $("blocks-line").addEventListener("click", () => {
+      services_open = !services_open;
+      try { localStorage.setItem("services.open", services_open ? "1" : "0"); } catch (e) {}
+      if (services_open && !services_list) load_services(); else render_blocks();
+    });
+    $("services-edit").addEventListener("click", toggle_services_edit);
+    $("services-restore").addEventListener("click", () => services_call(() => backend().Restore_services()));
+    $("services-add").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = $("services-host"), host = input.value.trim();
+      if (!host) { input.focus(); return; }
+      if (await services_call(() => backend().Add_service(host))) input.value = "";
+      input.focus();
+    });
+    $("blocks-refresh").addEventListener("click", refresh_analysis);
     $("profile-row").addEventListener("click", () => { show_level("menu", "profile-panel"); load_profiles(); });
     $("profile-back").addEventListener("click", () => show_level("menu", "menu-main"));
     // The goal tiles are out of the window until they work.

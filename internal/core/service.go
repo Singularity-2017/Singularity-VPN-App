@@ -36,9 +36,28 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 		return ipc.Status_result{}, map_error(err)
 	}
 
+	snapshot := a.manager.Status_snapshot()
 	result := ipc.Status_result{
-		State:     string(a.manager.State()),
+		State:     string(snapshot.State),
 		Signed_in: signed_in,
+	}
+	result.Statistics_error = a.statistics_error.Load()
+	if a.statistics != nil {
+		stats := a.statistics.Snapshot()
+		result.Statistics = &stats
+	}
+	if result.State == string(connection.State_degraded) {
+		detail := snapshot.Degradation
+		result.Degraded_latency, result.Degraded_probes = detail.High_latency, detail.Failed_probes
+		if detail.Resent_probes {
+			resent := detail.Resent * 100
+			result.Degraded_resent, result.Resent_percent = true, &resent
+		}
+		result.Degraded_udp = detail.Udp_lost
+		if detail.High_latency && detail.Baseline_rtt > 0 {
+			baseline := float64(detail.Baseline_rtt) / float64(time.Millisecond)
+			result.Baseline_rtt_ms = &baseline
+		}
 	}
 	if signed_in {
 		// Who is signed in, for the account menu. A state that cannot be
@@ -49,7 +68,7 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 		result.Device_name = a.device_name
 	}
 
-	session, ok := a.manager.Session()
+	session, ok := snapshot.Session, snapshot.Has_session
 	if !ok {
 		return result, nil
 	}
@@ -73,7 +92,17 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 
 	// A sample without a round trip -- a prober that confirmed reachability
 	// without timing it -- reports nothing rather than a perfect zero.
-	if sample, ok := a.manager.Last_sample(); ok && sample.Rtt > 0 {
+	// The UDP figures stand on their own: a sample whose dials were all
+	// resent has no TCP round trip but still measured UDP.
+	if sample, ok := snapshot.Sample, snapshot.Has_sample; ok && sample.Udp_measured {
+		udp_loss := sample.Udp_loss * 100
+		result.Udp_loss_percent = &udp_loss
+		if sample.Udp_rtt > 0 {
+			udp_rtt := float64(sample.Udp_rtt) / float64(time.Millisecond)
+			result.Udp_rtt_ms = &udp_rtt
+		}
+	}
+	if sample, ok := snapshot.Sample, snapshot.Has_sample; ok && sample.Rtt > 0 {
 		rtt := float64(sample.Rtt) / float64(time.Millisecond)
 		loss := sample.Packet_loss * 100
 		result.Rtt_ms = &rtt
@@ -87,8 +116,16 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 
 // signed_in reports whether a device token is stored. A key that was never
 // set is a clear no; any other failure of the store is a fault, and the
-// caller decides what to do with it.
+// caller decides what to do with it. A store that can tell presence is
+// asked that, so a status poll does not decrypt the token.
 func (a *Application) signed_in() (bool, error) {
+	if presence, ok := a.secrets.(security.Presence); ok {
+		has, err := presence.Has(security.Key_device_token)
+		if err != nil {
+			return false, fmt.Errorf("core: reading the device token: %w", err)
+		}
+		return has, nil
+	}
 	if _, err := a.secrets.Get(security.Key_device_token); err != nil {
 		if errors.Is(err, security.Err_not_found) {
 			return false, nil
@@ -472,7 +509,13 @@ func (a *Application) Profiles(ctx context.Context) (ipc.Profiles_result, error)
 	}
 	result := ipc.Profiles_result{Profiles: make([]ipc.Profile, 0, len(list))}
 	for _, p := range list {
-		result.Profiles = append(result.Profiles, ipc.Profile{Id: p.Id, Label: p.Label, Online: p.Online, Current: p.Id == current})
+		online := p.Online
+		// The profile this machine just left still reads as connected for
+		// a few minutes; that is not another device, so it is not known.
+		if online != nil && *online && a.manager.Left_recently(p.Id) {
+			online = nil
+		}
+		result.Profiles = append(result.Profiles, ipc.Profile{Id: p.Id, Label: p.Label, Online: online, Current: p.Id == current})
 	}
 	return result, nil
 }
@@ -490,7 +533,6 @@ func (a *Application) Set_profile(ctx context.Context, profile ipc.Set_profile) 
 	if !slices.ContainsFunc(list, func(p api.Account_profile) bool { return p.Id == profile.Id }) {
 		return fmt.Errorf("core: profile %s is not this account's", profile.Id)
 	}
-	a.logger.Info("profile set", "client_id", profile.Id)
 	return map_error(a.manager.Set_profile(ctx, profile.Id))
 }
 

@@ -123,14 +123,15 @@ type Adapter struct {
 	router       Game_router
 	probe_routes []netip.Prefix
 
-	mu      sync.Mutex
-	running bool
-	since   time.Time
-	detail  string
-	handle  platform.Tunnel_handle
-	device  tunnel
-	routing bool // the router is capturing for this tunnel
-	probe   string
+	mu                sync.Mutex
+	running           bool
+	since             time.Time
+	detail            string
+	handle            platform.Tunnel_handle
+	device            tunnel
+	routing           bool // the router is capturing for this tunnel
+	probe             string
+	full_probe_routes bool
 	// game_path is the games-only tunnel's path, for Ping_game.
 	game_path *game_path
 }
@@ -168,9 +169,18 @@ func New_adapter(name string, new_tunnel tunnel_factory, resolve resolver, netwo
 	}, nil
 }
 
+// connect_budget is how long Connect is given when Windows PnP is still
+// tearing down the previous Wintun adapter before creating the new one.
+const connect_budget = 25 * time.Second
+
 // Name returns "wireguard", the name this adapter is registered under.
 func (a *Adapter) Name() string {
 	return "wireguard"
+}
+
+// Connect_budget implements protocols.Connect_budgeter.
+func (a *Adapter) Connect_budget() time.Duration {
+	return connect_budget
 }
 
 // Amnezia is the same adapter registered under "amneziawg". The library is
@@ -330,6 +340,7 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 	a.routing = games_only
 	a.game_path = path
 	a.probe = split_probe_target(parsed.Dns, peer.Allowed_ips, games_only)
+	a.full_probe_routes = !games_only && full_probe_plan(plan)
 	a.since = a.clock()
 	switch {
 	case games_only:
@@ -395,19 +406,21 @@ func first_ipv4(prefixes []netip.Prefix) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// unwind tears down what Connect built from step 3 onward: platform.Network
-// state and the tunnel device, both attempted even though at most one of
-// them may actually have anything to undo. cause is the failure that
-// triggered the unwind; it and any error from the two teardown calls are
-// joined, so a person sees not just what failed but whether cleaning up
-// after it failed too.
+// unwind tears down what Connect built from step 3 onward: the tunnel device
+// and platform.Network state, both attempted even though at most one of
+// them may actually have anything to undo. Closing the device first lets
+// Wintun remove the adapter and its routes in one kernel teardown instead of
+// Clear deleting dozens of routes one by one while the adapter is still up.
+// cause is the failure that triggered the unwind; it and any error from the
+// two teardown calls are joined, so a person sees not just what failed but
+// whether cleaning up after it failed too.
 func (a *Adapter) unwind(ctx context.Context, device tunnel, handle platform.Tunnel_handle, cause error) error {
-	clear_err := a.network.Clear(ctx, handle)
 	close_err := device.Close()
+	clear_err := a.network.Clear(ctx, handle)
 	return errors.Join(fmt.Errorf("wireguard: %w", cause), clear_err, close_err)
 }
 
-// Disconnect clears the routing.Plan and closes the tunnel device, both
+// Disconnect closes the tunnel device and clears the routing.Plan, both
 // attempted even if the first fails, errors joined -- the same reasoning as
 // platform.Network.Clear: this is the teardown path, and stopping half way
 // through leaves a machine in a state nobody chose. Disconnecting an adapter
@@ -428,13 +441,14 @@ func (a *Adapter) Disconnect(ctx context.Context) error {
 			stop_err = fmt.Errorf("wireguard: stopping the game router: %w", err)
 		}
 	}
-	clear_err := a.network.Clear(ctx, a.handle)
 	close_err := a.device.Close()
+	clear_err := a.network.Clear(ctx, a.handle)
 
 	a.running = false
 	a.routing = false
 	a.game_path = nil
 	a.probe = ""
+	a.full_probe_routes = false
 	a.device = nil
 	a.handle = 0
 	a.detail = ""
@@ -536,4 +550,35 @@ func (r Default_resolver) Resolve(ctx context.Context, host_port string) (netip.
 		return netip.AddrPort{}, fmt.Errorf("wireguard: %q did not resolve to any address", host)
 	}
 	return netip.AddrPortFrom(addrs[0].Unmap(), uint16(port)), nil
+}
+
+// Full_probe_routes is true only for an active full tunnel whose installed
+// routing plan sends both independent public health targets into the tunnel.
+func (a *Adapter) Full_probe_routes() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.running && !a.routing && a.full_probe_routes
+}
+
+func full_probe_plan(plan routing.Plan) bool {
+	if !plan.Full_tunnel {
+		return false
+	}
+	for _, target := range []string{"1.1.1.1", "8.8.8.8"} {
+		address := netip.MustParseAddr(target)
+		best, through := -1, false
+		for _, route := range plan.Routes {
+			if route.Destination.Contains(address) && route.Destination.Bits() >= best {
+				// An equally specific exclusion wins conservatively.
+				if route.Destination.Bits() == best && !through {
+					continue
+				}
+				best, through = route.Destination.Bits(), route.Through_tunnel
+			}
+		}
+		if !through {
+			return false
+		}
+	}
+	return true
 }

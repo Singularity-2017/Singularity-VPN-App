@@ -191,3 +191,42 @@ func Test_no_cipher_is_the_identity(t *testing.T) {
 		t.Fatalf("No_cipher.Decrypt changed the input: %q", decoded)
 	}
 }
+
+// counting_cipher counts the values it decrypts.
+type counting_cipher struct {
+	xor_cipher
+	decrypts *int
+}
+
+func (c counting_cipher) Decrypt(ciphertext []byte) ([]byte, error) {
+	*c.decrypts++
+	return c.xor_cipher.Decrypt(ciphertext)
+}
+
+func Test_presence_is_told_without_decrypting(t *testing.T) {
+	decrypts := 0
+	store, err := Open_file_store(filepath.Join(t.TempDir(), "secrets.json"), counting_cipher{xor_cipher{0x5a}, &decrypts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has, err := store.Has(Key_device_token); err != nil || has {
+		t.Fatalf("Has on an empty store = %v, %v", has, err)
+	}
+	if err := store.Set(Key_device_token, []byte("token")); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := store.Has(Key_device_token); err != nil || !has {
+		t.Fatalf("Has after Set = %v, %v", has, err)
+	}
+	if decrypts != 0 {
+		t.Fatalf("Has decrypted %d times; telling presence needs no secret", decrypts)
+	}
+	var memory Memory_store
+	if has, _ := memory.Has(Key_device_token); has {
+		t.Fatal("an empty memory store has the key")
+	}
+	_ = memory.Set(Key_device_token, []byte("token"))
+	if has, _ := memory.Has(Key_device_token); !has {
+		t.Fatal("a memory store lost the key")
+	}
+}

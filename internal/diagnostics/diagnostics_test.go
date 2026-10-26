@@ -175,3 +175,44 @@ func Test_a_down_tunnel_is_lost_not_degraded_even_when_it_is_also_slow(t *testin
 		t.Fatalf("Judge() = %v, want Verdict_lost: a down tunnel outranks degraded", got)
 	}
 }
+
+func Test_target_changes_never_compare_or_mix_endpoint_baselines(t *testing.T) {
+	var baseline Baseline
+	primary := Sample{Measurement_target: "primary", Rtt: 10 * time.Millisecond, Internet_ok: true, Tunnel_up: true}
+	fallback := Sample{Measurement_target: "fallback", Rtt: 100 * time.Millisecond, Internet_ok: true, Tunnel_up: true}
+	for i := 0; i < Baseline_samples; i++ {
+		baseline.Observe(primary)
+	}
+	if Judge(fallback, baseline, Default_thresholds()) != Verdict_healthy {
+		t.Fatal("fallback compared to primary before observation")
+	}
+	baseline.Observe(fallback)
+	if baseline.Ready() {
+		t.Fatal("primary baseline retained after fallback")
+	}
+	if Judge(fallback, baseline, Default_thresholds()) != Verdict_healthy {
+		t.Fatal("healthy fallback degraded")
+	}
+	for i := 1; i < Baseline_samples; i++ {
+		baseline.Observe(fallback)
+	}
+	if got, _ := baseline.Rtt(); got != fallback.Rtt {
+		t.Fatalf("fallback baseline contaminated: %v", got)
+	}
+	baseline.Observe(primary)
+	if baseline.Ready() {
+		t.Fatal("fallback baseline retained after primary returns")
+	}
+	for i := 1; i < Baseline_samples; i++ {
+		baseline.Observe(primary)
+	}
+	if got, _ := baseline.Rtt(); got != primary.Rtt {
+		t.Fatalf("primary baseline contaminated: %v", got)
+	}
+	legacy := primary
+	legacy.Measurement_target = ""
+	baseline.Observe(legacy)
+	if baseline.Ready() {
+		t.Fatal("empty target must also start a separate baseline")
+	}
+}

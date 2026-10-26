@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -89,9 +90,44 @@ type address_row struct {
 	preferred      bool // duplicate address detection is over and it is in use
 }
 
+// One snapshot of the interface, route and address tables serves every Ping
+// until the network changes. Dumping GetIfTable2Ex, GetIPForwardTable2 and
+// GetUnicastIPAddressTable is not free on a machine with dozens of virtual
+// adapters, and a ping pass runs every few seconds. While Watch_network runs,
+// its generation says when the tables moved; ping_snapshot_max_age heals
+// anything no notification announced. Without a watch, ping_snapshot_ttl
+// only lets the pings of one pass share a snapshot.
+const (
+	ping_snapshot_ttl     = time.Second
+	ping_snapshot_max_age = time.Minute
+)
+
+// snapshot_current says whether a snapshot taken at taken, generation
+// taken_generation, still describes the network at now.
+func snapshot_current(taken time.Time, taken_generation uint64, now time.Time, generation uint64, watched bool) bool {
+	if taken.IsZero() {
+		return false
+	}
+	age := now.Sub(taken)
+	if age < ping_snapshot_ttl {
+		return true
+	}
+	return watched && generation == taken_generation && age < ping_snapshot_max_age
+}
+
+type ping_snapshot struct {
+	at          time.Time
+	generation  uint64
+	tunnel_luid winipcfg.LUID
+	routes      []route_row
+	addresses   []address_row
+}
+
 // pinger is platform.Pinger over the ICMP helper API.
 type pinger struct {
 	tunnel_aliases []string
+	mu             sync.Mutex
+	snapshot       ping_snapshot
 }
 
 // New_pinger returns a platform.Pinger that sends its echoes outside the
@@ -153,36 +189,80 @@ func (p *pinger) Ping(ctx context.Context, destination netip.Addr) (time.Duratio
 // would still ride the tunnel; `netsh interface ipv4 show interface` lists
 // it as "Weak Host Sends".
 func (p *pinger) source_address(destination netip.Addr) (netip.Addr, error) {
-	tunnel_luid, err := p.tunnel_luid()
+	snap, err := p.current_snapshot()
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	route, found, err := find_best_route(destination, tunnel_luid, nil)
-	if err != nil {
-		return netip.Addr{}, err
-	}
+	route, found := pick_route(snap.routes, destination, snap.tunnel_luid)
 	if !found {
+		p.forget_snapshot()
 		return netip.Addr{}, fmt.Errorf("platform/windows: ping %s: no route to it outside the tunnel", destination)
 	}
-
-	table, err := winipcfg.GetUnicastIPAddressTable(winipcfg.AddressFamily(windows.AF_INET))
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("platform/windows: reading the address table: %w", err)
-	}
-	rows := make([]address_row, len(table))
-	for i := range table {
-		rows[i] = address_row{
-			interface_luid: table[i].InterfaceLUID,
-			address:        table[i].Address.Addr(),
-			skip_as_source: table[i].SkipAsSource,
-			preferred:      table[i].DadState == winipcfg.DadStatePreferred,
-		}
-	}
-	source, ok := pick_source_address(rows, route.interface_luid)
+	source, ok := pick_source_address(snap.addresses, route.interface_luid)
 	if !ok {
+		p.forget_snapshot()
 		return netip.Addr{}, fmt.Errorf("platform/windows: ping %s: the interface it is reached by has no IPv4 address to send from", destination)
 	}
 	return source, nil
+}
+
+// forget_snapshot makes the next ping read the tables again: one that found
+// no way out may have been taken a moment before the network settled.
+func (p *pinger) forget_snapshot() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.snapshot = ping_snapshot{}
+}
+
+func (p *pinger) current_snapshot() (ping_snapshot, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	// Read before the tables: a change while they are read leaves this
+	// snapshot one generation behind, and the next call takes a fresh one.
+	generation, watched := Network_generation()
+	if snapshot_current(p.snapshot.at, p.snapshot.generation, now, generation, watched) {
+		return p.snapshot, nil
+	}
+
+	tunnel_luid, err := p.tunnel_luid()
+	if err != nil {
+		return ping_snapshot{}, err
+	}
+	route_table, err := winipcfg.GetIPForwardTable2(winipcfg.AddressFamily(windows.AF_INET))
+	if err != nil {
+		return ping_snapshot{}, fmt.Errorf("platform/windows: reading the route table: %w", err)
+	}
+	routes := make([]route_row, len(route_table))
+	for i := range route_table {
+		routes[i] = route_row{
+			interface_luid: route_table[i].InterfaceLUID,
+			destination:    route_table[i].DestinationPrefix.Prefix(),
+			next_hop:       route_table[i].NextHop.Addr(),
+		}
+	}
+	addr_table, err := winipcfg.GetUnicastIPAddressTable(winipcfg.AddressFamily(windows.AF_INET))
+	if err != nil {
+		return ping_snapshot{}, fmt.Errorf("platform/windows: reading the address table: %w", err)
+	}
+	addresses := make([]address_row, len(addr_table))
+	for i := range addr_table {
+		addresses[i] = address_row{
+			interface_luid: addr_table[i].InterfaceLUID,
+			address:        addr_table[i].Address.Addr(),
+			skip_as_source: addr_table[i].SkipAsSource,
+			preferred:      addr_table[i].DadState == winipcfg.DadStatePreferred,
+		}
+	}
+	p.snapshot = ping_snapshot{
+		at:          now,
+		generation:  generation,
+		tunnel_luid: tunnel_luid,
+		routes:      routes,
+		addresses:   addresses,
+	}
+	return p.snapshot, nil
 }
 
 // tunnel_luid reads the LUID of whichever tunnel adapter exists, by name,

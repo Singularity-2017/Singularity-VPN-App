@@ -51,3 +51,27 @@ func Test_what_the_tunnel_carries_decides_the_probe(t *testing.T) {
 		}
 	}
 }
+
+func Test_fallback_requires_full_routes_for_both_targets(t *testing.T) {
+	for _, test := range []struct {
+		name, options string
+		want          bool
+	}{
+		{"full", "redirect-gateway def1", true},
+		{"split without resolver", "route 10.0.0.0 255.0.0.0", false},
+		{"primary bypass", "redirect-gateway def1\nroute 1.1.1.1 255.255.255.255 net_gateway", false},
+		{"fallback bypass", "redirect-gateway def1\nroute 8.8.8.8 255.255.255.255 net_gateway", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a := New_adapter(nil, nil, "", "", nil)
+			a.progress.carried.read_profile([]byte(test.options))
+			if a.Full_probe_routes() {
+				t.Fatal("disconnected adapter allowed fallback")
+			}
+			a.session = &session{}
+			if got := a.Full_probe_routes(); got != test.want {
+				t.Fatalf("eligible = %v", got)
+			}
+		})
+	}
+}

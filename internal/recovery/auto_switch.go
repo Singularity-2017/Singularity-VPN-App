@@ -153,3 +153,8 @@ func (p *Policy) Reset() {
 	p.stable_since = time.Time{}
 	p.stable_since_set = false
 }
+
+// Eligible reports local failure and cooldown filtering without spending a switch.
+func (p *Policy) Eligible(now time.Time, target Target) bool {
+	return !p.failed[target] && !now.Before(p.cooldown_until[target])
+}

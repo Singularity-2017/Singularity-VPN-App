@@ -1,0 +1,9 @@
+#help { width: min(340px, calc(100vw - 40px)); max-height: calc(100dvh - 110px); overflow-y: auto; }
+#help details { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+#help summary { cursor: pointer; }
+#help p { line-height: 1.5; color: var(--muted); }
+.feedback-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.feedback-form textarea, .feedback-form select { box-sizing: border-box; width: 100%; min-width: 0; background: var(--inset); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+.feedback-form textarea { resize: vertical; max-height: 40dvh; }
+.feedback-status { line-height: 1.5; }
+#menu, #settings, #help { top: calc(100% + 8px); }

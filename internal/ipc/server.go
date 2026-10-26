@@ -184,6 +184,49 @@ func serve_conn(ctx context.Context, conn net.Conn, service Service) {
 // remembering.
 func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync.WaitGroup) {
 	switch req.Command {
+	case Command_feedback:
+		params, err := decode_params[Feedback_params](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		service, ok := h.service.(Feedback_service)
+		if !ok {
+			h.reply(req.Id, nil, errors.New("feedback is not supported by this service"))
+			return
+		}
+		result, err := service.Feedback(ctx, params)
+		h.reply(req.Id, result, err)
+	case Command_account:
+		service, ok := h.service.(Account_service)
+		if !ok {
+			h.reply(req.Id, nil, errors.New("account data is not supported by this service"))
+			return
+		}
+		result, err := service.Account(ctx)
+		h.reply(req.Id, result, err)
+	case Command_spending_page:
+		params, err := decode_params[Spending_page_params](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		service, ok := h.service.(Spending_service)
+		if !ok {
+			h.reply(req.Id, nil, errors.New("spending pages are not supported by this service"))
+			return
+		}
+		result, err := service.Spending_page(ctx, params)
+		h.reply(req.Id, result, err)
+
 	case Command_status:
 		result, err := h.service.Status(ctx)
 		h.reply(req.Id, result, err)
@@ -320,6 +363,56 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 
 	case Command_analysis:
 		result, err := h.service.Analysis(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_services:
+		service, ok := h.reach_list_service(req.Id)
+		if !ok {
+			return
+		}
+		result, err := service.Services(ctx)
+		h.reply(req.Id, result, err)
+
+	case Command_remove_service:
+		params, err := decode_params[Remove_service_params](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		service, ok := h.reach_list_service(req.Id)
+		if !ok {
+			return
+		}
+		result, err := service.Remove_service(ctx, params)
+		h.reply(req.Id, result, err)
+
+	case Command_add_service:
+		params, err := decode_params[Add_service_params](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		service, ok := h.reach_list_service(req.Id)
+		if !ok {
+			return
+		}
+		result, err := service.Add_service(ctx, params)
+		h.reply(req.Id, result, err)
+
+	case Command_restore_services:
+		service, ok := h.reach_list_service(req.Id)
+		if !ok {
+			return
+		}
+		result, err := service.Restore_services(ctx)
 		h.reply(req.Id, result, err)
 
 	default:
@@ -466,6 +559,16 @@ func error_body_for(err error) *Error_body {
 		return &Error_body{Code: Error_no_server_in_country, Message: err.Error()}
 	case errors.Is(err, Err_offer_changed):
 		return &Error_body{Code: Error_offer_changed, Message: err.Error()}
+	case errors.Is(err, Err_invalid_host):
+		return &Error_body{Code: Error_invalid_host, Message: err.Error()}
+	case errors.Is(err, Err_too_many_services):
+		return &Error_body{Code: Error_too_many, Message: err.Error()}
+	case errors.Is(err, Err_duplicate_service):
+		return &Error_body{Code: Error_duplicate, Message: err.Error()}
+	case errors.Is(err, Err_unknown_service):
+		return &Error_body{Code: Error_unknown_service, Message: err.Error()}
+	case errors.Is(err, Err_service_not_removable):
+		return &Error_body{Code: Error_not_removable, Message: err.Error()}
 	default:
 		return &Error_body{Code: Error_internal, Message: err.Error()}
 	}

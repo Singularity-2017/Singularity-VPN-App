@@ -29,7 +29,9 @@ type Recommendation struct {
 	City      string `json:"city"`   // absent in the response means empty here
 	Protocol  string `json:"protocol"`
 
-	Alternatives []Alternative `json:"alternatives"`
+	Alternatives    []Alternative         `json:"alternatives"`
+	Network_context *Network_context      `json:"network_context,omitempty"`
+	Evidence        []Connection_evidence `json:"evidence,omitempty"`
 
 	// Reason is how the node was picked -- least_loaded, chosen_node or
 	// lowest_rtt -- and Goals how each goal asked for was applied. Both are
@@ -54,12 +56,13 @@ type Goal_outcome struct {
 // asks for nothing in particular, which is what a control plane too old to
 // know about goals answers anyway.
 type Recommend_request struct {
-	Anonymity string // "" off, or light, standard, high
-	Bypass    bool
-	Country   string // with a country, the geo goal
-	Route     bool
-	Client_id string // the connection the route goal measures
-	Node_id   string // a server picked by hand
+	Network_context_id string
+	Anonymity          string // "" off, or light, standard, high
+	Bypass             bool
+	Country            string // with a country, the geo goal
+	Route              bool
+	Client_id          string // the connection the route goal measures
+	Node_id            string // a server picked by hand
 	// Game is the one game the tunnel is for, by catalog id: the control
 	// plane then picks the node nearest that game's servers.
 	Game string
@@ -67,6 +70,9 @@ type Recommend_request struct {
 
 func (r Recommend_request) query() url.Values {
 	q := url.Values{}
+	if r.Network_context_id != "" {
+		q.Set("network_context_id", r.Network_context_id)
+	}
 	if r.Anonymity != "" {
 		q.Add("goal", "anonymity")
 		q.Set("anonymity", r.Anonymity)
@@ -279,6 +285,11 @@ func (c *Client) Recommend(ctx context.Context, token string, request Recommend_
 	}
 	if err := recommendation.validate(); err != nil {
 		return Recommendation{}, err
+	}
+	for _, row := range recommendation.Evidence {
+		if err := row.Validate(); err != nil {
+			return Recommendation{}, err
+		}
 	}
 	return recommendation, nil
 }

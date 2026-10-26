@@ -21,6 +21,7 @@ var (
 	user32                = windows.NewLazySystemDLL("user32.dll")
 	proc_enum_windows     = user32.NewProc("EnumWindows")
 	proc_get_window_rect  = user32.NewProc("GetWindowRect")
+	proc_get_client_rect  = user32.NewProc("GetClientRect")
 	proc_set_window_pos   = user32.NewProc("SetWindowPos")
 	proc_monitor_from_win = user32.NewProc("MonitorFromWindow")
 	proc_get_monitor_info = user32.NewProc("GetMonitorInfoW")
@@ -277,4 +278,71 @@ func (a *App) Set_window_width(width int) {
 	wide_from.mu.Unlock()
 	proc_set_window_pos.Call(hwnd, 0, uintptr(left), uintptr(window.top),
 		uintptr(right-left), uintptr(window.bottom-window.top), swp_no_z_order|swp_no_activate)
+}
+
+// Set_window_height makes the page's area the given height in pixels at 96
+// DPI, as the page measured what it needs: the frame is added, the window
+// stays on its monitor's work area, and it grows downwards unless the work
+// area ends first. The page asks once, when what it shows changes size --
+// gamer mode on or off -- never continuously.
+func (a *App) Set_window_height(height int) {
+	if height <= 0 {
+		return
+	}
+	hwnd := main_window()
+	if hwnd == 0 {
+		return
+	}
+	var window, client win_rect
+	if ok, _, _ := proc_get_window_rect.Call(hwnd, uintptr(unsafe.Pointer(&window))); ok == 0 {
+		return
+	}
+	if ok, _, _ := proc_get_client_rect.Call(hwnd, uintptr(unsafe.Pointer(&client))); ok == 0 {
+		return
+	}
+	monitor, _, _ := proc_monitor_from_win.Call(hwnd, monitor_default_to_nearest)
+	info := monitor_info{size: uint32(unsafe.Sizeof(monitor_info{}))}
+	if ok, _, _ := proc_get_monitor_info.Call(monitor, uintptr(unsafe.Pointer(&info))); ok == 0 {
+		return
+	}
+	dpi, _, _ := proc_get_dpi_for_win.Call(hwnd)
+	if dpi == 0 {
+		dpi = 96
+	}
+	target := int32(height) * int32(dpi) / 96
+	area := outer(info.work, frame_inset(hwnd, window))
+	top, bottom := place_height(window, area, client.bottom-client.top, target)
+	if top == window.top && bottom == window.bottom {
+		return
+	}
+	proc_set_window_pos.Call(hwnd, 0, uintptr(window.left), uintptr(top),
+		uintptr(window.right-window.left), uintptr(bottom-top), swp_no_z_order|swp_no_activate)
+}
+
+// edge_touch is how close to the work area's edge a window counts as
+// standing on it.
+const edge_touch = 2
+
+// place_height is where a window's top and bottom go for a client area of
+// client_target pixels, given its client area is client_now now: the
+// difference is the frame, which stays. A window standing on the bottom of
+// the work area -- and not filling it -- stays there, growing and shrinking
+// from its top; any other keeps its top. It moves up only as far as the
+// bottom needs to stay inside area, and is never taller than area.
+func place_height(window, area win_rect, client_now, client_target int32) (top, bottom int32) {
+	height := window.bottom - window.top - client_now + client_target
+	if limit := area.bottom - area.top; height > limit {
+		height = limit
+	}
+	top = window.top
+	if on_bottom := area.bottom-window.bottom <= edge_touch && window.bottom-area.bottom <= edge_touch; on_bottom && window.top-area.top > edge_touch {
+		top = area.bottom - height
+	}
+	if top+height > area.bottom {
+		top = area.bottom - height
+	}
+	if top < area.top {
+		top = area.top
+	}
+	return top, top + height
 }

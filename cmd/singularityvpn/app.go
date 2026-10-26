@@ -296,6 +296,7 @@ func (a *App) Ping_servers() Ping_servers_view {
 // Analysis_view is an analysis of the network under the device, or why
 // there is none. Result is absent when the service has not measured yet.
 type Analysis_view struct {
+	Stale  bool                 `json:"stale,omitempty"`
 	Result *ipc.Analysis_result `json:"result,omitempty"`
 	Error  *Outcome             `json:"error,omitempty"`
 }
@@ -324,6 +325,7 @@ func (a *App) Analysis() Analysis_view {
 		last, err := c.Analysis(ctx)
 		if err == nil && last.Present {
 			view.Result = last.Result
+			view.Stale = last.Stale
 		}
 		return err
 	})
@@ -331,6 +333,70 @@ func (a *App) Analysis() Analysis_view {
 		view.Error = &outcome
 	}
 	return view
+}
+
+// Services_view is the list of services the analysis probes, or why it could
+// not be had or changed. Error.Code is one of ipc's: not_signed_in and
+// unauthorized and the like as everywhere, and for Add_service invalid_host,
+// too_many and duplicate, for Remove_service unknown_service and
+// not_removable. On an error the list is empty and the page keeps the one it
+// has: nothing was changed.
+type Services_view struct {
+	Targets         []ipc.Service_target `json:"targets"`
+	Removed_popular int                  `json:"removed_popular"`
+	Error           *Outcome             `json:"error,omitempty"`
+}
+
+// services_view runs one list command and shapes its answer.
+func (a *App) services_view(call func(context.Context, *ipc.Client) (ipc.Services_result, error)) Services_view {
+	view := Services_view{Targets: []ipc.Service_target{}}
+	outcome := a.act_quietly(func(ctx context.Context, c *ipc.Client) error {
+		result, err := call(ctx, c)
+		if err == nil {
+			if result.Targets != nil {
+				view.Targets = result.Targets
+			}
+			view.Removed_popular = result.Removed_popular
+		}
+		return err
+	})
+	if outcome.Code != "" {
+		view.Error = &outcome
+	}
+	return view
+}
+
+// Services is the list of services the analysis probes: the control plane's
+// catalog less what the person removed, plus what they added. It needs the
+// control plane, and fails with the reason when it is out of reach.
+func (a *App) Services() Services_view {
+	return a.services_view(func(ctx context.Context, c *ipc.Client) (ipc.Services_result, error) {
+		return c.Services(ctx)
+	})
+}
+
+// Remove_service takes the service with this key out of the list. A control
+// cannot be removed.
+func (a *App) Remove_service(key string) Services_view {
+	return a.services_view(func(ctx context.Context, c *ipc.Client) (ipc.Services_result, error) {
+		return c.Remove_service(ctx, ipc.Remove_service_params{Key: key})
+	})
+}
+
+// Add_service puts a host in the list. What the person typed goes as it is:
+// the service reads it and answers invalid_host if it is not a host name.
+func (a *App) Add_service(host string) Services_view {
+	return a.services_view(func(ctx context.Context, c *ipc.Client) (ipc.Services_result, error) {
+		return c.Add_service(ctx, ipc.Add_service_params{Host: host})
+	})
+}
+
+// Restore_services brings back every popular service the person removed. What
+// they added stays.
+func (a *App) Restore_services() Services_view {
+	return a.services_view(func(ctx context.Context, c *ipc.Client) (ipc.Services_result, error) {
+		return c.Restore_services(ctx)
+	})
 }
 
 // Version is the service's version. Fields the build did not supply are

@@ -1,0 +1,73 @@
+/* Button geometry belongs to the active theme, independently of its palette. */
+:root { --button-radius: 999px; --icon-radius: 50%; --power-radius: 50%; }
+:root[data-shape="rounded-square"] { --button-radius: 12px; --icon-radius: 10px; --power-radius: 36px; }
+:root[data-shape="square"] { --button-radius: 0px; --icon-radius: 0px; --power-radius: 0px; }
+.icon, .avatar { border-radius: var(--icon-radius); }
+.power, .power::before, .power.busy::before { border-radius: var(--power-radius); }
+/* Cover every button, including dynamically created and confirmation actions.
+   The full-height edge remains a strip; icon and power geometry is above. */
+:root button:not(.edge):not(.power):not(.icon):not(.avatar),
+.segment, .segment.mode-pick { border-radius: var(--button-radius); }
+.game-cover::before { border-radius: inherit; }
+.theme-fields { display: grid; gap: 12px; padding: 10px; }
+.theme-fields label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.theme-fields input[type="color"] { width: 46px; height: 34px; padding: 2px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+.theme-fields select { max-width: 165px; min-height: 34px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.theme-fields .plain { width: 100%; }
+.theme-fields :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.theme-fields input[type="text"] { width: 165px; min-width: 0; min-height: 34px; background: var(--inset); color: var(--text); border: 1px solid var(--line); padding: 4px 8px; }
+.theme-fields [aria-invalid="true"] { border-color: var(--warn); }
+#theme-name-fields:not([hidden]) { display: grid; gap: 10px; }
+.theme-fields [hidden] { display: none; }
+
+/* Patterns follow the editor value, independently of palette and geometry. */
+:root[data-pattern] .window { background: linear-gradient(180deg, var(--surface) -40%, var(--ground) 60%); }
+:root[data-pattern="slashes"] .window {
+  background: repeating-linear-gradient(125deg, transparent 0 70px, rgba(var(--accent-rgb),.07) 71px 73px, transparent 74px 110px), var(--ground);
+}
+:root[data-pattern="grid"] .window {
+  background: linear-gradient(0deg, rgba(var(--accent-rgb),.06) 1px, transparent 1px), linear-gradient(90deg, rgba(var(--accent-rgb),.06) 1px, transparent 1px), radial-gradient(ellipse at top, var(--surface), var(--ground));
+  background-size: 32px 32px, 32px 32px, auto;
+}
+:root[data-pattern="dots"] .window {
+  background: radial-gradient(circle, rgba(var(--accent-rgb),.12) 1px, transparent 2px), var(--ground); background-size: 38px 38px;
+}
+:root[data-pattern="orbits"] .window {
+  background: repeating-radial-gradient(ellipse at 100% 0%, transparent 0 90px, rgba(var(--accent-rgb),.045) 91px 92px, transparent 93px 140px), var(--ground);
+}
+/* A sparse, self-contained molecular diagram; no remote asset requests. */
+:root[data-pattern="molecules"] .window {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='210' viewBox='0 0 240 210'%3E%3Cg fill='none' stroke='%2398af8b' stroke-opacity='.13' stroke-width='1'%3E%3Cpath d='M40 45l20-12 20 12v24L60 81 40 69zM80 45l27-16m-27 40 27 16M151 137l20-12 20 12v24l-20 12-20-12zM151 137l-23-14m63 38 22 13'/%3E%3Ccircle cx='110' cy='27' r='4'/%3E%3Ccircle cx='110' cy='87' r='4'/%3E%3Ccircle cx='125' cy='121' r='4'/%3E%3Ccircle cx='216' cy='176' r='4'/%3E%3C/g%3E%3C/svg%3E");
+  background-color: var(--ground);
+}
+
+:root[data-shape="square"] .game-card { border-radius: 0; }
+:root[data-shape="rounded-square"] .game-card { border-radius: 14px; }
+.game-card-content { display: contents; }
+/* The visible circular face is also the full-size action button. */
+:root[data-shape="round"] .game-card {
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  overflow: visible; align-items: center; gap: 8px;
+}
+:root[data-shape="round"] .game-card-content { display: contents; }
+:root[data-shape="round"] .game-face {
+  position: relative; width: min(100%, 236px); aspect-ratio: 1; flex: none;
+  border: 1px solid var(--line); border-radius: 50%; overflow: hidden;
+}
+:root[data-shape="round"] .game-card.on .game-face { border-color: var(--accent); box-shadow: 0 0 14px rgba(var(--accent-rgb),.12); }
+:root[data-shape="round"] .game-face .game-cover {
+  position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0;
+  padding: 0 26px 62px; align-items: center; justify-content: flex-end;
+  text-align: center; border-radius: inherit; overflow: hidden;
+}
+:root[data-shape="round"] .game-name { font-size: 14px; max-width: 100%; overflow-wrap: anywhere; }
+:root[data-shape="round"] .game-line { font-size: 11px; max-width: 100%; overflow-wrap: anywhere; }
+:root[data-shape="round"] .segment.game-regions {
+  position: absolute; bottom: 22px; left: 50%; right: auto; transform: translateX(-50%);
+  width: max-content; max-width: 78%; flex-wrap: wrap; justify-content: center; z-index: 1;
+}
+:root[data-shape="round"] .game-cover > .game-act { font-size: 15px; padding: 0 24px 50px; border-radius: inherit; }
+:root[data-shape="round"] .game-cover:hover .game-name,
+:root[data-shape="round"] .game-cover:focus-visible .game-name { opacity: .3; }
+:root[data-shape="round"] .game-ask, :root[data-shape="round"] .game-tally { width: 100%; padding: 0; text-align: center; justify-content: center; }
+:root[data-shape="round"] .game-ask-buttons { margin: 0; flex-wrap: wrap; justify-content: center; }

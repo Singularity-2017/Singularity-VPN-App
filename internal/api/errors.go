@@ -36,6 +36,7 @@ const (
 	Code_invalid_input            = "INVALID_INPUT"
 	Code_forbidden                = "FORBIDDEN"
 	Code_internal_error           = "INTERNAL_ERROR"
+	Code_snapshot_changed         = "SNAPSHOT_CHANGED"
 	Code_device_token_cannot_mint = "DEVICE_TOKEN_CANNOT_MINT"
 )
 

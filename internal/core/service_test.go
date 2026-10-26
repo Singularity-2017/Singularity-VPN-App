@@ -693,3 +693,45 @@ func Test_a_status_names_what_the_live_tunnel_carries_and_omits_it_when_down(t *
 		t.Fatalf("Status().Tunnel = %q after disconnecting, want none", got.Tunnel)
 	}
 }
+
+// get_counting_store is a memory store that counts reads of a value.
+type get_counting_store struct {
+	security.Memory_store
+	gets int
+}
+
+func (s *get_counting_store) Get(key string) ([]byte, error) {
+	s.gets++
+	return s.Memory_store.Get(key)
+}
+
+// The window polls the status every few seconds. Saying who is signed in
+// must not decrypt the token each time: that is a call into the system's
+// security service per poll.
+func Test_the_status_does_not_read_the_token_to_say_someone_is_signed_in(t *testing.T) {
+	f := new_fixture(t)
+	store := &get_counting_store{}
+	_ = store.Set(security.Key_device_token, []byte("token"))
+	f.app.secrets = store
+	got, err := f.app.Status(context.Background())
+	if err != nil || !got.Signed_in {
+		t.Fatalf("Status() = %+v, %v; want signed in", got, err)
+	}
+	if store.gets != 0 {
+		t.Fatalf("Status() read the token %d times", store.gets)
+	}
+}
+
+// failing_presence_store cannot be read, and says so through Has as well.
+type failing_presence_store struct{ failing_store }
+
+func (s *failing_presence_store) Has(key string) (bool, error) { return false, s.err }
+
+func Test_a_store_that_cannot_tell_presence_is_a_fault_not_a_sign_out(t *testing.T) {
+	f := new_fixture(t)
+	f.app.secrets = &failing_presence_store{failing_store{err: errors.New("the store is locked")}}
+	_, err := f.app.Status(context.Background())
+	if err == nil || errors.Is(err, ipc.Err_not_signed_in) {
+		t.Fatalf("Status() = %v, want the store's failure reported as a fault", err)
+	}
+}

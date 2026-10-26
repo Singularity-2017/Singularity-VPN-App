@@ -27,15 +27,28 @@ type pinned_route struct {
 	next_hop       netip.Addr
 }
 
+// dns_state records the adapter GUID and address families Apply configured
+// DNS for, so Clear only flushes families that were actually set and can do
+// so even after the tunnel device has already been closed.
+type dns_state struct {
+	guid     windows.GUID
+	has_guid bool
+	families []winipcfg.AddressFamily
+}
+
 // network is the Windows implementation of platform.Network, over winipcfg.
 type network struct {
 	mu     sync.Mutex
 	pinned map[platform.Tunnel_handle][]pinned_route
+	dns    map[platform.Tunnel_handle]dns_state
 }
 
 // New_network builds the Windows implementation of platform.Network.
 func New_network() platform.Network {
-	return &network{pinned: make(map[platform.Tunnel_handle][]pinned_route)}
+	return &network{
+		pinned: make(map[platform.Tunnel_handle][]pinned_route),
+		dns:    make(map[platform.Tunnel_handle]dns_state),
+	}
 }
 
 // Apply sets the tunnel adapter's addresses, MTU, routes and DNS, and pins
@@ -43,8 +56,8 @@ func New_network() platform.Network {
 // so the tunnel's own transport keeps leaving the machine the way it did
 // before the tunnel existed.
 func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan routing.Plan) error {
-	if err := ctx.Err(); err != nil {
-		return err
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return ctx.Err()
 	}
 	luid := winipcfg.LUID(handle)
 
@@ -70,18 +83,18 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 		}
 	}
 
-	if err := luid.SetIPAddresses(plan.Addresses); err != nil {
+	if err := add_addresses(luid, plan.Addresses); err != nil {
 		return fmt.Errorf("platform/windows: setting addresses: %w", err)
 	}
 
-	if err := luid.SetRoutes(to_route_data(plan.Routes)); err != nil {
+	if err := add_routes(luid, to_route_data(plan.Routes)); err != nil {
 		return fmt.Errorf("platform/windows: setting routes: %w", err)
 	}
 
 	// The endpoint host route is pinned in every case the plan asks for one,
 	// the full tunnel included -- see host_routes_to_pin for why skipping it
 	// there would leave the tunnel carrying its own handshake. This runs
-	// after SetRoutes on purpose: find_best_route excludes the tunnel's own
+	// after add_routes on purpose: find_best_route excludes the tunnel's own
 	// LUID, so it answers with the route the endpoint would have taken
 	// before this adapter existed.
 	// Recorded on every way out, not only on success: a pin added before a
@@ -113,9 +126,20 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 		})
 	}
 
-	for _, family := range families_of_addrs(plan.Dns) {
-		if err := luid.SetDNS(family, plan.Dns, nil); err != nil {
-			return fmt.Errorf("platform/windows: setting DNS: %w", err)
+	dns_families := families_of_addrs(plan.Dns)
+	if len(dns_families) > 0 {
+		state := dns_state{families: dns_families}
+		if guid, err := luid.GUID(); err == nil && guid != nil {
+			state.guid = *guid
+			state.has_guid = true
+		}
+		n.mu.Lock()
+		n.dns[handle] = state
+		n.mu.Unlock()
+		for _, family := range dns_families {
+			if err := luid.SetDNS(family, plan.Dns, nil); err != nil {
+				return fmt.Errorf("platform/windows: setting DNS: %w", err)
+			}
 		}
 	}
 	if len(plan.Dns) > 0 {
@@ -138,26 +162,37 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	luid := winipcfg.LUID(handle)
 	var errs []error
 
-	if err := flush_routes(luid); err != nil {
-		errs = append(errs, fmt.Errorf("platform/windows: flushing routes: %w", err))
-	}
-	if err := luid.FlushIPAddresses(windows.AF_UNSPEC); err != nil {
-		errs = append(errs, fmt.Errorf("platform/windows: flushing addresses: %w", err))
-	}
-	if err := luid.FlushDNS(windows.AF_INET); err != nil {
-		errs = append(errs, fmt.Errorf("platform/windows: flushing IPv4 DNS: %w", err))
-	}
-	if err := luid.FlushDNS(windows.AF_INET6); err != nil {
-		errs = append(errs, fmt.Errorf("platform/windows: flushing IPv6 DNS: %w", err))
-	}
 	if err := clear_dns_policy(luid); err != nil {
 		errs = append(errs, err)
 	}
 
 	n.mu.Lock()
+	dns_cfg, had_dns := n.dns[handle]
+	delete(n.dns, handle)
 	pinned := n.pinned[handle]
 	delete(n.pinned, handle)
 	n.mu.Unlock()
+
+	if had_dns {
+		for _, family := range dns_cfg.families {
+			if err := flush_interface_dns(luid, dns_cfg, family); err != nil {
+				errs = append(errs, fmt.Errorf("platform/windows: flushing DNS: %w", err))
+			}
+		}
+	}
+
+	// When the tunnel device was closed first (the normal Wintun teardown),
+	// the kernel has already removed the adapter along with all its routes
+	// and addresses; walking and deleting 80+ routes one by one only stays
+	// for an adapter that is still present.
+	if interface_exists(luid) {
+		if err := flush_routes(luid); err != nil {
+			errs = append(errs, fmt.Errorf("platform/windows: flushing routes: %w", err))
+		}
+		if err := luid.FlushIPAddresses(windows.AF_UNSPEC); err != nil {
+			errs = append(errs, fmt.Errorf("platform/windows: flushing addresses: %w", err))
+		}
+	}
 
 	for _, route := range pinned {
 		if err := route.interface_luid.DeleteRoute(route.destination, route.next_hop); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
@@ -166,6 +201,66 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	}
 
 	return errors.Join(errs...)
+}
+
+// add_addresses adds unicast addresses without calling FlushIPAddresses
+// across the machine's entire address table on a newly created adapter.
+func add_addresses(luid winipcfg.LUID, addresses []netip.Prefix) error {
+	for _, address := range addresses {
+		if err := luid.AddIPAddress(address); err != nil && !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
+			return err
+		}
+	}
+	return nil
+}
+
+// add_routes adds routes without calling FlushRoutes first: FlushRoutes on an
+// adapter that just had its addresses set deletes the local/on-link/broadcast
+// routes Windows created for those addresses and fires route-delete
+// notifications before adding the plan's routes.
+func add_routes(luid winipcfg.LUID, routes []*winipcfg.RouteData) error {
+	for _, route := range routes {
+		if err := luid.AddRoute(route.Destination, route.NextHop, route.Metric); err != nil && !errors.Is(err, windows.ERROR_OBJECT_ALREADY_EXISTS) {
+			return err
+		}
+	}
+	return nil
+}
+
+func interface_exists(luid winipcfg.LUID) bool {
+	if luid == 0 {
+		return false
+	}
+	_, err := luid.Interface()
+	return err == nil
+}
+
+func flush_interface_dns(luid winipcfg.LUID, cfg dns_state, family winipcfg.AddressFamily) error {
+	if cfg.has_guid {
+		empty, err := windows.UTF16PtrFromString("")
+		if err != nil {
+			return err
+		}
+		settings := &winipcfg.DnsInterfaceSettings{
+			Version:    winipcfg.DnsInterfaceSettingsVersion1,
+			Flags:      winipcfg.DnsInterfaceSettingsFlagNameserver | winipcfg.DnsInterfaceSettingsFlagSearchList,
+			NameServer: empty,
+			SearchList: empty,
+		}
+		if family == windows.AF_INET6 {
+			settings.Flags |= winipcfg.DnsInterfaceSettingsFlagIPv6
+		}
+		err = winipcfg.SetInterfaceDnsSettings(cfg.guid, settings)
+		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_NOT_FOUND) {
+			return nil
+		}
+		return err
+	}
+	err := luid.FlushDNS(family)
+	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_NOT_FOUND) {
+		return nil
+	}
+	return err
 }
 
 // flush_routes deletes every route on luid. It is winipcfg's FlushRoutes

@@ -78,17 +78,23 @@ const Baseline_samples = 5
 // it across a switch would compare a node in Germany against a node in
 // Singapore and call the second one degraded for being further away.
 type Baseline struct {
-	count int
-	total time.Duration
-	rtt   time.Duration
-	ready bool
+	target string
+	count  int
+	total  time.Duration
+	rtt    time.Duration
+	ready  bool
 }
 
 // Observe folds one more sample into the baseline. Samples after the
 // baseline is ready are ignored -- the baseline is frozen, not a moving
-// average.
+// average. A different measurement target starts a fresh baseline.
 func (b *Baseline) Observe(sample Sample) {
-	if b.ready {
+	if b.target != sample.Measurement_target {
+		*b = Baseline{target: sample.Measurement_target}
+	}
+	// A sample whose every attempt had to be resent measured no round
+	// trip; a zero here would lower the yardstick for the whole session.
+	if b.ready || sample.Rtt <= 0 {
 		return
 	}
 	b.count++
@@ -151,13 +157,9 @@ func Judge(sample Sample, baseline Baseline, thresholds Thresholds) Verdict {
 	if !sample.Tunnel_up || !sample.Internet_ok {
 		return Verdict_lost
 	}
-	if sample.Packet_loss > thresholds.Packet_loss {
+	detail := Degradation_of(sample, baseline, thresholds)
+	if detail.Failed_probes || detail.Resent_probes || detail.Udp_lost || detail.High_latency {
 		return Verdict_degraded
-	}
-	if baseline_rtt, ready := baseline.Rtt(); ready {
-		if sample.Rtt > time.Duration(float64(baseline_rtt)*thresholds.Latency_multiplier) {
-			return Verdict_degraded
-		}
 	}
 	return Verdict_healthy
 }

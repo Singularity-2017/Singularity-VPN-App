@@ -15,6 +15,7 @@ import (
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
+	"singularity-vpn-app/internal/evidence"
 	"singularity-vpn-app/internal/games"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/recovery"
@@ -55,16 +56,20 @@ type State_store interface {
 // clock and a real random id are the only pieces of this package that are
 // reasonable to assume in production and safe to fake in a test.
 type Dependencies struct {
-	Control_plane  Control_plane
-	Token          Token_source
-	Protocols      protocols.Manager
-	Prober         diagnostics.Prober
-	Policy         *recovery.Policy
-	Store          State_store
-	Bus            *events.Bus
-	Now            func() time.Time
-	New_session_id func() string
-	Config         Config
+	// Observers must be fast, memory-only and must not call back into Manager.
+	Event_observer  func(events.Event)
+	Sample_observer func(diagnostics.Sample)
+	Evidence        *evidence.Collector
+	Control_plane   Control_plane
+	Token           Token_source
+	Protocols       protocols.Manager
+	Prober          diagnostics.Prober
+	Policy          *recovery.Policy
+	Store           State_store
+	Bus             *events.Bus
+	Now             func() time.Time
+	New_session_id  func() string
+	Config          Config
 
 	// Logger receives the outcome of a network change. nil discards.
 	Logger *slog.Logger
@@ -101,17 +106,28 @@ var Err_busy = errors.New("connection: busy with another operation")
 // everything impure above is an interface, and every timer is a parameter,
 // not a clock read from inside.
 type Manager struct {
-	control_plane  Control_plane
-	token          Token_source
-	protocols      protocols.Manager
-	prober         diagnostics.Prober
-	policy         *recovery.Policy
-	store          State_store
-	bus            *events.Bus
-	now            func() time.Time
-	new_session_id func() string
-	config         Config
-	logger         *slog.Logger
+	event_observer       func(events.Event)
+	sample_observer      func(diagnostics.Sample)
+	evidence_loss_reason string
+	evidence_sleep_seen  bool
+	evidence             *evidence.Collector
+	evidence_session_id  string
+	evidence_started     time.Time
+	evidence_target      recovery.Target
+	evidence_mode        string
+	evidence_open        bool
+	evidence_last_tick   time.Time
+	control_plane        Control_plane
+	token                Token_source
+	protocols            protocols.Manager
+	prober               diagnostics.Prober
+	policy               *recovery.Policy
+	store                State_store
+	bus                  *events.Bus
+	now                  func() time.Time
+	new_session_id       func() string
+	config               Config
+	logger               *slog.Logger
 
 	// op_mu serializes Connect, Disconnect, Switch and Tick: they mutate
 	// one session and must never interleave. A Tick that arrives while a
@@ -119,12 +135,22 @@ type Manager struct {
 	// nothing to monitor yet.
 	op_mu sync.Mutex
 
+	probe_mu     sync.Mutex
+	probe_cancel context.CancelFunc
+	monitor      probe_schedule // guarded by op_mu
+
 	// abandon cancels the connect holding op_mu, if one is. A person's
 	// disconnect must not queue behind a connect that is waiting out a
 	// control plane that does not answer; it has its own lock because the
 	// whole point is to reach it while op_mu is held.
 	abandon_mu sync.Mutex
 	abandon    context.CancelFunc
+
+	// left_mu guards the profile this installation last stopped
+	// connecting with and when; see Left_recently.
+	left_mu      sync.Mutex
+	left_profile string
+	left_at      time.Time
 
 	// state_mu guards only state and session, so State() and Session() can
 	// answer a status query without waiting for a Connect that might take
@@ -139,8 +165,9 @@ type Manager struct {
 	// sample is the last successful probe of the current session, for a
 	// status query; has_sample is false until one exists, so nothing is
 	// ever reported for a tunnel that has not been measured yet.
-	sample     diagnostics.Sample
-	has_sample bool
+	sample      diagnostics.Sample
+	has_sample  bool
+	degradation diagnostics.Degradation
 
 	// The rest is only ever touched under op_mu.
 	mode            Mode
@@ -155,9 +182,12 @@ type Manager struct {
 	has_recommended bool
 	local_state     state.State
 
-	baseline                 diagnostics.Baseline
-	degraded_since           time.Time
-	degraded_since_set       bool
+	baseline           diagnostics.Baseline
+	degraded_since     time.Time
+	degraded_since_set bool
+	// degraded_pending is set by one bad sample on a connected tunnel and
+	// cleared by the next sample: a second bad one confirms degradation.
+	degraded_pending         bool
 	consecutive_probe_errors int
 
 	// retried_at is when a lost tunnel last came back on a retry of the
@@ -224,18 +254,21 @@ func New_manager(dependencies Dependencies) (*Manager, error) {
 	}
 
 	return &Manager{
-		logger:         dependencies.Logger,
-		control_plane:  dependencies.Control_plane,
-		token:          dependencies.Token,
-		protocols:      dependencies.Protocols,
-		prober:         dependencies.Prober,
-		policy:         dependencies.Policy,
-		store:          dependencies.Store,
-		bus:            dependencies.Bus,
-		now:            dependencies.Now,
-		new_session_id: dependencies.New_session_id,
-		config:         dependencies.Config.with_defaults(),
-		state:          State_disconnected,
+		event_observer:  dependencies.Event_observer,
+		sample_observer: dependencies.Sample_observer,
+		logger:          dependencies.Logger,
+		evidence:        dependencies.Evidence,
+		control_plane:   dependencies.Control_plane,
+		token:           dependencies.Token,
+		protocols:       dependencies.Protocols,
+		prober:          dependencies.Prober,
+		policy:          dependencies.Policy,
+		store:           dependencies.Store,
+		bus:             dependencies.Bus,
+		now:             dependencies.Now,
+		new_session_id:  dependencies.New_session_id,
+		config:          dependencies.Config.with_defaults(),
+		state:           State_disconnected,
 	}, nil
 }
 
@@ -285,20 +318,48 @@ func (m *Manager) Last_sample() (diagnostics.Sample, bool) {
 	return m.sample, m.has_sample
 }
 
+func (m *Manager) Degradation() diagnostics.Degradation {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return m.degradation
+}
+
+// Status_snapshot keeps a diagnosis with the sample and session it describes.
+// Reading them separately could combine two different monitoring passes.
+type Status_snapshot struct {
+	State       State
+	Session     Session
+	Has_session bool
+	Sample      diagnostics.Sample
+	Has_sample  bool
+	Degradation diagnostics.Degradation
+}
+
+func (m *Manager) Status_snapshot() Status_snapshot {
+	m.state_mu.RLock()
+	defer m.state_mu.RUnlock()
+	return Status_snapshot{State: m.state, Session: m.session, Has_session: m.has_session, Sample: m.sample, Has_sample: m.has_sample, Degradation: m.degradation}
+}
+
 func (m *Manager) set_session(session Session, ok bool) {
 	m.state_mu.Lock()
 	m.session = session
 	m.has_session = ok
 	m.sample = diagnostics.Sample{}
 	m.has_sample = false
+	m.degradation = diagnostics.Degradation{}
 	m.state_mu.Unlock()
 }
 
-func (m *Manager) set_sample(sample diagnostics.Sample) {
+func (m *Manager) set_sample(sample diagnostics.Sample, detail diagnostics.Degradation) {
 	m.state_mu.Lock()
 	m.sample = sample
 	m.has_sample = true
+	m.degradation = detail
 	m.state_mu.Unlock()
+	if m.sample_observer != nil {
+		m.sample_observer(sample)
+	}
 }
 
 // set_state moves the machine to to, publishing Kind_state_changed. A
@@ -332,7 +393,11 @@ func (m *Manager) publish(kind events.Kind, data any) {
 	if session, ok := m.Session(); ok {
 		session_id = session.Id
 	}
-	m.bus.Publish(events.Event{Kind: kind, At: m.now(), Session_id: session_id, Data: data})
+	event := events.Event{Kind: kind, At: m.now(), Session_id: session_id, Data: data}
+	if m.event_observer != nil {
+		m.event_observer(event)
+	}
+	m.bus.Publish(event)
 }
 
 // --- Connect -------------------------------------------------------------
@@ -341,6 +406,7 @@ func (m *Manager) publish(kind events.Kind, data any) {
 // the one the person picked, provisioning a profile if this installation
 // has none yet. CLIENT_CORE.md section 43, CLIENT_AUTO_SWITCH.md section 3.
 func (m *Manager) Connect(ctx context.Context, request Connect_request) error {
+	m.prepare_evidence(ctx)
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 	if err := m.connect_locked(ctx, request); err != nil {
@@ -357,6 +423,7 @@ func (m *Manager) Connect(ctx context.Context, request Connect_request) error {
 // nothing to disconnect, records its no, and the connect goes ahead anyway.
 // It reports whether it attempted anything.
 func (m *Manager) Connect_if_wanted(ctx context.Context, request Connect_request) (bool, error) {
+	m.prepare_evidence(ctx)
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -507,21 +574,18 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 	if fault != nil {
 		return recovery.Target{}, fault
 	}
-	m.alternatives = m.spoken(m.pinned_to_node(alternatives_from(recommendation.Alternatives)))
+	m.alternatives = m.recovery_offers(recommendation, target)
+	if m.evidence != nil {
+		m.evidence.Remember(ctx, recommendation.Evidence)
+	}
 	m.recommended = recommendation
 	m.has_recommended = true
 	return target, nil
 }
 
-// spoken_target is the recommendation if this build has an adapter for its
-// protocol, otherwise the first of its alternatives that this build can
-// speak and that the control plane has not seen freeze on this network.
-// The control plane recommends by what reaches the node from here -- on a
-// path that throttles plain WireGuard that is a protocol this build may not
-// have yet -- and it cannot be told what the client speaks. Choosing among
-// what it offered keeps the choice its own. An alternative it reports as
-// frozen connects and then stops passing traffic; bringing it up would only
-// end in a failed verification, so it is refused here with the reason.
+// spoken_target keeps a usable offered connection during reevaluation. Fresh
+// automatic choices prefer offered AmneziaWG on the selected node, respecting
+// protocol support, mode, frozen reports and local failure cooldowns.
 func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Target, *Fault) {
 	states := make([]string, 0, len(recommendation.Alternatives))
 	for _, alt := range recommendation.Alternatives {
@@ -543,60 +607,71 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 				Err: fmt.Errorf("connection: the picked server %s was asked for, and the control plane answered with %s instead; a control plane that does not know node_id is older than this build", pinned, recommendation.Node_id)}
 		}
 	}
+
 	recommended := recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}
-	if len(m.spoken(m.pinned_to_node([]recovery.Target{recommended}))) == 1 {
-		// Games alone need a protocol that can carry them alone; the same
-		// node over another one is still the node recommended.
-		if effective_mode(m.local_state) == Tunnel_games && !m.carries_alone(recommended.Protocol) {
-			if target, ok := m.games_target(recommended.Node_id, m.unfrozen(recommendation.Alternatives)); ok {
-				m.logger.Info("games go through the tunnel alone; using a protocol that can carry them so",
-					"node_id", target.Node_id, "recommended", recommended.Protocol, "protocol", target.Protocol)
-				return target, nil
-			}
-		}
-		return recommended, nil
+	node := recommendation.Node_id
+	if pinned := m.local_state.Strategy.Node_id; pinned != "" {
+		node = pinned
 	}
-	// The recommendation is a protocol this build does not speak, so any
-	// offered alternative is a guess. A tunnel that is up on one of them is
-	// better than a guess: switching to the first alternative would tear
-	// down a working connection for a goal it already meets.
+	offered := m.unfrozen(recommendation.Alternatives)
+	recommended_frozen := false
+	for _, alt := range recommendation.Alternatives {
+		if alt.Node == recommended.Node_id && alt.Protocol == recommended.Protocol && alt.State == state_frozen {
+			recommended_frozen = true
+		}
+	}
+	if !recommended_frozen {
+		offered = append([]recovery.Target{recommended}, offered...)
+	}
+	eligible := m.spoken(m.pinned_to_node(offered))
+	usable := func(target recovery.Target) bool {
+		return m.policy.Eligible(m.now(), target) && (effective_mode(m.local_state) != Tunnel_games || m.carries_alone(target.Protocol))
+	}
+	// Reevaluation keeps an offered working connection on the selected node.
 	if current := m.get_state(); current == State_connected || current == State_degraded {
-		for _, alt := range recommendation.Alternatives {
-			if alt.State != state_frozen && alt.Node == m.current.Node_id && alt.Protocol == m.current.Protocol {
-				return m.current, nil
+		for _, target := range eligible {
+			if target == m.current && target.Node_id == node && usable(target) {
+				return target, nil
 			}
 		}
 	}
-	// The protocol that last carried traffic on this node goes first. The
-	// offers come in the control plane's order, which knows nothing of
-	// this network: on the owner's (2026-10-21) plain WireGuard to one
-	// node handshakes and then passes nothing, and every connect spent
-	// four seconds failing it before reaching AmneziaWG, which works.
-	if last := m.local_state.Last_protocol; last != "" {
-		for _, alt := range recommendation.Alternatives {
-			target := recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol}
-			if alt.Node != m.local_state.Last_node_id || alt.Protocol != last || alt.State == state_frozen {
-				continue
+	// Fresh automatic choices prefer offered obfuscation on this same node.
+	for _, target := range eligible {
+		if target.Node_id == node && target.Protocol == "amneziawg" && usable(target) {
+			if target != recommended {
+				m.logger.Info("using an offered alternative this build speaks", "node_id", target.Node_id, "protocol", target.Protocol)
 			}
-			if len(m.spoken(m.pinned_to_node([]recovery.Target{target}))) == 1 {
-				m.logger.Info("using the offered protocol that worked last on this node", "node_id", target.Node_id, "protocol", target.Protocol, "state", alt.State)
-				return target, nil
-			}
+			return target, nil
+		}
+	}
+	for _, target := range eligible {
+		if target == recommended && target.Node_id == node && usable(target) {
+			return target, nil
+		}
+	}
+	for _, target := range eligible {
+		if target.Node_id == node && target.Node_id == m.local_state.Last_node_id && target.Protocol == m.local_state.Last_protocol && usable(target) {
+			m.logger.Info("using the offered protocol that worked last on this node", "node_id", target.Node_id, "protocol", target.Protocol)
+			return target, nil
+		}
+	}
+	for _, target := range prefer_obfuscated(eligible) {
+		if usable(target) {
+			m.logger.Info("using an offered alternative this build speaks", "node_id", target.Node_id, "protocol", target.Protocol)
+			return target, nil
 		}
 	}
 	frozen := []string{}
 	for _, alt := range recommendation.Alternatives {
 		target := recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol}
-		if len(m.spoken(m.pinned_to_node([]recovery.Target{target}))) == 0 {
-			continue
-		}
-		if alt.State == state_frozen {
+		if alt.State == state_frozen && len(m.spoken(m.pinned_to_node([]recovery.Target{target}))) > 0 {
 			frozen = append(frozen, alt.Protocol)
-			continue
 		}
-		m.logger.Info("using an offered alternative this build speaks", "node_id", target.Node_id, "protocol", target.Protocol, "state", alt.State)
-		return target, nil
 	}
+	if len(eligible) > 0 {
+		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect", Err: fmt.Errorf("connection: offered protocols are unavailable under the current mode or local failure cooldown")}
+	}
+
 	if len(frozen) > 0 {
 		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
 			Err: fmt.Errorf("connection: the control plane recommends %s for this network and has seen %s freeze on it (it connects, then stops passing traffic); this build speaks no protocol that gets through yet",
@@ -631,7 +706,7 @@ const retry_flap_window = time.Minute
 func (m *Manager) games_target(node string, offered []recovery.Target) (recovery.Target, bool) {
 	var on_node []recovery.Target
 	for _, t := range m.spoken(m.pinned_to_node(offered)) {
-		if t.Node_id == node && m.carries_alone(t.Protocol) {
+		if t.Node_id == node && m.carries_alone(t.Protocol) && m.policy.Eligible(m.now(), t) {
 			on_node = append(on_node, t)
 		}
 	}
@@ -646,7 +721,7 @@ func (m *Manager) games_target(node string, offered []recovery.Target) (recovery
 	})
 	if node == m.local_state.Last_node_id {
 		for _, t := range on_node {
-			if t.Protocol == m.local_state.Last_protocol {
+			if t.Protocol == m.local_state.Last_protocol && obfuscated_first(t.Protocol) == obfuscated_first(on_node[0].Protocol) {
 				return t, true
 			}
 		}
@@ -703,6 +778,9 @@ func (m *Manager) recommend_request() api.Recommend_request {
 		Route:     s.Route,
 		Client_id: m.local_state.Client_id,
 		Node_id:   s.Node_id,
+	}
+	if m.evidence != nil {
+		request.Network_context_id = m.evidence.Context_id(context.Background())
 	}
 	if len(m.local_state.Games) == 1 && !plays_direct(m.local_state) {
 		request.Game = m.local_state.Games[0]
@@ -762,8 +840,13 @@ func (m *Manager) create_profile(ctx context.Context, token string, request Conn
 	}
 	m.name_new_pc(ctx, token, profile.Client_id)
 
-	m.alternatives = m.pinned_to_node(alternatives_from(profile.Alternatives))
 	target := recovery.Target{Node_id: profile.Node_id, Protocol: profile.Protocol}
+	offers := api.Recommendation{Node_id: profile.Node_id, Protocol: profile.Protocol, Alternatives: profile.Alternatives}
+	if m.has_recommended {
+		offers = m.recommended
+		offers.Alternatives = append(append([]api.Alternative{}, m.recommended.Alternatives...), profile.Alternatives...)
+	}
+	m.alternatives = m.recovery_offers(offers, target)
 	config := api.Vpn_config{Config: profile.Config, Protocol: profile.Protocol, Expires_at: profile.Expires_at}
 	if want := profile_for(effective_mode(m.local_state)); want != "" {
 		// Create_profile hands back the full VPN config. The person chose
@@ -797,9 +880,11 @@ func (m *Manager) pinned_to_node(list []recovery.Target) []recovery.Target {
 func alternatives_from(list []api.Alternative) []recovery.Target {
 	targets := make([]recovery.Target, 0, len(list))
 	for _, alt := range list {
-		targets = append(targets, recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol})
+		if alt.State != state_frozen {
+			targets = append(targets, recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol})
+		}
 	}
-	return targets
+	return prefer_obfuscated(targets)
 }
 
 // protocol_timeout is how long protocol may take to connect: the
@@ -838,6 +923,7 @@ func (m *Manager) establish(ctx context.Context, target recovery.Target, config 
 		cancel()
 	}
 	if err != nil {
+		m.failed_observation(ctx, target, err, false)
 		return nil, classify_connect_error("connect", err)
 	}
 
@@ -852,6 +938,7 @@ func (m *Manager) establish(ctx context.Context, target recovery.Target, config 
 			}
 		}
 		_ = protocol.Disconnect(ctx)
+		m.failed_observation(ctx, target, err, true)
 		return nil, classify_verify_error("connect", err)
 	}
 
@@ -887,7 +974,7 @@ func (m *Manager) new_session(ctx context.Context, now time.Time, target recover
 // moment a tunnel is verified is the same regardless of which flow got
 // there.
 func (m *Manager) settle_connected(ctx context.Context, now time.Time, target recovery.Target, protocol protocols.Protocol, config api.Vpn_config, op string, completed events.Kind, completed_data any) error {
-	session, fault := m.new_session(ctx, now, target, protocol)
+	session, fault := m.new_session(ctx, m.now(), target, protocol)
 	if fault != nil {
 		return m.fail(now, fault)
 	}
@@ -897,6 +984,7 @@ func (m *Manager) settle_connected(ctx context.Context, now time.Time, target re
 	m.current_config = m.connection_config(target, config)
 	m.set_session(session, true)
 	m.baseline = diagnostics.Baseline{}
+	m.monitor = probe_schedule{}
 	m.degraded_since_set = false
 	m.consecutive_probe_errors = 0
 	m.last_reevaluation = now
@@ -910,6 +998,7 @@ func (m *Manager) settle_connected(ctx context.Context, now time.Time, target re
 		m.publish(events.Kind_error, &Fault{Kind: Fault_configuration, Op: op, Err: err})
 	}
 
+	m.established_observation(ctx, target)
 	m.set_state(State_connected)
 	m.publish(completed, completed_data)
 	return nil
@@ -938,6 +1027,7 @@ func (m *Manager) fail(now time.Time, fault *Fault) error {
 // written outside the lock, a "no" recorded while a connect was in flight
 // would be overwritten by that connect's save of the old "yes".
 func (m *Manager) Set_connect_on_start(want bool) error {
+	m.cancel_monitor_probe()
 	if !want {
 		// "Stay off" is said with a disconnect; it must not wait out the
 		// connect it is about to undo.
@@ -965,6 +1055,7 @@ func (m *Manager) Set_connect_on_start(want bool) error {
 // next recommendation; Apply_strategy moves a connection that is already
 // up.
 func (m *Manager) Set_strategy(strategy state.Strategy) error {
+	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -1052,6 +1143,7 @@ func plays_direct(local state.State) bool {
 // not one of the single selected game's, is refused before anything is
 // saved.
 func (m *Manager) Set_games(ids []string, region string) error {
+	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -1108,6 +1200,7 @@ func first(ids []string) string {
 // the tunnel is left as it was. A rebuild that does not come back is handed
 // to recovery like any other lost tunnel.
 func (m *Manager) Apply_games(ctx context.Context) error {
+	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 	// A companion no longer wanted goes before the rebuild, not after it:
@@ -1194,6 +1287,7 @@ func (m *Manager) Strategy() (state.Strategy, error) {
 // connection that is not up, or that the person pinned in manual mode, is
 // left alone: the next connect asks with the new strategy anyway.
 func (m *Manager) Apply_strategy(ctx context.Context) error {
+	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -1263,6 +1357,7 @@ func (m *Manager) Connect_on_start() (bool, error) {
 
 func (m *Manager) Disconnect(ctx context.Context) error {
 	m.abandon_connect()
+	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -1279,6 +1374,7 @@ func (m *Manager) Disconnect(ctx context.Context) error {
 		m.set_state(State_disconnecting)
 	}
 
+	m.end_observation(ctx, "manual", false)
 	m.stop_companion(ctx)
 	var fault *Fault
 	if m.protocol_handle != nil {
@@ -1333,6 +1429,7 @@ func (m *Manager) clear_session() {
 // something to implement "only after a safe strategy is defined" -- it is
 // not implemented here; a future stage that defines that strategy owns it.
 func (m *Manager) Switch(ctx context.Context, target recovery.Target) error {
+	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -1358,6 +1455,7 @@ func (m *Manager) Switch(ctx context.Context, target recovery.Target) error {
 // different state from "connected" even when the attempt finds nowhere to
 // go.
 func (m *Manager) switch_loop(ctx context.Context, now time.Time, target recovery.Target) error {
+	m.end_observation(ctx, "replaced", false)
 	token, err := m.token.Token(ctx)
 	if err != nil {
 		return m.fail(now, &Fault{Kind: Fault_authentication, Op: "switch", Err: err})
@@ -1399,6 +1497,7 @@ func (m *Manager) switch_loop(ctx context.Context, now time.Time, target recover
 // about it needs the control plane again. It reports true only if the
 // tunnel comes back up and verifies.
 func (m *Manager) retry_current(ctx context.Context) bool {
+	m.end_observation(ctx, "replaced", false)
 	// While the tunnel is being rebuilt it is not connected, and the
 	// window must not say it is: every rebuild -- a new split, another
 	// profile, a retry after a loss -- shows as switching until it is
@@ -1428,17 +1527,20 @@ func (m *Manager) retry_current(ctx context.Context) bool {
 		cancel()
 	}
 	if err != nil {
+		m.failed_observation(ctx, m.current, err, false)
 		m.logger.Warn("retry on the same node failed to connect", "node_id", m.current.Node_id, "protocol", m.current.Protocol, "err", err)
 		return false
 	}
 
 	if err := diagnostics.Verify(ctx, m.prober); err != nil {
+		m.failed_observation(ctx, m.current, err, true)
 		m.logger.Warn("retry on the same node failed verification", "node_id", m.current.Node_id, "protocol", m.current.Protocol, "err", err)
 		_ = protocol.Disconnect(ctx)
 		return false
 	}
 
 	m.protocol_handle = protocol
+	m.established_observation(ctx, m.current)
 	if m.get_state() == State_switching {
 		m.set_state(State_connected)
 	}
@@ -1465,6 +1567,7 @@ func (m *Manager) Tick(ctx context.Context, now time.Time) {
 // no tunnel up, or one still being established, it does nothing -- a connect
 // in progress resolves and pins on its own.
 func (m *Manager) Network_changed(ctx context.Context, now time.Time) {
+	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
@@ -1474,6 +1577,9 @@ func (m *Manager) Network_changed(ctx context.Context, now time.Time) {
 	}
 	// The repin and the pass share one hold of op_mu: Tick takes the same
 	// lock, so the pass is the lock-free body tick_locked.
+	m.monitor = probe_schedule{}
+	m.baseline = diagnostics.Baseline{}
+	m.degraded_since_set = false
 	if repinner, ok := m.protocol_handle.(protocols.Repinner); ok {
 		if err := repinner.Repin(ctx); err != nil {
 			m.logger.Warn("network changed; moving the endpoint route failed", "error", err)
@@ -1486,16 +1592,37 @@ func (m *Manager) Network_changed(ctx context.Context, now time.Time) {
 
 // tick_locked is Tick's body; the caller holds op_mu.
 func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
+	m.record_monitor_tick(now)
 	// Whatever the pass decides, the AntiZapret companion follows it.
 	defer m.keep_companion(ctx, now)
 	current := m.get_state()
 	if current != State_connected && current != State_degraded {
+		m.degraded_pending = false
 		return // nothing is being monitored outside these two states
 	}
 
-	sample, err := m.prober.Probe(ctx)
+	sample, err := m.monitor_probe(ctx)
 	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return
+		}
+		m.monitor.observe(now, false, m.config.Monitor_interval, m.config.Monitor_max_interval)
+		m.evidence_loss_reason = "unknown"
+		if errors.Is(err, diagnostics.Err_no_internet) {
+			m.evidence_loss_reason = "reachability_lost"
+		}
+		if errors.Is(err, diagnostics.Err_tunnel_down) {
+			m.evidence_loss_reason = "tunnel_stopped"
+		}
 		m.consecutive_probe_errors++
+		reason := "measurement_failed"
+		if errors.Is(err, diagnostics.Err_no_internet) {
+			reason = "no_internet"
+		}
+		if errors.Is(err, diagnostics.Err_tunnel_down) {
+			reason = "tunnel_down"
+		}
+		m.logger.Warn("connection probe failed", "reason", reason, "consecutive_failures", m.consecutive_probe_errors, "recovery_threshold", probe_errors_before_lost)
 		if m.consecutive_probe_errors < probe_errors_before_lost {
 			return // an unknown is not a reason to move a person's connection
 		}
@@ -1504,13 +1631,17 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		return
 	}
 	m.consecutive_probe_errors = 0
-	m.set_sample(sample)
-
 	m.baseline.Observe(sample)
+	detail := diagnostics.Degradation_of(sample, m.baseline, diagnostics.Default_thresholds())
+	m.set_sample(sample, detail)
 	verdict := diagnostics.Judge(sample, m.baseline, diagnostics.Default_thresholds())
+	m.monitor.observe(now, verdict == diagnostics.Verdict_healthy && sample.Dns_ok && m.baseline.Ready(), m.config.Monitor_interval, m.config.Monitor_max_interval)
 
+	pending := m.degraded_pending
+	m.degraded_pending = false
 	switch verdict {
 	case diagnostics.Verdict_healthy:
+		m.evidence_sleep_seen = false
 		if current == State_degraded {
 			m.degraded_since_set = false
 			m.set_state(State_connected) // no switch, no event beyond the state change
@@ -1518,12 +1649,21 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		m.maybe_reevaluate(ctx, now)
 
 	case diagnostics.Verdict_degraded:
-		if current != State_degraded {
+		// One bad sample on a healthy connection is a blip until the
+		// re-check, which a bad sample brings forward to the fast interval,
+		// agrees. A single dropped burst of packets must not paint the
+		// connection red; it is still counted and shown.
+		if current == State_connected && !pending {
+			m.degraded_pending = true
+			m.publish(events.Kind_connection_blip, detail)
+			return
+		}
+		if current != State_degraded || !m.degraded_since_set {
 			m.degraded_since = now
 			m.degraded_since_set = true
 			m.held_in_match = false
 			m.set_state(State_degraded)
-			m.publish(events.Kind_connection_degraded, nil)
+			m.publish(events.Kind_connection_degraded, detail)
 			return
 		}
 		if m.mode == Mode_auto && m.degraded_since_set && now.Sub(m.degraded_since) >= m.config.Recovery.Degradation_window {
@@ -1538,6 +1678,10 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		}
 
 	case diagnostics.Verdict_lost:
+		m.evidence_loss_reason = "reachability_lost"
+		if !sample.Tunnel_up {
+			m.evidence_loss_reason = "tunnel_stopped"
+		}
 		m.handle_lost(ctx, now)
 	}
 }
@@ -1547,6 +1691,10 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 // only a retry that itself fails is treated as a hard failure and handed to
 // recovery, and only in auto mode.
 func (m *Manager) handle_lost(ctx context.Context, now time.Time) {
+	if m.evidence != nil {
+		m.evidence.Network_changed(ctx)
+	}
+	m.end_observation(ctx, m.loss_observation_reason(now), true)
 	m.publish(events.Kind_connection_lost, nil)
 
 	flapping := m.retried_target == m.current && !m.retried_at.IsZero() && now.Sub(m.retried_at) < retry_flap_window
@@ -1654,10 +1802,8 @@ func (m *Manager) maybe_reevaluate(ctx context.Context, now time.Time) {
 
 // --- Run ---------------------------------------------------------------
 
-// Run drives Tick on Monitor_interval until ctx ends. It is the only place
-// in this package a real ticker exists, and no test calls it: every timer
-// this package owns is exercised by calling Tick with an explicit time
-// instead.
+// Run checks local tunnel health at Monitor_interval and spaces full probes
+// adaptively. Explicit Tick calls retain their unconditional probe semantics.
 func (m *Manager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(m.config.Monitor_interval)
 	defer ticker.Stop()
@@ -1665,8 +1811,9 @@ func (m *Manager) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case t := <-ticker.C:
-			m.Tick(ctx, t)
+		case <-ticker.C:
+			m.monitor_tick(ctx, m.now())
+			ticker.Reset(m.config.Monitor_interval)
 		}
 	}
 }
@@ -1677,4 +1824,42 @@ func obfuscated_first(protocol string) int {
 		return 0
 	}
 	return 1
+}
+
+// Reorder protocols within each node's existing offer slots, preserving node priority.
+func prefer_obfuscated(targets []recovery.Target) []recovery.Target {
+	for i := range targets {
+		for j := i + 1; j < len(targets); j++ {
+			if targets[i].Node_id == targets[j].Node_id && obfuscated_first(targets[j].Protocol) < obfuscated_first(targets[i].Protocol) {
+				targets[i], targets[j] = targets[j], targets[i]
+			}
+		}
+	}
+	return targets
+}
+
+// The recommended primary remains an offered fallback when automatic policy
+// selects an alternative. Explicit frozen reports override the primary offer.
+func (m *Manager) recovery_offers(recommendation api.Recommendation, chosen recovery.Target) []recovery.Target {
+	primary := recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}
+	frozen_primary := false
+	for _, alt := range recommendation.Alternatives {
+		if alt.Node == primary.Node_id && alt.Protocol == primary.Protocol && alt.State == state_frozen {
+			frozen_primary = true
+		}
+	}
+	offers := alternatives_from(recommendation.Alternatives)
+	if !frozen_primary {
+		offers = append([]recovery.Target{primary}, offers...)
+	}
+	seen := map[recovery.Target]bool{chosen: true}
+	kept := []recovery.Target{}
+	for _, candidate := range m.spoken(m.pinned_to_node(offers)) {
+		if seen[candidate] || (effective_mode(m.local_state) == Tunnel_games && !m.carries_alone(candidate.Protocol)) {
+			continue
+		}
+		seen[candidate] = true
+		kept = append(kept, candidate)
+	}
+	return prefer_obfuscated(kept)
 }

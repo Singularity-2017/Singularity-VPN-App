@@ -81,3 +81,27 @@ func Test_a_snapped_window_comes_off_once_the_pointer_has_gone_past_the_distance
 		t.Errorf("40 px away: left = %d, want 33", got.left)
 	}
 }
+
+func Test_place_height_keeps_the_frame_and_the_work_area(t *testing.T) {
+	area := win_rect{0, 0, 1920, 1040}
+	cases := []struct {
+		name               string
+		window             win_rect
+		client_now, target int32
+		top, bottom        int32
+	}{
+		{"grows downwards", win_rect{100, 100, 540, 640}, 500, 700, 100, 840},
+		{"shrinks from the bottom", win_rect{100, 100, 540, 840}, 700, 500, 100, 640},
+		{"moves up at the work area's end", win_rect{100, 500, 540, 1000}, 460, 700, 300, 1040},
+		{"no taller than the work area", win_rect{100, 100, 540, 640}, 500, 2000, 0, 1040},
+		{"on the bottom shrinks towards it", win_rect{100, 300, 540, 1040}, 700, 500, 500, 1040},
+		{"on the bottom grows up from it", win_rect{100, 500, 540, 1040}, 500, 700, 300, 1040},
+		{"filling the area keeps the top", win_rect{100, 0, 540, 1040}, 1000, 600, 0, 640},
+	}
+	for _, c := range cases {
+		top, bottom := place_height(c.window, area, c.client_now, c.target)
+		if top != c.top || bottom != c.bottom {
+			t.Errorf("%s: place_height = %d..%d, want %d..%d", c.name, top, bottom, c.top, c.bottom)
+		}
+	}
+}

@@ -16,7 +16,7 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Version,
+    [string]$Version = "",
     # Installations older than this apply the update without waiting for
     # the tunnel to be idle.
     [string]$Minimum = "",
@@ -29,6 +29,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'version.ps1')
 if (-not $Key) { $Key = Join-Path $root "local/release-keys/primary.key" }
 
 $color = -not $env:NO_COLOR -and -not [Console]::IsOutputRedirected
@@ -38,17 +39,17 @@ function say([string]$text, [string]$fg) {
 function fail([string]$text) { say $text "Red"; exit 1 }
 function command([string]$text) { say "    $text" "DarkGray" }
 
-$semver = '^v\d+\.\d+\.\d+$'
-if ($Version -notmatch $semver) { fail "version must look like v1.2.3, got '$Version'" }
+$semver = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+try { $version_info = Get-BuildVersion -Root $root -RequestedVersion $Version } catch { fail $_.Exception.Message }
+$Version = $version_info.Base
 if ($Minimum -and $Minimum -notmatch $semver) { fail "minimum must look like v1.2.3, got '$Minimum'" }
 if (-not (Test-Path $Key)) { fail "no release key at $Key" }
 
 Push-Location $root
 try {
-    # A dirty tree builds as vX.Y.Z-dirty, which is not a release and never
-    # updates itself. Untracked files do not make it dirty.
-    $dirty = & git status --porcelain --untracked-files=no
-    if ($dirty) { fail "the tree has uncommitted changes; commit or stash them first" }
+    if ($version_info.Dirty) { fail "the tree has uncommitted changes; commit or stash them first" }
+    $out = Join-Path $root "local/release-$Version"
+    if (Test-Path $out) { fail "$out already exists; a signed release is not overwritten" }
 
     $head = & git rev-parse HEAD
     $tagged = & git rev-parse -q --verify "refs/tags/$Version^{commit}"
@@ -59,10 +60,7 @@ try {
         say "tagged $Version" "Green"
     }
 
-    $described = & git describe --tags --dirty
-    if ($described -ne $Version) { fail "the build would be versioned '$described', not $Version" }
-
-    & (Join-Path $PSScriptRoot "build.ps1") -Setup
+    & (Join-Path $PSScriptRoot "build.ps1") -Setup -Version $Version -Release
     if ($LASTEXITCODE -ne 0) { fail "the build failed" }
 
     $out = Join-Path $root "local/release-$Version"

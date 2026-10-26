@@ -218,6 +218,15 @@ button { cursor: pointer; }
   display: flex; flex-direction: column; gap: 6px; user-select: text;
 }
 .journal-list li { display: flex; gap: 10px; font-size: 12px; line-height: 1.35; }
+/* In the narrow window the journal takes the room that is left and is the
+   first to give it back when the window is made shorter; everything above
+   it keeps its size. Measuring for a fit sees its natural height. */
+.window:not(.expanded):not(.measuring) .screen.main { min-height: 0; }
+.window:not(.expanded):not(.measuring) .screen.main > * { flex-shrink: 0; }
+.window:not(.expanded):not(.measuring) .choices:has(> #games > #journal:not([hidden])),
+.window:not(.expanded):not(.measuring) #games:has(> #journal:not([hidden])) { flex: 1 1 auto; min-height: 0; }
+.window:not(.expanded):not(.measuring) #games > .journal { flex: 1 1 auto; min-height: 0; }
+.window:not(.expanded):not(.measuring) #games > .journal .journal-list { flex: 1 1 auto; min-height: 0; }
 .journal-list .when { flex: none; width: 74px; color: var(--muted); }
 .journal-list .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .journal-list li.warn .what { color: var(--trouble); }
@@ -432,7 +441,7 @@ button { cursor: pointer; }
 .tip {
   position: fixed; z-index: 20; max-width: 260px; padding: 8px 10px;
   border-radius: 8px; border: 1px solid var(--line); background: #151a1e;
-  color: var(--text); font-size: 12px; line-height: 1.4;
+  color: var(--text); font-size: 12px; line-height: 1.4; white-space: pre-line;
   box-shadow: 0 10px 30px rgba(0,0,0,.5); pointer-events: none;
 }
 /* Text that carries a hint says so with a dotted underline; controls with
@@ -480,8 +489,8 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
 
 /* --- themes ----------------------------------------------------------------- */
 /* Chosen in the settings, for the ordinary window and for gamer mode each on
-   its own. A theme is a palette; a sharp theme also drops every rounding and
-   sets its words in Bahnschrift, which ships with Windows. */
+   its own. Gamer palettes use Bahnschrift, which ships with Windows.
+   Button geometry is independent of the palette and lives in themes.css. */
 
 :root[data-theme="graphite"] {
   --ground: #1c1d1f; --surface: #27292c; --inset: #161719; --line: #3b3e42;
@@ -514,31 +523,82 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
   --trouble: #ff5c45; --trouble-rgb: 255,92,69;
 }
 
-/* The sharp themes' ground carries a texture of its own. */
-:root[data-theme="berserk"] .window, :root[data-theme="toxin"] .window {
-  background:
-    repeating-linear-gradient(135deg, rgba(255,255,255,.018) 0 2px, transparent 2px 9px),
-    linear-gradient(180deg, var(--surface) -40%, var(--ground) 60%);
-}
-:root[data-theme="synthwave"] .window {
-  background:
-    repeating-linear-gradient(0deg, rgba(var(--accent-rgb),.05) 0 1px, transparent 1px 28px),
-    linear-gradient(180deg, #2a1550 -30%, var(--ground) 65%);
-}
-
 :root.sharp body { font-family: "Bahnschrift", "Segoe UI Variable Text", "Segoe UI", sans-serif; }
-:root.sharp *, :root.sharp *::before, :root.sharp *::after { border-radius: 0 !important; }
 :root.sharp ::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb),.45); background-clip: padding-box; }
 :root.sharp .server-label, :root.sharp .pop-title { letter-spacing: 2px; font-weight: 600; }
 :root.sharp .brand span, :root.sharp .game-name, :root.sharp .power span { text-transform: uppercase; letter-spacing: 1.5px; }
 :root.sharp .game-card { border-left: 3px solid var(--accent); }
 /* A square button has no arc to run round it: while connecting its edge
    glows and fades instead. */
-:root.sharp .power.busy::before {
+:root[data-shape="rounded-square"] .power.busy::before {
   border-color: var(--accent); animation: edge-glow 1.2s ease-in-out infinite;
   box-shadow: 0 0 18px rgba(var(--accent-rgb),.5), inset 0 0 12px rgba(var(--accent-rgb),.3);
 }
 @keyframes edge-glow { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  :root.sharp .power.busy::before { animation: none; opacity: .7; }
+  :root[data-shape="rounded-square"] .power.busy::before { animation: none; opacity: .7; }
 }
+.problem-row { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; }
+#compact-journal, #journal-title, #journal-retry { color: inherit; background: transparent; border: 1px solid var(--line, #444); border-radius: 8px; padding: 5px 10px; cursor: pointer; font: inherit; }
+#compact-journal[aria-expanded="true"] { color: var(--accent); border-color: currentColor; }
+#journal-title { align-self: flex-start; }
+#journal-title:disabled { border: 0; padding: 0; cursor: default; opacity: 1; }
+#journal-note { font-size: 12px; opacity: .7; }
+
+/* Replacing one interface element takes 100 ms, except reduced motion. */
+:root { --replace-duration: 100ms; }
+.bar { align-items: flex-start; flex-shrink: 0; }
+.brand { min-height: 34px; }
+.games { position: relative; }
+#sign-out { background: color-mix(in srgb, var(--warn) 20%, var(--surface)); color: var(--warn); }
+#sign-out:hover, #sign-out:focus-visible { background: color-mix(in srgb, var(--warn) 32%, var(--surface)); }
+.pop-level:not([hidden]), #help > :not([hidden]) { animation: content-enter var(--replace-duration) ease-out; }
+@keyframes content-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pop-level, #help > * { animation: none !important; } }
+
+.brand { flex-shrink: 0; }
+.brand > span { white-space: nowrap; }
+@media (max-width: 480px) { :root.sharp .brand span { letter-spacing: .6px; } }
+
+.power .power-caption { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.power #connection-duration { font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: .3px; text-transform: none; font-variant-numeric: tabular-nums; }
+#statistics-body { max-height: 55vh; overflow-y: auto; font-size: 12px; }
+button.blocks-line { text-align: left; border: 0; background: transparent; padding: 4px 0; color: var(--muted); font: inherit; }
+button.blocks-line:hover { color: var(--text); }
+#blocks-details { animation: content-enter var(--replace-duration) ease-out; }
+
+/* The services line and the journal share the bottom row. */
+.blocks-head { display: flex; align-items: center; gap: 10px; }
+.blocks-head .blocks-line { flex: 1; min-width: 0; }
+.blocks-head #compact-journal { flex: none; padding: 3px 10px; font-size: 12px; }
+
+
+/* Editing the services list, in place under the checks. */
+.blocks-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.services-editor { display: flex; flex-direction: column; gap: 8px; animation: content-enter var(--replace-duration) ease-out; }
+.services-add { display: flex; gap: 8px; }
+.services-add input { flex: 1; min-width: 0; min-height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--inset); color: var(--text); user-select: text; }
+.services-add input:focus { outline: none; border-color: var(--accent); }
+#blocks-rows .row { align-items: center; }
+.service-remove { flex: none; width: 24px; height: 24px; margin-left: auto; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; }
+.service-remove:hover:not(:disabled), .service-remove:focus-visible { color: var(--trouble); background: var(--hover); }
+#services-restore { align-self: flex-start; }
+@media (prefers-reduced-motion: reduce) { .services-editor { animation: none; } }
+.blocks .plain { min-height: 32px; padding: 0 12px; border-radius: 10px; font-size: 13px; }
+
+/* Measured for the window's height: the page at its natural size. */
+.window.measuring { flex: none; align-self: flex-start; height: auto; overflow: visible; }
+.window.measuring .screen { flex: none; }
+
+/* The header's round buttons are one size: help and settings match the
+   account circle. */
+.bar .icon {
+  width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); background: var(--surface);
+  color: var(--text); font-size: 15px; font-weight: 600;
+}
+.bar .icon:hover, .bar .icon[aria-expanded="true"] { border-color: var(--hot); color: var(--hot); background: var(--surface); }
+.bar .icon svg { width: 18px; height: 18px; }
+
+/* A single game's card stays modest. */
+.game-cover { min-height: 108px; }
+:root[data-shape="round"] .game-face { width: min(100%, 184px); }

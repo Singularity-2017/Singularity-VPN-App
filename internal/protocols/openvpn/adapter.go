@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,9 +73,10 @@ type Adapter struct {
 	// which Status takes, never is.
 	op sync.Mutex
 
-	mu       sync.Mutex
-	session  *session
-	progress progress
+	mu        sync.Mutex
+	session   *session
+	progress  progress
+	last_warn string
 }
 
 type session struct {
@@ -138,7 +140,7 @@ func (a *Adapter) arguments() []string {
 // read takes a log line into account and says whether it ended the
 // attempt or completed it.
 func (a *Adapter) read(line string) (fatal string, up bool) {
-	a.logger.Debug("openvpn", "line", redact(line))
+	a.log_event(line)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.progress.read(line)
@@ -157,6 +159,7 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 	busy := a.session != nil
 	if !busy {
 		a.progress = progress{}
+		a.last_warn = ""
 	}
 	a.mu.Unlock()
 	if busy {
@@ -201,7 +204,14 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 	for {
 		select {
 		case <-ctx.Done():
-			return fail(fmt.Errorf("openvpn: %s: %w", a.report_or("did not come up in time"), ctx.Err()))
+			cause := fmt.Errorf("openvpn: %s: %w", a.report_or("did not come up in time"), ctx.Err())
+			a.mu.Lock()
+			phase := a.progress.phase
+			a.mu.Unlock()
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) && (phase == phase_trying || phase == phase_answered) {
+				return fail(&protocols.Path_failure{Reason: "transport_timeout", Err: cause})
+			}
+			return fail(cause)
 		case line, ok := <-lines:
 			if !ok {
 				lines = nil // the output ended; Done says why
@@ -272,7 +282,7 @@ func (a *Adapter) report_or(otherwise string) string {
 // next Connect starts clean; after Disconnect it has nothing left to do.
 func (a *Adapter) watch(s *session, lines <-chan string) {
 	for line := range lines {
-		a.logger.Debug("openvpn", "line", redact(line))
+		a.log_event(line)
 		a.mu.Lock()
 		if a.session == s {
 			a.progress.read(line)
@@ -350,4 +360,32 @@ func (a *Adapter) Transport_report() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.progress.report()
+}
+
+// Log fixed event labels only; process output can contain pushed secrets or profile content.
+func (a *Adapter) log_event(line string) {
+	if strings.Contains(line, "PUSH_REPLY") {
+		return
+	}
+	for _, marker := range []string{"Initialization Sequence Completed", "Peer Connection Initiated with", "TCP connection established with", "UDPv4 link remote", "UDPv6 link remote"} {
+		if strings.Contains(line, marker) {
+			a.mu.Lock()
+			a.last_warn = ""
+			a.mu.Unlock()
+			a.logger.Info("openvpn state", "event", marker)
+			return
+		}
+	}
+	for _, marker := range append([]string{"Inactivity timeout", "ping-restart", "Connection reset", "Connection timed out", "SIGUSR1", "SIGTERM", "TLS handshake failed"}, fatal_markers...) {
+		if strings.Contains(line, marker) {
+			a.mu.Lock()
+			duplicate := a.last_warn == marker
+			a.last_warn = marker
+			a.mu.Unlock()
+			if !duplicate {
+				a.logger.Warn("openvpn event", "event", marker)
+			}
+			return
+		}
+	}
 }

@@ -170,10 +170,22 @@ type fake_reach_prober struct {
 	calls   atomic.Int32
 	enter   chan struct{}
 	release chan struct{}
+
+	mu    sync.Mutex
+	asked []reach.Target // the targets of the latest probe
+}
+
+func (p *fake_reach_prober) targets_asked() []reach.Target {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]reach.Target(nil), p.asked...)
 }
 
 func (p *fake_reach_prober) Probe(ctx context.Context, targets []reach.Target) ([]reach.Result, error) {
 	p.calls.Add(1)
+	p.mu.Lock()
+	p.asked = append([]reach.Target(nil), targets...)
+	p.mu.Unlock()
 	if p.enter != nil {
 		p.enter <- struct{}{}
 	}

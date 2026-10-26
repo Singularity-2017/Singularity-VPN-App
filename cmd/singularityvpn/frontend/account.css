@@ -1,0 +1,24 @@
+.account-plan { align-self: center; border: 1px solid var(--line); border-radius: 999px; padding: 5px 13px; background: var(--inset); color: var(--muted); font-size: 12px; }
+.account-plan:hover, .account-plan:focus-visible { color: var(--text); border-color: var(--accent); }
+.account-detail { display: flex; justify-content: space-between; gap: 16px; padding: 8px 12px; }
+.account-detail > :first-child { min-width: 0; }
+.account-detail > :last-child { text-align: right; white-space: nowrap; flex-shrink: 0; }
+.account-card { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.account-detail.fresh { animation: content-enter var(--replace-duration) ease-out; }
+@media (prefers-reduced-motion: reduce) { .account-detail.fresh { animation: none; } }
+#account-panel-body { max-height: min(55vh, 390px); overflow-y: auto; }
+#account-error { padding: 5px 12px; }
+#menu { max-height: calc(100vh - 100px); overflow-y: auto; }
+.account-card > .account-message { padding: 8px 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.bar-end { align-items: flex-start; }
+.header-account { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; }
+.header-account .account-plan { max-width: 200px; padding: 3px 8px; font-size: 10px; white-space: nowrap; border-color: transparent; background: linear-gradient(var(--inset), var(--inset)) padding-box, linear-gradient(110deg, #d886aa66, #ba91d566, #7caee166, #8fbea566, #d9bd8266) border-box; }
+.header-account .account-plan { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 1px 5px; }
+.plan-speed { white-space: nowrap; }
+@media (max-width: 480px) { .brand > span { font-size: 12px; } .header-account .account-plan { max-width: 160px; white-space: normal; text-align: center; } }
+@media (max-width: 420px) { .brand > span { display: none; } .header-account .account-plan { max-width: 140px; } }
+
+.brand-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
+.brand-stack .account-plan { align-self: flex-start; margin-left: 32px; border: 2px solid transparent; padding: 2px 9px; font-size: 10px; display: flex; flex-wrap: wrap; gap: 4px; max-width: 200px; background: linear-gradient(var(--inset), var(--inset)) padding-box, linear-gradient(110deg, #d886aa99, #ba91d599, #7caee199, #8fbea599, #d9bd8299) border-box; }
+#header-credits { border: 0; background: transparent; color: var(--muted); font-size: 12px; min-height: 34px; padding: 0 3px; }
+#header-credits:hover { color: var(--text); }

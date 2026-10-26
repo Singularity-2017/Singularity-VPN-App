@@ -18,11 +18,23 @@ param(
     # wintun.dll is taken from local/ or from the output directory, where
     # the stage 3 instructions put it; WinDivert from local/windivert/;
     # OpenVPN from local/openvpn/.
-    [switch]$Setup
+    [switch]$Setup,
+    [string]$Version = "",
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'version.ps1')
+$build_version = Get-BuildVersion -Root $root -RequestedVersion $Version -Release:$Release
+
+# A setup must never reuse programs from an earlier build in its output folder.
+# Even a caller asking for one target gets the complete installed payload.
+if ($Setup) {
+    foreach ($required_target in @('./cmd/svpn-service', './cmd/singularityvpn', './cmd/svpn-ctl', './cmd/svpn-swap')) {
+        if ($Target -notcontains $required_target) { $Target += $required_target }
+    }
+}
 
 $control_plane = ""
 $update_mirror = ""
@@ -38,20 +50,12 @@ if (Test-Path $env_file) {
     }
 }
 
-# A build from a source archive has no git history, and a fresh repository has
-# no commit. Version and commit then stay empty and the binary says so, rather
-# than claiming a version it cannot know.
-$version = ""
-$commit = ""
-if (Test-Path (Join-Path $root ".git")) {
-    # describe fails loudly when no tag exists yet, so ask first.
-    if (& git -C $root tag --list | Select-Object -First 1) {
-        $version = & git -C $root describe --tags --dirty
-        if ($LASTEXITCODE -ne 0) { $version = "" }
-    }
-    $commit = & git -C $root rev-parse --short HEAD
-    if ($LASTEXITCODE -ne 0) { $commit = "" }
-}
+# Every program, including the setup, receives this same resolved version.
+$version = $build_version.Version
+$commit = $build_version.Commit
+if (-not $env:NO_COLOR -and -not [Console]::IsOutputRedirected) {
+    Write-Host "version: $version" -ForegroundColor Green
+} else { Write-Host "version: $version" }
 
 $built_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 

@@ -3,6 +3,8 @@
 package wireguard
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -105,9 +107,26 @@ func (t *real_tunnel) Handle() platform.Tunnel_handle {
 // of the tunnel just closed is still being removed, and adapter_gone_step
 // how often it tries within that.
 const (
-	adapter_gone_wait = 3 * time.Second
+	adapter_gone_wait = 6 * time.Second
 	adapter_gone_step = 250 * time.Millisecond
 )
+
+// adapter_guid derives a deterministic GUID from the adapter's name so
+// Windows reuses one network profile and one Tcpip\Parameters\Interfaces
+// entry across connects instead of creating "Singularity 2", "Singularity 3"...
+// and bloating the NSI / Dnscache interface tables.
+func adapter_guid(name string) windows.GUID {
+	sum := sha256.Sum256([]byte("singularity-vpn/wintun/" + name))
+	return windows.GUID{
+		Data1: binary.LittleEndian.Uint32(sum[0:4]),
+		Data2: binary.LittleEndian.Uint16(sum[4:6]),
+		Data3: (binary.LittleEndian.Uint16(sum[6:8]) & 0x0fff) | 0x5000,
+		Data4: [8]byte{
+			(sum[8] & 0x3f) | 0x80,
+			sum[9], sum[10], sum[11], sum[12], sum[13], sum[14], sum[15],
+		},
+	}
+}
 
 // create_tun creates the adapter, waiting out the one just closed. A
 // rebuild on the same node closes the old adapter and creates one of the
@@ -115,9 +134,10 @@ const (
 // old one is fully gone -- seen on the owner's machine 2026-10-21, where
 // the first rebuild failed and the second, a moment later, came up.
 func create_tun(name string, mtu int) (tun.Device, error) {
+	guid := adapter_guid(name)
 	deadline := time.Now().Add(adapter_gone_wait)
 	for {
-		tun_device, err := tun.CreateTUN(name, mtu)
+		tun_device, err := tun.CreateTUNWithRequestedGUID(name, &guid, mtu)
 		// A missing wintun.dll can carry the same code; it does not go
 		// away by waiting.
 		if err == nil || !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || strings.Contains(err.Error(), "wintun.dll") || time.Now().After(deadline) {

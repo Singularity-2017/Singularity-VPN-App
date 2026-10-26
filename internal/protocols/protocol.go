@@ -92,3 +92,13 @@ type Manager interface {
 	Get(name string) (Protocol, error)
 	Available() []Protocol
 }
+
+// Path_failure is reserved for transport failures after local setup succeeded.
+// Configuration, authentication, adapter and route errors must not use it.
+type Path_failure struct {
+	Reason string
+	Err    error
+}
+
+func (e *Path_failure) Error() string { return e.Err.Error() }
+func (e *Path_failure) Unwrap() error { return e.Err }

@@ -253,12 +253,12 @@ func wait_for_analysis_event(t *testing.T, ch <-chan events.Event) {
 	}
 }
 
-func Test_a_network_change_with_the_tunnel_down_analyses_once_per_five_minutes(t *testing.T) {
+func Test_a_network_change_with_the_tunnel_down_analyses_once_per_day_per_network(t *testing.T) {
 	f := new_fixture(t)
 	sign_in(t, f)
 	with_catalog(f)
-	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	f.app.now = func() time.Time { return now }
+	network := with_network(f, "network-a")
+	clock := with_clock(f, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
 	ch, unsubscribe := f.bus.Subscribe()
 	defer unsubscribe()
 
@@ -271,28 +271,50 @@ func Test_a_network_change_with_the_tunnel_down_analyses_once_per_five_minutes(t
 		t.Fatal("the background run left no analysis behind")
 	}
 
-	now = now.Add(2 * time.Minute)
+	// Six minutes on the same network: what the old five-minute spacing
+	// would have measured again, and the day's rule does not.
+	clock.advance(6 * time.Minute)
 	f.app.Network_changed(context.Background())
 	time.Sleep(50 * time.Millisecond)
 	if got := f.reach_prober.calls.Load(); got != 1 {
-		t.Fatalf("probes 2 minutes later = %d, want still 1", got)
+		t.Fatalf("probes 6 minutes later on the same network = %d, want still 1", got)
 	}
 
-	now = now.Add(4 * time.Minute)
+	// Another network, a minute after: new, so measured at once.
+	clock.advance(time.Minute)
+	network.set("network-b")
 	f.app.Network_changed(context.Background())
 	wait_for_analysis_event(t, ch)
 	if got := f.reach_prober.calls.Load(); got != 2 {
-		t.Fatalf("probes 6 minutes after the first = %d, want 2", got)
+		t.Fatalf("probes on a new network = %d, want 2", got)
+	}
+
+	// Back on the first, still the same day: remembered.
+	clock.advance(time.Minute)
+	network.set("network-a")
+	f.app.Network_changed(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if got := f.reach_prober.calls.Load(); got != 2 {
+		t.Fatalf("probes back on a network measured today = %d, want still 2", got)
+	}
+
+	// A day after its measurement it is due again.
+	clock.advance(24 * time.Hour)
+	f.app.Network_changed(context.Background())
+	wait_for_analysis_event(t, ch)
+	if got := f.reach_prober.calls.Load(); got != 3 {
+		t.Fatalf("probes a day after the first = %d, want 3", got)
 	}
 }
 
-func Test_a_failed_background_analysis_still_spaces_the_next_one(t *testing.T) {
+func Test_a_failed_background_analysis_is_tried_again_at_the_next_change(t *testing.T) {
 	f := new_fixture(t)
 	sign_in(t, f)
 	with_catalog(f)
+	with_network(f, "network-a")
+	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	with_clock(f, start)
 	f.reach_prober.err = errors.New("no network")
-	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
-	f.app.now = func() time.Time { return now }
 
 	f.app.Network_changed(context.Background())
 	deadline := time.Now().Add(2 * time.Second)
@@ -301,22 +323,50 @@ func Test_a_failed_background_analysis_still_spaces_the_next_one(t *testing.T) {
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	now = now.Add(2 * time.Minute)
+	// A flapping link does not probe back to back.
+	f.reach_prober.err = nil
+	with_clock(f, start.Add(analysis_automatic_spacing-time.Second))
 	f.app.Network_changed(context.Background())
 	time.Sleep(50 * time.Millisecond)
 	if got := f.reach_prober.calls.Load(); got != 1 {
-		t.Fatalf("probes = %d, want 1: a failed run still counts as started", got)
+		t.Fatalf("probes = %d, want 1: an automatic run within the spacing of the last", got)
+	}
+
+	// A run that measured nothing marks nothing as measured.
+	with_clock(f, start.Add(analysis_automatic_spacing))
+	ch, unsubscribe := f.bus.Subscribe()
+	defer unsubscribe()
+	f.app.Network_changed(context.Background())
+	wait_for_analysis_event(t, ch)
+	if got := f.reach_prober.calls.Load(); got != 2 {
+		t.Fatalf("probes = %d, want 2: a failed run does not count as the day's measurement", got)
 	}
 }
 
 func Test_a_network_change_without_a_sign_in_analyses_nothing(t *testing.T) {
 	f := new_fixture(t)
 	with_catalog(f)
+	with_network(f, "network-a")
 
 	f.app.Network_changed(context.Background())
 	time.Sleep(50 * time.Millisecond)
 	if got := f.reach_prober.calls.Load(); got != 0 {
 		t.Fatalf("probes = %d, want none without a device token", got)
+	}
+}
+
+func Test_a_network_change_on_an_unknown_network_analyses_nothing(t *testing.T) {
+	f := new_fixture(t)
+	sign_in(t, f)
+	with_catalog(f)
+	network := with_network(f, "")
+
+	f.app.Network_changed(context.Background())
+	network.fail(errors.New("no route"))
+	f.app.Network_changed(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if got := f.reach_prober.calls.Load(); got != 0 {
+		t.Fatalf("probes = %d, want none while the network cannot be told", got)
 	}
 }
 
@@ -341,6 +391,7 @@ func Test_a_network_change_right_after_a_disconnect_is_the_tunnel_going_away(t *
 	f := new_fixture(t)
 	sign_in(t, f)
 	with_catalog(f)
+	with_network(f, "network-a")
 	connect(t, f)
 	if err := f.app.Disconnect(context.Background()); err != nil {
 		t.Fatalf("Disconnect: %v", err)

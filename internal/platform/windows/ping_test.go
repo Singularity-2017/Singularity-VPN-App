@@ -121,3 +121,30 @@ func Test_only_ipv4_is_probed(t *testing.T) {
 		t.Fatalf("Ping(no address) = %s, %v; want a refusal and no duration", rtt, err)
 	}
 }
+
+func Test_a_ping_snapshot_lasts_until_the_network_changes(t *testing.T) {
+	taken := time.Date(2026, 10, 26, 21, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		after      time.Duration
+		generation uint64
+		watched    bool
+		want       bool
+	}{
+		{"never taken", 0, 0, true, false},
+		{"one pass shares it", 500 * time.Millisecond, 9, false, true},
+		{"unchanged network keeps it", 30 * time.Second, 7, true, true},
+		{"a change retakes it", 30 * time.Second, 8, true, false},
+		{"no watch: only the pass", 30 * time.Second, 7, false, false},
+		{"nothing outlives the cap", ping_snapshot_max_age, 7, true, false},
+	}
+	for _, c := range cases {
+		at := taken
+		if c.name == "never taken" {
+			at = time.Time{}
+		}
+		if got := snapshot_current(at, 7, taken.Add(c.after), c.generation, c.watched); got != c.want {
+			t.Fatalf("%s: snapshot_current = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

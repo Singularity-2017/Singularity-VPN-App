@@ -13,7 +13,10 @@ package journal
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sync"
@@ -35,6 +38,11 @@ type Journal struct {
 	entries []Entry
 	next    int
 	full    bool
+
+	// path, when set, is where the journal outlives the service: written
+	// flush_delay after a change, and at once by Flush.
+	path      string
+	flush_set bool
 }
 
 // New makes a journal that keeps the newest size entries.
@@ -42,14 +50,88 @@ func New(size int) *Journal {
 	return &Journal{entries: make([]Entry, size)}
 }
 
-func (j *Journal) add(e Entry) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
+// flush_delay gathers the entries of one burst into one write.
+const flush_delay = 2 * time.Second
+
+// Stopped and ended are the last words of a service run. A journal read back
+// that ends in neither belongs to a run that never got to say them: the
+// machine lost power, or the service crashed.
+const (
+	Stopped            = "service stopped"
+	Stopped_with_error = "service stopped with an error"
+	Ended_unstopped    = "service ended without stopping"
+)
+
+// Open makes a journal kept in the file at path, starting from what the
+// last run left there. A file that is missing or unreadable starts empty:
+// the journal is a convenience, never a reason for the service not to run.
+func Open(path string, size int) *Journal {
+	j := New(size)
+	j.path = path
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return j
+	}
+	var saved []Entry
+	if json.Unmarshal(raw, &saved) != nil {
+		return j
+	}
+	for _, e := range saved {
+		j.put(e)
+	}
+	if n := len(saved); n > 0 && saved[n-1].Message != Stopped && saved[n-1].Message != Stopped_with_error {
+		// When it ended is not known; the last thing it said is when it
+		// was last heard from.
+		j.put(Entry{At: saved[n-1].At, Level: "warn", Message: Ended_unstopped})
+	}
+	return j
+}
+
+func (j *Journal) put(e Entry) {
 	j.entries[j.next] = e
 	j.next = (j.next + 1) % len(j.entries)
 	if j.next == 0 {
 		j.full = true
 	}
+}
+
+func (j *Journal) add(e Entry) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.put(e)
+	if j.path != "" && !j.flush_set {
+		j.flush_set = true
+		time.AfterFunc(flush_delay, func() { _ = j.Flush() })
+	}
+}
+
+// Flush writes the journal to its file now. A journal without one has
+// nothing to do.
+func (j *Journal) Flush() error {
+	if j.path == "" {
+		return nil
+	}
+	entries := j.List()
+	j.mu.Lock()
+	j.flush_set = false
+	j.mu.Unlock()
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(j.path), ".journal-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) // no-op once renamed
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), j.path)
 }
 
 // List is every entry kept, oldest first.
@@ -64,22 +146,23 @@ func (j *Journal) List() []Entry {
 
 // Operations are the log messages the journal keeps.
 var Operations = map[string]bool{
-	"service starting":                                         true,
-	"connect requested":                                        true,
-	"disconnect requested":                                     true,
-	"control plane recommendation":                             true,
+	"service starting":             true,
+	Stopped:                        true,
+	"connect requested":            true,
+	"disconnect requested":         true,
+	"control plane recommendation": true,
 	"using an offered alternative this build speaks":           true,
 	"using the offered protocol that worked last on this node": true,
-	"verification failed":                                      true,
-	"reconnected at start: the machine was left connected":     true,
-	"retry on the same node failed to connect":                 true,
-	"retry on the same node failed verification":               true,
-	"network changed; moving the endpoint route failed":        true,
-	"strategy set":                                             true,
-	"games set":                                                true,
-	"tunnel mode set":                                          true,
-	"game router started":                                      true,
-	"game router stopped":                                      true,
+	"verification failed": true,
+	"reconnected at start: the machine was left connected": true,
+	"retry on the same node failed to connect":             true,
+	"retry on the same node failed verification":           true,
+	"network changed; moving the endpoint route failed":    true,
+	"strategy set":        true,
+	"games set":           true,
+	"tunnel mode set":     true,
+	"game router started": true,
+	"game router stopped": true,
 	"game router: capture stopped; games go direct until the next connect": true,
 	"event": true,
 }
@@ -87,9 +170,12 @@ var Operations = map[string]bool{
 // Events are the event kinds kept from "event" records; the others repeat
 // what an operation above already says, or say nothing a person can use.
 var Events = map[string]bool{
+	"profile_changed":         true,
+	"network_changed":         true,
 	"connection_established":  true,
 	"connection_lost":         true,
 	"connection_degraded":     true,
+	"connection_blip":         true,
 	"switch_started":          true,
 	"switch_completed":        true,
 	"switch_failed":           true,
@@ -145,9 +231,14 @@ func (h *handler) WithGroup(name string) slog.Handler {
 	return &handler{next: h.next.WithGroup(name), journal: h.journal, attrs: h.attrs}
 }
 
-// keep reports a record the journal holds: a warning or an error always,
-// an informational record when it is an operation.
+// keep reports a record the journal holds: operational warnings and errors,
+// and informational records when they are operations. Probe diagnostics stay
+// in the file log; connection events report their operational consequence.
 func keep(r slog.Record) bool {
+	switch r.Message {
+	case "connection probe failed", "probe target measurement failed":
+		return false
+	}
 	if r.Level >= slog.LevelWarn {
 		return true
 	}

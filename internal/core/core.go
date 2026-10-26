@@ -7,13 +7,16 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"singularity-vpn-app/internal/statistics"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/connection"
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
+	"singularity-vpn-app/internal/evidence"
 	"singularity-vpn-app/internal/journal"
 	"singularity-vpn-app/internal/matchserver"
 	"singularity-vpn-app/internal/platform"
@@ -57,6 +60,20 @@ type Reach_prober interface {
 // production and safe to leave unfaked in a test that does not care about
 // them.
 type Dependencies struct {
+	Statistics_path     string
+	Analysis_cache_path string
+	// Analysis_networks_path is where the time of each network's last
+	// successful measurement is kept, by network key; empty keeps none.
+	Analysis_networks_path string
+	// Reach_list_path is where the person's edits to the service list are
+	// kept; empty keeps them in memory only.
+	Reach_list_path string
+	// Network_key names the network under the machine by a salted hash, for
+	// the once-a-day automatic measurement. nil, an error or an empty key
+	// mean the network is not known, and nothing is measured automatically;
+	// a manual measurement does not need it.
+	Network_key   func(ctx context.Context) (string, error)
+	Evidence      *evidence.Collector
 	Control_plane Control_plane
 	Secrets       security.Secure_store
 	Store         connection.State_store
@@ -82,18 +99,34 @@ type Dependencies struct {
 // to a real control plane, a real secure store and a real set of protocol
 // adapters, speaking ipc.Service to whatever serves the pipe.
 type Application struct {
-	manager       *connection.Manager
-	control_plane Control_plane
-	secrets       security.Secure_store
-	store         connection.State_store
-	bus           *events.Bus
-	device_name   string
-	logger        *slog.Logger
-	journal       *journal.Journal
-	now           func() time.Time
+	statistics_stop      chan struct{}
+	statistics_stop_once sync.Once
+	statistics_save_mu   sync.Mutex
+	statistics           *statistics.Store
+	statistics_error     atomic.Bool
+	analysis_cache_path  string
+	manager              *connection.Manager
+	control_plane        Control_plane
+	secrets              security.Secure_store
+	store                connection.State_store
+	bus                  *events.Bus
+	device_name          string
+	logger               *slog.Logger
+	journal              *journal.Journal
+	now                  func() time.Time
 
 	reach_prober Reach_prober
 	analysis     analysis_cache
+
+	// analysis_networks_path and network_key give the automatic runs their
+	// once-a-day rule; see analysis_due.
+	analysis_networks_path string
+	network_key            func(ctx context.Context) (string, error)
+
+	// reach_list_path and reach_list are the person's edits to the catalog
+	// the analysis probes; see compose_reach_list.
+	reach_list_path string
+	reach_list      reach_list_state
 
 	// pinger and resolve_ip4 are what Ping_servers measures with.
 	// resolve_ip4 is a field only so a test can answer a name without a
@@ -151,17 +184,24 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		now = time.Now
 	}
 
+	stats, stats_err := open_statistics(dependencies.Statistics_path, now)
+	if stats_err != nil {
+		logger.Warn("local statistics unavailable")
+	}
 	manager, err := connection.New_manager(connection.Dependencies{
-		Control_plane: dependencies.Control_plane,
-		Token:         &token_source{secrets: dependencies.Secrets},
-		Protocols:     dependencies.Protocols,
-		Prober:        dependencies.Prober,
-		Policy:        recovery.New_policy(recovery_config_with_defaults(dependencies.Config.Recovery)),
-		Store:         dependencies.Store,
-		Bus:           dependencies.Bus,
-		Now:           now,
-		Config:        dependencies.Config,
-		Logger:        logger,
+		Event_observer:  statistics_observer(stats),
+		Sample_observer: statistics_sample_observer(stats),
+		Control_plane:   dependencies.Control_plane,
+		Evidence:        dependencies.Evidence,
+		Token:           &token_source{secrets: dependencies.Secrets},
+		Protocols:       dependencies.Protocols,
+		Prober:          dependencies.Prober,
+		Policy:          recovery.New_policy(recovery_config_with_defaults(dependencies.Config.Recovery)),
+		Store:           dependencies.Store,
+		Bus:             dependencies.Bus,
+		Now:             now,
+		Config:          dependencies.Config,
+		Logger:          logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("core: building the connection manager: %w", err)
@@ -172,24 +212,34 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		matches, _ = matchserver.Open_store("")
 	}
 
-	return &Application{
-		manager:       manager,
-		control_plane: dependencies.Control_plane,
-		secrets:       dependencies.Secrets,
-		store:         dependencies.Store,
-		bus:           dependencies.Bus,
-		device_name:   dependencies.Device_name,
-		logger:        logger,
-		journal:       dependencies.Journal,
-		now:           now,
-		reach_prober:  dependencies.Reach_prober,
-		pinger:        dependencies.Pinger,
-		game_pinger:   dependencies.Game_pinger,
-		matches:       matchserver.New_detector(matches),
+	app := &Application{
+		statistics_stop:     make(chan struct{}),
+		statistics:          stats,
+		analysis_cache_path: dependencies.Analysis_cache_path,
+		manager:             manager,
+		control_plane:       dependencies.Control_plane,
+		secrets:             dependencies.Secrets,
+		store:               dependencies.Store,
+		bus:                 dependencies.Bus,
+		device_name:         dependencies.Device_name,
+		logger:              logger,
+		journal:             dependencies.Journal,
+		now:                 now,
+		reach_prober:        dependencies.Reach_prober,
+
+		analysis_networks_path: dependencies.Analysis_networks_path,
+		network_key:            dependencies.Network_key,
+		reach_list_path:        dependencies.Reach_list_path,
+
+		pinger:      dependencies.Pinger,
+		game_pinger: dependencies.Game_pinger,
+		matches:     matchserver.New_detector(matches),
 		resolve_ip4: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
 		},
-	}, nil
+	}
+	app.statistics_error.Store(stats_err != nil)
+	return app, nil
 }
 
 // recovery_config_with_defaults fills in every value the caller left unset,
@@ -229,12 +279,19 @@ func recovery_config_with_defaults(config recovery.Config) recovery.Config {
 // reboot puts them back where they were (design section 10). A person who
 // pressed disconnect stays disconnected.
 func (a *Application) Start(ctx context.Context) error {
+	if a.statistics != nil {
+		go a.checkpoint_statistics(ctx)
+	}
+	go a.manager.Run_evidence(ctx)
 	go func() {
 		_ = a.manager.Run(ctx)
 	}()
 	go a.resume(ctx)
 	if a.game_pinger != nil {
 		go a.measure_games(ctx)
+	}
+	if a.network_key != nil {
+		go a.watch_analysis(ctx)
 	}
 
 	channel, unsubscribe := a.bus.Subscribe()
@@ -249,6 +306,21 @@ func (a *Application) Start(ctx context.Context) error {
 					return
 				}
 				attrs := []any{"kind", string(event.Kind), "at", event.At, "session_id", event.Session_id}
+				if detail, ok := event.Data.(diagnostics.Degradation); ok && (event.Kind == events.Kind_connection_degraded || event.Kind == events.Kind_connection_blip) {
+					attrs = append(attrs, "degraded_latency", detail.High_latency, "degraded_probes", detail.Failed_probes, "loss_percent", detail.Packet_loss*100)
+					if detail.Resent_probes {
+						attrs = append(attrs, "degraded_resent", true, "resent_percent", detail.Resent*100)
+					}
+					if detail.Udp_lost {
+						attrs = append(attrs, "degraded_udp", true, "udp_loss_percent", detail.Udp_loss*100)
+					}
+					if detail.Rtt > 0 {
+						attrs = append(attrs, "rtt_ms", float64(detail.Rtt)/float64(time.Millisecond))
+					}
+					if detail.High_latency && detail.Baseline_rtt > 0 {
+						attrs = append(attrs, "baseline_rtt_ms", float64(detail.Baseline_rtt)/float64(time.Millisecond))
+					}
+				}
 				// Which node and protocol a tunnel came up on, while the
 				// session the event names is still the current one.
 				if s, ok := a.manager.Session(); ok && s.Id == event.Session_id {
@@ -277,6 +349,11 @@ func (a *Application) Stop(ctx context.Context) error {
 
 	err := a.manager.Disconnect(stop_ctx)
 	a.bus.Close()
+	if a.statistics != nil {
+		a.statistics_stop_once.Do(func() { close(a.statistics_stop) })
+		a.statistics.Finish()
+		a.save_statistics()
+	}
 	if err != nil {
 		return fmt.Errorf("core: stop: disconnecting: %w", err)
 	}

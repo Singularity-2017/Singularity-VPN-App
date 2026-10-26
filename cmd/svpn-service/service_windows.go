@@ -9,9 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -22,6 +25,7 @@ import (
 	"singularity-vpn-app/internal/buildinfo"
 	"singularity-vpn-app/internal/core"
 	"singularity-vpn-app/internal/events"
+	"singularity-vpn-app/internal/evidence"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/journal"
 	"singularity-vpn-app/internal/matchserver"
@@ -50,18 +54,27 @@ const (
 // plugged in) produces dozens of route and interface notifications.
 const network_settle = 3 * time.Second
 
+// tunnel_luids caches which LUIDs belong to this service's own tunnel
+// adapters. Caching avoids 80+ GetIfEntry2 (\Device\Nsi) kernel calls when
+// AntiZapret routes are added on the tunnel, and still recognises the tunnel's
+// LUID when its delete notifications arrive after the adapter is already gone.
+var tunnel_luids sync.Map
+
 // is_tunnel_adapter reports whether the interface is one this service
 // creates. Notifications about it are the service's own routes and addresses
-// being set or taken off, not a change of the network under it. The adapter
-// is found by its name; an interface that cannot be read any more (it is
-// being deleted) is not ours to ignore, and costs at most one debounced pass.
+// being set or taken off, not a change of the network under it.
 func is_tunnel_adapter(luid winipcfg.LUID) bool {
+	if cached, ok := tunnel_luids.Load(luid); ok {
+		return cached.(bool)
+	}
 	row, err := luid.Interface()
 	if err != nil {
 		return false
 	}
 	alias := row.Alias()
-	return alias == adapter_name || alias == openvpn_adapter_name
+	ours := alias == adapter_name || alias == openvpn_adapter_name
+	tunnel_luids.Store(luid, ours)
+	return ours
 }
 
 // The prober's targets. Both are outside the control plane on purpose: a
@@ -180,6 +193,7 @@ type running_service struct {
 	served      chan error
 	logger      *slog.Logger
 	log_file    io.Closer
+	operations  *journal.Journal
 
 	// network_changes debounces the watcher; stop_watching ends it. Both
 	// are nil when the watcher could not be started.
@@ -229,7 +243,9 @@ func start(console bool) (*running_service, error) {
 	if console {
 		log_out = io.MultiWriter(log_file, os.Stderr)
 	}
-	operations := journal.New(journal_size)
+	// The journal outlives the service, so the window shows when it last
+	// stopped -- or that it never got to.
+	operations := journal.Open(filepath.Join(p.root, "journal.json"), journal_size)
 	logger := slog.New(journal.Handler(slog.NewTextHandler(log_out, nil), operations))
 	logger.Info("service starting", build_attributes()...)
 	// A service that died connected left its DNS rule behind, pointing
@@ -306,11 +322,44 @@ func start(console bool) (*running_service, error) {
 	served := make(chan error, 1)
 	go func() { served <- serve(ctx, listener, application) }()
 
+	// A change on a physical adapter is a network change. One on a virtual
+	// adapter -- another VPN, Hyper-V or WSL restarting and rebuilding its
+	// routes -- counts only when it moved the physical path.
+	var path_mu sync.Mutex
+	var physical_touched atomic.Bool
+	// The one full read of the interface table: from here on every
+	// notification is classed from what it found.
+	if err := winplatform.Warm_hardware_interfaces(); err != nil {
+		logger.Warn("adapters not classified up front; each is read when it first changes", "error", err.Error())
+	}
+	path_now := winplatform.Physical_path_key()
 	network_changes := new_debouncer(network_settle, real_scheduler, func() {
+		touched := physical_touched.Swap(false)
+		path_mu.Lock()
+		before := path_now
+		path_mu.Unlock()
+		if !path_may_have_moved(touched, before) {
+			return
+		}
+		path := winplatform.Physical_path_key()
+		path_mu.Lock()
+		path_now = path
+		path_mu.Unlock()
+		if !network_moved(touched, before, path) {
+			return
+		}
 		logger.Info("network changed; repinning or re-analysing")
 		go application.Network_changed(ctx)
 	})
-	stop_watching, err := winplatform.Watch_network(is_tunnel_adapter, network_changes.Trigger)
+	stop_watching, err := winplatform.Watch_network(func(luid winipcfg.LUID) bool {
+		if is_tunnel_adapter(luid) {
+			return true
+		}
+		if winplatform.Is_hardware_interface(luid) {
+			physical_touched.Store(true)
+		}
+		return false
+	}, network_changes.Trigger)
 	if err != nil {
 		// Not fatal: the tunnel works without it, it just does not follow
 		// a network change on its own.
@@ -329,6 +378,7 @@ func start(console bool) (*running_service, error) {
 		served:          served,
 		logger:          logger,
 		log_file:        log_file,
+		operations:      operations,
 	}, nil
 }
 
@@ -411,8 +461,16 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 	adapters := []protocols.Protocol{adapter, wireguard.Amnezia{Adapter: adapter}}
 	tunnel_up := func() bool { return adapter.Status().Running }
 	probe_target := adapter.Probe_target
+	fallback_allowed := adapter.Full_probe_routes
 	if ovpn := openvpn_adapter(p, logger); ovpn != nil {
 		adapters = append(adapters, ovpn)
+		// Corroboration follows the main tunnel, including the shared Amnezia adapter.
+		fallback_allowed = func() bool {
+			if adapter.Status().Running {
+				return adapter.Full_probe_routes()
+			}
+			return ovpn.Status().Running && ovpn.Full_probe_routes()
+		}
 		tunnel_up = func() bool { return adapter.Status().Running || ovpn.Status().Running }
 		// The WireGuard tunnel, when it is up, is the one the connection
 		// is: OpenVPN may run beside it only to carry AntiZapret next to
@@ -434,7 +492,14 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Dial_target: probe_dial_target,
 		// A tunnel that carries only part of the traffic drops the
 		// static target; the adapter names one it does carry.
-		Dial_target_now: probe_target,
+		Dial_target_now:  probe_target,
+		Fallback_target:  "8.8.8.8:443",
+		Fallback_allowed: fallback_allowed,
+		// Games travel over UDP, so every probe measures it too; its
+		// answers also stand for the DNS check, which keeps the probe off
+		// the DNS Client service.
+		Udp_queries: platform.Default_udp_queries,
+		Logger:      logger,
 	})
 	if err != nil {
 		return nil, err
@@ -448,20 +513,56 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		matches = nil
 	}
 
+	var observations *evidence.Collector
+	// network_key names the network under the machine by the evidence store's
+	// salted hash, for the once-a-day automatic measurement. Without the store
+	// there is no salt to hash with, and nothing is measured automatically.
+	var network_key func(ctx context.Context) (string, error)
+	evidence_store, evidence_err := evidence.Open(filepath.Join(p.root, "connection-evidence.json"))
+	if evidence_err != nil {
+		logger.Warn("connection evidence store unavailable; connectivity is unaffected")
+	} else {
+		network_key = func(ctx context.Context) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			material := winplatform.Physical_network_key()
+			if material == "" {
+				return "", nil
+			}
+			return evidence_store.Fingerprint(material), nil
+		}
+		observations = evidence.New(evidence.Config{Store: evidence_store, Client: control_plane, Logger: logger,
+			Auth: func(ctx context.Context) (string, error) {
+				value, err := secrets.Get(security.Key_device_token)
+				return string(value), err
+			},
+			Capture: func(ctx context.Context) (string, *http.Client, error) {
+				return winplatform.Capture_network(ctx, buildinfo.Control_plane)
+			},
+		})
+	}
 	return core.New_application(core.Dependencies{
-		Control_plane: control_plane,
-		Secrets:       secrets,
-		Store:         store,
-		Protocols:     registry,
-		Prober:        prober,
-		Reach_prober:  reach.New_prober(reach.System_network{}),
-		Pinger:        winplatform.New_pinger(adapter_name, openvpn_adapter_name),
-		Game_pinger:   adapter,
-		Bus:           events.New_bus(0),
-		Device_name:   device_name(),
-		Logger:        logger,
-		Journal:       operations,
-		Matches:       matches,
+		Statistics_path:     filepath.Join(p.root, "statistics.json"),
+		Analysis_cache_path: filepath.Join(p.root, "analysis.json"),
+		// Beside analysis.json: when each network was last measured, by hashed key only.
+		Analysis_networks_path: filepath.Join(p.root, "analysis-networks.json"),
+		Network_key:            network_key,
+		Reach_list_path:        filepath.Join(p.root, "reach-list.json"),
+		Evidence:               observations,
+		Control_plane:          control_plane,
+		Secrets:                secrets,
+		Store:                  store,
+		Protocols:              registry,
+		Prober:                 prober,
+		Reach_prober:           reach.New_prober(reach.System_network{}),
+		Pinger:                 winplatform.New_pinger(adapter_name, openvpn_adapter_name),
+		Game_pinger:            adapter,
+		Bus:                    events.New_bus(0),
+		Device_name:            device_name(),
+		Logger:                 logger,
+		Journal:                operations,
+		Matches:                matches,
 	})
 }
 
@@ -525,6 +626,9 @@ func (r *running_service) stop() error {
 		r.logger.Error("service stopped with an error", "error", err.Error())
 	} else {
 		r.logger.Info("service stopped")
+	}
+	if err := r.operations.Flush(); err != nil {
+		r.logger.Warn("the journal was not saved", "error", err.Error())
 	}
 	r.log_file.Close()
 	if err != nil {

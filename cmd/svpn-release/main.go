@@ -134,6 +134,9 @@ func sign(args []string) error {
 	if _, ok := update.Parse_version(*version); !ok {
 		return fmt.Errorf("--version %q is not vX.Y.Z", *version)
 	}
+	if err := check_setup_version(*setup, *version); err != nil {
+		return err
+	}
 	private, err := read_key(*key_path)
 	if err != nil {
 		return err
@@ -145,6 +148,9 @@ func sign(args []string) error {
 	file_name := "SingularityVPN-setup-" + strings.TrimPrefix(*version, "v") + ".exe"
 	sum, size, err := copy_hashing(*setup, filepath.Join(*out, file_name))
 	if err != nil {
+		return err
+	}
+	if err := check_setup_version(filepath.Join(*out, file_name), *version); err != nil {
 		return err
 	}
 	manifest := update.Manifest{
@@ -204,6 +210,9 @@ func verify(dir string) error {
 	}
 	if sum != manifest.Setup.Sha256 {
 		return fmt.Errorf("%s does not match the manifest's sha256", manifest.Setup.File)
+	}
+	if err := check_setup_version(filepath.Join(dir, manifest.Setup.File), manifest.Version); err != nil {
+		return err
 	}
 	fmt.Printf("%s verifies against this build's keys\n", manifest.Version)
 	return nil

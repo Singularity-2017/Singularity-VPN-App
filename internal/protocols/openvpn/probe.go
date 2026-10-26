@@ -119,6 +119,9 @@ func (c carried) probe_target() string {
 // as the routing table decides.
 func (c carried) through(address netip.Addr) bool {
 	best, tunnel := -1, false
+	if c.whole {
+		best, tunnel = 0, true
+	}
 	for _, prefix := range c.routes {
 		if prefix.Contains(address) && prefix.Bits() > best {
 			best, tunnel = prefix.Bits(), true
@@ -142,4 +145,12 @@ func (a *Adapter) Probe_target() string {
 		return ""
 	}
 	return a.progress.carried.probe_target()
+}
+
+// Full_probe_routes confirms both public health targets use this full tunnel.
+func (a *Adapter) Full_probe_routes() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	c := a.progress.carried
+	return a.session != nil && c.whole && c.through(netip.MustParseAddr("1.1.1.1")) && c.through(netip.MustParseAddr("8.8.8.8"))
 }

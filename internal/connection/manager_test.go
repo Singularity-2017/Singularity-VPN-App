@@ -1,11 +1,14 @@
 package connection
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -661,6 +664,7 @@ func Test_connect_while_degraded_returns_err_busy(t *testing.T) {
 	}
 
 	env.prober.set([]prober_response{{sample: diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Packet_loss: 0.5}}})
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second)) // a blip; the next bad sample confirms it
 	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
 	if manager.State() != State_degraded {
 		t.Fatalf("State() = %v, want State_degraded", manager.State())
@@ -790,6 +794,7 @@ func Test_a_degraded_tick_enters_state_degraded_once_and_does_not_switch_before_
 	ch, unsubscribe := env.bus.Subscribe()
 	defer unsubscribe()
 
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second)) // a blip; the next bad sample confirms it
 	manager.Tick(context.Background(), env.clock.advance(40*time.Second))
 	if manager.State() != State_degraded {
 		t.Fatalf("State() = %v, want State_degraded", manager.State())
@@ -824,6 +829,7 @@ func Test_still_degraded_after_the_window_switches_with_reason_degraded(t *testi
 	degraded_sample := diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Packet_loss: 0.5}
 	env.prober.set([]prober_response{{sample: degraded_sample}})
 
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second))  // a blip; the next bad sample confirms it
 	manager.Tick(context.Background(), env.clock.advance(40*time.Second)) // enters degraded
 	manager.Tick(context.Background(), env.clock.advance(16*time.Second)) // window elapsed, still stable long enough
 
@@ -851,6 +857,7 @@ func Test_recovered_before_the_window_returns_to_connected_without_switching(t *
 
 	degraded_sample := diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Packet_loss: 0.5}
 	env.prober.set([]prober_response{{sample: degraded_sample}})
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second)) // a blip; the next bad sample confirms it
 	manager.Tick(context.Background(), env.clock.advance(40*time.Second))
 	if manager.State() != State_degraded {
 		t.Fatalf("State() = %v, want State_degraded", manager.State())
@@ -935,6 +942,8 @@ func Test_a_single_probe_error_changes_nothing_the_second_is_treated_as_lost(t *
 		t.Fatalf("Connect() error = %v", err)
 	}
 
+	var log_output bytes.Buffer
+	manager.logger = slog.New(slog.NewTextHandler(&log_output, nil))
 	probe_err := errors.New("probe: temporarily unreachable")
 	env.prober.set([]prober_response{{err: probe_err}})
 
@@ -952,6 +961,11 @@ func Test_a_single_probe_error_changes_nothing_the_second_is_treated_as_lost(t *
 	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
 	if !kind_list_contains(kinds_of(drain_events(ch)), events.Kind_connection_lost) {
 		t.Fatal("a second consecutive probe error was not treated as lost")
+	}
+	for _, count := range []string{"consecutive_failures=1", "consecutive_failures=2", "recovery_threshold=2"} {
+		if !strings.Contains(log_output.String(), count) {
+			t.Fatalf("missing counter %s: %s", count, &log_output)
+		}
 	}
 }
 
@@ -1092,6 +1106,7 @@ func Test_a_degraded_connection_with_nowhere_to_go_stays_degraded(t *testing.T) 
 
 	degraded_sample := diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Packet_loss: 0.5}
 	env.prober.set([]prober_response{{sample: degraded_sample}})
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second)) // a blip; the next bad sample confirms it
 	manager.Tick(context.Background(), env.clock.advance(40*time.Second))
 	manager.Tick(context.Background(), env.clock.advance(16*time.Second))
 

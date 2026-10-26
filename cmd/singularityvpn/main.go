@@ -34,9 +34,9 @@ func main() {
 	err = wails.Run(&options.App{
 		Title:     "Singularity VPN",
 		Width:     440,
-		Height:    800,
+		Height:    660,
 		MinWidth:  400,
-		MinHeight: 560,
+		MinHeight: 480,
 		// The window is a view onto the service. Closing it is "put it
 		// away", the way a tray application behaves; the tray's own menu
 		// is how the process ends.

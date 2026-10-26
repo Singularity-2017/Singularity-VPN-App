@@ -19,10 +19,10 @@ type Config struct {
 	// section 5.1 -- past this the protocol itself is a hard failure,
 	// independent of how much of Connect_timeout is left.
 	Protocol_timeout time.Duration
-	// Monitor_interval is how often Run calls Tick while a connection
-	// exists: 5s, the low end of the documented 5-10s, because a degraded
-	// connection is worth noticing sooner rather than later.
+	// Monitor_interval is the fast probe and local tunnel-health cadence.
 	Monitor_interval time.Duration
+	// Monitor_max_interval caps full probes after repeated healthy samples.
+	Monitor_max_interval time.Duration
 	// Reevaluation_interval is how often a healthy connection is offered a
 	// better option: 5m, the high end of the documented 2-5m, because an
 	// offer nobody asked for should be rare.
@@ -52,6 +52,12 @@ func (c Config) with_defaults() Config {
 	if c.Monitor_interval <= 0 {
 		c.Monitor_interval = defaults.Monitor_interval
 	}
+	if c.Monitor_max_interval <= 0 {
+		c.Monitor_max_interval = defaults.Monitor_max_interval
+	}
+	if c.Monitor_max_interval < c.Monitor_interval {
+		c.Monitor_max_interval = c.Monitor_interval
+	}
 	if c.Reevaluation_interval <= 0 {
 		c.Reevaluation_interval = defaults.Reevaluation_interval
 	}
@@ -79,6 +85,7 @@ func Default_config() Config {
 		Connect_timeout:       30 * time.Second,
 		Protocol_timeout:      5 * time.Second,
 		Monitor_interval:      5 * time.Second,
+		Monitor_max_interval:  60 * time.Second,
 		Reevaluation_interval: 5 * time.Minute,
 		Profile_duration_days: 30,
 		Recovery:              recovery.Default_config(),

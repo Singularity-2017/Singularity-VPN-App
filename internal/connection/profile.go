@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"singularity-vpn-app/internal/api"
+	"singularity-vpn-app/internal/events"
 )
 
 // Profile_book is the part of the control plane that lists and names the
@@ -118,17 +120,37 @@ func (m *Manager) Client_id() (string, error) {
 	return local.Client_id, nil
 }
 
+// left_profile_trace is how long a profile this installation stopped
+// connecting with can still read as connected. The control plane counts a
+// WireGuard peer online while its last handshake is under three minutes
+// old, and polls each node every thirty seconds; an OpenVPN client stays
+// listed until the server's keepalive gives up on it.
+const left_profile_trace = 4 * time.Minute
+
+// Left_recently says whether client_id is the profile this installation
+// stopped connecting with so recently that the control plane's "online"
+// for it may be this machine's own trace rather than another device.
+func (m *Manager) Left_recently(client_id string) bool {
+	m.left_mu.Lock()
+	defer m.left_mu.Unlock()
+	return client_id != "" && client_id == m.left_profile && m.now().Sub(m.left_at) < left_profile_trace
+}
+
 // Set_profile makes this installation connect with another of the
 // account's profiles. A tunnel that is up is rebuilt on the same node and
 // protocol with that profile's config; if the config cannot be had, the
 // tunnel stays as it was and the choice is still recorded for the next
 // connect. The caller checks that the profile is the account's.
-func (m *Manager) Set_profile(ctx context.Context, client_id string) error {
+func (m *Manager) Set_profile(ctx context.Context, client_id string) (result error) {
+	m.cancel_monitor_probe()
 	if client_id == "" {
 		return &Fault{Kind: Fault_configuration, Op: "set_profile", Err: errors.New("connection: no profile named")}
 	}
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	local, err := m.store.Load()
 	if err != nil {
@@ -137,11 +159,28 @@ func (m *Manager) Set_profile(ctx context.Context, client_id string) error {
 	if local.Client_id == client_id {
 		return nil
 	}
+	rebuilt := false
+	defer func() {
+		if result == nil && ctx.Err() == nil {
+			m.bus.Publish(events.Event{Kind: events.Kind_profile_changed, At: m.now()})
+			// The tunnel came back with the other profile's keys: a
+			// connection like any other, and the journal says where.
+			if rebuilt {
+				m.publish(events.Kind_connection_established, nil)
+			}
+		}
+	}()
+	left := local.Client_id
 	local.Client_id = client_id
 	if err := m.store.Save(local); err != nil {
 		return err
 	}
 	m.local_state = local
+	if left != "" {
+		m.left_mu.Lock()
+		m.left_profile, m.left_at = left, m.now()
+		m.left_mu.Unlock()
+	}
 
 	if state := m.get_state(); state != State_connected && state != State_degraded {
 		return nil
@@ -156,6 +195,7 @@ func (m *Manager) Set_profile(ctx context.Context, client_id string) error {
 	}
 	m.current_config = m.connection_config(m.current, config)
 	if m.retry_current(ctx) {
+		rebuilt = true
 		return nil
 	}
 	m.handle_lost(ctx, m.now())

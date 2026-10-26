@@ -9,6 +9,7 @@ import (
 
 	"singularity-vpn-app/internal/journal"
 	"singularity-vpn-app/internal/matchserver"
+	"singularity-vpn-app/internal/statistics"
 )
 
 // Pipe_name is the one address this protocol is spoken on.
@@ -362,9 +363,10 @@ type Analysis_result struct {
 }
 
 // Last_analysis answers Command_analysis: the last result, without probing.
-// Present is false when the service has none -- it is kept in memory only,
-// so a restart forgets it -- and Result is then absent rather than empty.
+// Present is false when no successful measurement is available. Restored
+// measurements and measurements predating a network change are marked stale.
 type Last_analysis struct {
+	Stale   bool             `json:"stale,omitempty"`
 	Present bool             `json:"present"`
 	Result  *Analysis_result `json:"result,omitempty"`
 }
@@ -457,8 +459,10 @@ type Sign_in_result struct {
 // time.Time -- encoding/json does not consider a zero time.Time empty, only
 // a nil pointer.
 type Status_result struct {
-	State     string `json:"state"`
-	Signed_in bool   `json:"signed_in"`
+	Statistics       *statistics.Snapshot `json:"statistics,omitempty"`
+	Statistics_error bool                 `json:"statistics_error,omitempty"`
+	State            string               `json:"state"`
+	Signed_in        bool                 `json:"signed_in"`
 
 	// Username and Device_name say who is signed in and as which device,
 	// for the account menu; present only while signed in, and Username
@@ -487,9 +491,23 @@ type Status_result struct {
 	// session, taken at Measured_at. All three are pointers for the same
 	// reason as Since: a session not yet measured has no numbers, and a
 	// zero would read as a perfect connection.
-	Rtt_ms       *float64   `json:"rtt_ms,omitempty"`
-	Loss_percent *float64   `json:"loss_percent,omitempty"`
-	Measured_at  *time.Time `json:"measured_at,omitempty"`
+	Rtt_ms           *float64   `json:"rtt_ms,omitempty"`
+	Loss_percent     *float64   `json:"loss_percent,omitempty"`
+	Measured_at      *time.Time `json:"measured_at,omitempty"`
+	Degraded_latency bool       `json:"degraded_latency,omitempty"`
+	Degraded_probes  bool       `json:"degraded_probes,omitempty"`
+	// Degraded_resent: probe connections got through only after TCP sent
+	// their SYN again; Resent_percent is how many of them did.
+	Degraded_resent bool     `json:"degraded_resent,omitempty"`
+	Resent_percent  *float64 `json:"resent_percent,omitempty"`
+	// Udp_rtt_ms and Udp_loss_percent come from the DNS queries the last
+	// probe sent over UDP; Degraded_udp says too many went unanswered.
+	// Udp_loss_percent rides with the sample, so the reason has its
+	// number whenever it is shown.
+	Udp_rtt_ms       *float64 `json:"udp_rtt_ms,omitempty"`
+	Udp_loss_percent *float64 `json:"udp_loss_percent,omitempty"`
+	Degraded_udp     bool     `json:"degraded_udp,omitempty"`
+	Baseline_rtt_ms  *float64 `json:"baseline_rtt_ms,omitempty"`
 
 	// Reason and Goals are how the control plane chose this node, under
 	// the same condition as Node_name.

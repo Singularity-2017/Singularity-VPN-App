@@ -19,6 +19,14 @@ type Secure_store interface {
 	Delete(key string) error
 }
 
+// Presence is the part of a store that can say a key is there without
+// reading its value. Telling whether someone is signed in needs no token,
+// and decrypting one takes a call into the system's security service,
+// which the window's status polling would otherwise make every few seconds.
+type Presence interface {
+	Has(key string) (bool, error)
+}
+
 // Err_not_found is what Get returns for a key that was never Set, or was
 // Deleted -- never an empty slice, so a caller cannot mistake "no secret"
 // for "an empty secret".
@@ -51,6 +59,14 @@ func (m *Memory_store) Get(key string) ([]byte, error) {
 	out := make([]byte, len(value))
 	copy(out, value)
 	return out, nil
+}
+
+func (m *Memory_store) Has(key string) (bool, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	_, ok := m.values[key]
+	return ok, nil
 }
 
 func (m *Memory_store) Set(key string, value []byte) error {
@@ -132,6 +148,21 @@ func (f *File_store) Get(key string) ([]byte, error) {
 		return nil, fmt.Errorf("security: decrypting value for %q: %w", key, err)
 	}
 	return plaintext, nil
+}
+
+// Has reads the file and says whether key is in it. Nothing is decrypted:
+// a value that is there but would not decrypt still counts as there, and
+// fails where it is used.
+func (f *File_store) Has(key string) (bool, error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	values, err := f.read()
+	if err != nil {
+		return false, err
+	}
+	_, ok := values[key]
+	return ok, nil
 }
 
 func (f *File_store) Set(key string, value []byte) error {
