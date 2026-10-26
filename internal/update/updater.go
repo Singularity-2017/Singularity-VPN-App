@@ -39,6 +39,7 @@ type Config struct {
 	Apply_poll       time.Duration // how often a staged update looks for idle; zero means a minute
 	Request_timeout  time.Duration // one manifest or signature fetch; zero means thirty seconds
 	Download_timeout time.Duration // one setup download; zero means thirty minutes
+	Stall_timeout    time.Duration // a download delivering nothing this long moves on; zero means a minute
 	Swap_grace       time.Duration // how long a launched swap has to stop the service; zero means ten minutes
 }
 
@@ -95,6 +96,7 @@ func New(config Config) (*Updater, error) {
 		{&config.Apply_poll, time.Minute},
 		{&config.Request_timeout, 30 * time.Second},
 		{&config.Download_timeout, 30 * time.Minute},
+		{&config.Stall_timeout, time.Minute},
 		{&config.Swap_grace, 10 * time.Minute},
 	}
 	for _, d := range defaults {
@@ -108,20 +110,62 @@ func New(config Config) (*Updater, error) {
 
 // channels lists where to look. The fallback is last: it is the one a
 // censor knows about in advance, being in every copy of the binary.
+// A mirror that is also the fallback is asked once.
 func (u *Updater) channels(state State) []Channel {
 	var list []Channel
+	add := func(c Channel) {
+		for _, have := range list {
+			if have.Name == c.Name {
+				return
+			}
+		}
+		list = append(list, c)
+	}
 	if u.config.Control_plane != "" {
-		list = append(list, Control_plane_channel(u.config.Control_plane))
+		add(Control_plane_channel(u.config.Control_plane))
 	}
 	for _, m := range state.Mirrors {
 		if mirror_ok(m) == nil {
-			list = append(list, Mirror_channel(m))
+			add(channel_for(m))
 		}
 	}
 	if u.config.Fallback != "" {
-		list = append(list, Mirror_channel(u.config.Fallback))
+		add(channel_for(u.config.Fallback))
 	}
 	return list
+}
+
+// download_order is where the setup with sha256 is fetched from: first a
+// channel whose bandwidth is free -- a code host's releases -- whose
+// manifest named this very setup in the same check, since answering is
+// the evidence it is reachable from here (the same version is not enough:
+// a version signed again over a new build would send tens of megabytes
+// down to be refused); then the channel that served the chosen manifest;
+// then the rest. A code host that did not answer is still tried, among
+// the rest: one failed fetch is not proof the next one fails too. The
+// setup is checked against the manifest, so where it comes from does not
+// matter for trust.
+func (u *Updater) download_order(state State, served_by Channel, sha256 string, served map[string]string) []Channel {
+	all := u.channels(state)
+	var order []Channel
+	add := func(c Channel) {
+		for _, have := range order {
+			if have.Name == c.Name {
+				return
+			}
+		}
+		order = append(order, c)
+	}
+	for _, c := range all {
+		if c.prefer && served[c.Name] == sha256 {
+			add(c)
+		}
+	}
+	add(served_by)
+	for _, c := range all {
+		add(c)
+	}
+	return order
 }
 
 // Check looks for a newer release and stages it. It reports whether one
@@ -152,12 +196,14 @@ func (u *Updater) Check(ctx context.Context) (bool, error) {
 	var best *Manifest
 	var best_channel Channel
 	var failures []error
+	served := map[string]string{} // channel name -> the sha256 of the setup its manifest names
 	for _, channel := range u.channels(state) {
 		manifest, err := u.fetch_manifest(ctx, channel)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", channel.Name, err))
 			continue
 		}
+		served[channel.Name] = manifest.Setup.Sha256
 		v, _ := Parse_version(manifest.Version)
 		if v.Less(highest) {
 			failures = append(failures, fmt.Errorf("%s: serves %s, older than what this installation has seen", channel.Name, manifest.Version))
@@ -185,7 +231,7 @@ func (u *Updater) Check(ctx context.Context) (bool, error) {
 	// reaches installations that are already up to date.
 	state.Highest_version = best.Version
 	state.Mirrors = best.Mirrors
-	staged, err := u.stage(ctx, &state, *best, best_channel)
+	staged, err := u.stage(ctx, &state, *best, u.download_order(state, best_channel, best.Setup.Sha256, served))
 	if serr := Save_state(u.config.Dir, state); serr != nil && err == nil {
 		err = serr
 	}
@@ -210,8 +256,9 @@ func (u *Updater) fetch_manifest(ctx context.Context, channel Channel) (Manifest
 }
 
 // stage downloads the release if it is newer than this build, newer than
-// or the same as anything already staged, and not a recent failure.
-func (u *Updater) stage(ctx context.Context, state *State, manifest Manifest, served_by Channel) (bool, error) {
+// or the same as anything already staged, and not a recent failure,
+// trying channels in order.
+func (u *Updater) stage(ctx context.Context, state *State, manifest Manifest, channels []Channel) (bool, error) {
 	latest, _ := Parse_version(manifest.Version)
 	if !u.current.Less(latest) {
 		return false, nil
@@ -245,19 +292,10 @@ func (u *Updater) stage(ctx context.Context, state *State, manifest Manifest, se
 	}
 
 	path := filepath.Join(u.config.Dir, manifest.Setup.File)
-	// The channel that served the chosen manifest is tried first, then
-	// the others: the artifact is checked against the manifest, so where
-	// it comes from does not matter.
-	channels := []Channel{served_by}
-	for _, c := range u.channels(*state) {
-		if c.Name != served_by.Name {
-			channels = append(channels, c)
-		}
-	}
 	var failures []error
 	for _, channel := range channels {
 		dctx, cancel := context.WithTimeout(ctx, u.config.Download_timeout)
-		err := download(dctx, u.config.Http_client, channel.artifact(manifest.Setup.File), manifest.Setup, path)
+		err := download(dctx, u.config.Http_client, channel.artifact(manifest.Version, manifest.Setup.File), manifest.Setup, path, u.config.Stall_timeout)
 		cancel()
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", channel.Name, err))

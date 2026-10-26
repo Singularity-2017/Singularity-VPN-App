@@ -151,6 +151,16 @@ Channels are tried in order, each with its own timeout:
    path there is, because a working tunnel means a working internet;
 4. GitHub releases, compiled in as the last resort.
 
+Every channel's manifest is asked; the setup itself — tens of megabytes — is
+fetched first from GitHub releases whenever GitHub served a manifest naming
+the same setup in the same check, because that bandwidth is free and the
+answer is the evidence GitHub is reachable from this network. Otherwise, or when that
+download fails or delivers nothing for a minute (the way DPI throttling
+looks), it comes from the control plane and then the mirrors. GitHub is
+named as `<repository>/releases/latest/download`, in the signed mirror list
+or as the compiled-in fallback; a build that predates the distinction reads
+the same address as a plain mirror.
+
 Verification is identical on every channel: manifest signature, then artifact
 hash, then Authenticode once a certificate exists.
 

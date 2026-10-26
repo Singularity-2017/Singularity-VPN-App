@@ -8,6 +8,11 @@
 #
 # The private key is read from local/release-keys/primary.key and never
 # printed.
+#
+# When UPDATE_MIRROR in local/app.env is a GitHub repository's
+# https://github.com/<owner>/<repo>/releases/latest/download, it also goes
+# into the signed mirror list, and publishing the GitHub release is one of
+# the printed steps.
 
 [CmdletBinding()]
 param(
@@ -65,6 +70,18 @@ try {
     $sign = @("sign", "--key", $Key, "--setup", (Join-Path $root "dist/SingularityVPN-setup.exe"), "--version", $Version, "--out", $out)
     if ($Minimum) { $sign += @("--minimum", $Minimum) }
     if ($Urgent) { $sign += "--urgent" }
+    $github = ""
+    $env_file = Join-Path $root "local/app.env"
+    if (Test-Path $env_file) {
+        foreach ($line in Get-Content $env_file) {
+            if ($line -match '^\s*UPDATE_MIRROR\s*=\s*(https://github\.com/([^/\s]+/[^/\s]+)/releases/latest/download)/?\s*$') {
+                $github = $Matches[2]
+                if ($Mirror -notcontains $Matches[1]) { $Mirror += $Matches[1] }
+            } elseif ($line -match '^\s*UPDATE_MIRROR\s*=.*github\.com') {
+                say "UPDATE_MIRROR names GitHub but not as https://github.com/<owner>/<repo>/releases/latest/download; it is not signed into the mirror list" "Yellow"
+            }
+        }
+    }
     foreach ($m in $Mirror) { $sign += @("--mirror", $m) }
     & go run ./cmd/svpn-release @sign
     if ($LASTEXITCODE -ne 0) { fail "signing failed" }
@@ -80,3 +97,12 @@ say "  1. publish the tag:"
 command "git push origin $Version"
 say "  2. publish it on the control plane, from its repository:"
 command "deploy app-release $out"
+if ($github) {
+    # The tag goes first: a release made for a tag GitHub does not have is
+    # tagged at whatever the default branch points to.
+    $setup_name = (Get-ChildItem -Path $out -Filter "SingularityVPN-setup-*.exe" | Select-Object -First 1).Name
+    if (-not $setup_name) { fail "no SingularityVPN-setup-*.exe in $out to publish on GitHub" }
+    say "  3. publish it on GitHub, $github (installations fetch the setup there first when GitHub answers):"
+    command "git push github $Version"
+    command "gh release create $Version `"$out/manifest.json`" `"$out/manifest.json.sig`" `"$out/$setup_name`" --repo $github --title $Version --notes $Version --verify-tag"
+}
