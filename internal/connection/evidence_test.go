@@ -7,6 +7,7 @@ import (
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/evidence"
+	"singularity-vpn-app/internal/state"
 	"testing"
 	"time"
 )
@@ -110,5 +111,32 @@ func Test_probe_blip_is_not_lifecycle_failure_confirmed_loss_is_once(t *testing.
 	rows := m.evidence.Local_summaries(ctx)
 	if len(rows) != 1 || rows[0].Evidence.Failures != 1 || rows[0].Evidence.Established != 2 {
 		t.Fatalf("recovery erased loss: %+v", rows)
+	}
+}
+
+func Test_observation_mode_is_the_effective_mode_named_as_observations_name_it(t *testing.T) {
+	cases := []struct {
+		name  string
+		saved state.State
+		want  string
+	}{
+		{"the default", state.State{}, "full"},
+		{"antizapret", state.State{Tunnel_mode: Tunnel_antizapret}, "selective"},
+		{"a game beats antizapret", state.State{Tunnel_mode: Tunnel_antizapret, Games: []string{"pubg"}}, "games"},
+		{"anonymity forces the whole tunnel", state.State{Tunnel_mode: Tunnel_antizapret, Strategy: state.Strategy{Anonymity: "high"}}, "full"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := new_test_env(t)
+			env.store.state = tc.saved
+			m := env.build()
+			got, err := m.Observation_mode()
+			if err != nil || got != tc.want {
+				t.Fatalf("Observation_mode() = %q, %v; want %q", got, err, tc.want)
+			}
+			if want := Evidence_mode(effective_mode(tc.saved)); got != want {
+				t.Fatalf("an observation would carry %q", want)
+			}
+		})
 	}
 }

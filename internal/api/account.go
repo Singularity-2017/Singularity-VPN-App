@@ -16,6 +16,11 @@ import (
 const account_timeout = 12 * time.Second
 const account_sections_timeout = 4 * time.Second
 
+// report_timeout is how long a problem report with attachments may take; the
+// window waits for the service for longer than this (cmd/singularityvpn
+// call_timeout).
+const report_timeout = 45 * time.Second
+
 type account_payments_response struct {
 	Payments []ipc.Account_payment
 	present  bool
@@ -349,6 +354,14 @@ func (c *Client) Spending_page(ctx context.Context, token, cursor string) (ipc.A
 }
 
 func (c *Client) Feedback(ctx context.Context, token string, params ipc.Feedback_params) (ipc.Feedback_result, error) {
+	return c.Report_problem(ctx, token, params, nil, "")
+}
+
+// Report_problem posts feedback together with the attachments of a problem
+// report: the diagnostics bundle and the service-log tail. The body is built
+// field by field, never from params, because params also carries the local
+// draft id, which means nothing to the server and must not leave the machine.
+func (c *Client) Report_problem(ctx context.Context, token string, params ipc.Feedback_params, diagnostics json.RawMessage, log string) (ipc.Feedback_result, error) {
 	var wire struct {
 		Accepted *bool  `json:"accepted"`
 		Code     string `json:"code"`
@@ -356,10 +369,33 @@ func (c *Client) Feedback(ctx context.Context, token string, params ipc.Feedback
 	if err := params.Validate(); err != nil {
 		return ipc.Feedback_result{}, err
 	}
-	params.Message = strings.TrimSpace(params.Message)
-	ctx, cancel := context.WithTimeout(ctx, account_timeout)
+	if (len(diagnostics) > 0 || log != "") && params.Kind != "problem" {
+		return ipc.Feedback_result{}, errors.New("api: only a problem report carries diagnostics")
+	}
+	if len(diagnostics) > 0 && !json.Valid(diagnostics) {
+		return ipc.Feedback_result{}, errors.New("api: the diagnostics are not JSON")
+	}
+	body := struct {
+		Kind        string          `json:"kind"`
+		Message     string          `json:"message"`
+		Diagnostics json.RawMessage `json:"diagnostics,omitempty"`
+		Log         string          `json:"log,omitempty"`
+	}{Kind: params.Kind, Message: strings.TrimSpace(params.Message), Diagnostics: diagnostics, Log: log}
+	// A report with its attachments is an upload of a few hundred kilobytes,
+	// over whatever link has been failing: it gets longer than a receipt for
+	// a sentence, per attempt as well as in all.
+	timeout, sender := account_timeout, c
+	if len(diagnostics) > 0 || log != "" {
+		timeout = report_timeout
+		if c.timeout < report_timeout {
+			longer := *c
+			longer.timeout = report_timeout
+			sender = &longer
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := c.do(ctx, "POST", "/api/v1/feedback", nil, token, params, &wire, false); err != nil {
+	if err := sender.do(ctx, "POST", "/api/v1/feedback", nil, token, body, &wire, false); err != nil {
 		return ipc.Feedback_result{}, err
 	}
 	if wire.Accepted == nil || !*wire.Accepted || strings.TrimSpace(wire.Code) == "" {

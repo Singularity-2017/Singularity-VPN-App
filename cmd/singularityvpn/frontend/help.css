@@ -6,4 +6,14 @@
 .feedback-form textarea, .feedback-form select { box-sizing: border-box; width: 100%; min-width: 0; background: var(--inset); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
 .feedback-form textarea { resize: vertical; max-height: 40dvh; }
 .feedback-status { line-height: 1.5; }
+/* What a problem report carries: one line to switch it off, the list
+   folded under it, and the whole of it folded once more. */
+.feedback-attach { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.feedback-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.feedback-note { color: var(--muted); }
+#help .feedback-attach details { padding: 0; border: 0; }
+.feedback-attach summary { color: var(--muted); }
+.feedback-attach ul { margin: 6px 0; padding-left: 18px; color: var(--muted); line-height: 1.45; }
+.feedback-attach b { color: var(--text); font-weight: 600; }
+.feedback-attach pre { max-height: 30dvh; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: 8px; background: var(--inset); font-size: 11px; white-space: pre-wrap; word-break: break-all; }
 #menu, #settings, #help { top: calc(100% + 8px); }

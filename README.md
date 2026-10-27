@@ -55,6 +55,15 @@ passing the desktop authentication token to the browser.
 Help opens FAQ and a feedback form. Failed submissions retain the draft; a
 successful submission returns its receipt code. Connection warnings report the
 actual measured cause (latency, failed TCP checks, or both) and available numbers.
+When the connection fails repeatedly without a network change, a "report a
+problem" button appears by the warning and opens the form with the message
+already written. A problem report can carry diagnostics the service gathers
+at that moment — the journal and the service log of the last two hours
+(secrets and IP addresses masked), adapter types, MTU and DNS classes without
+the machine's addresses, and optionally the programs that were in the
+foreground. All of it is shown before sending. The control plane counts a
+reported server and protocol as a failed session on that network, and the
+next automatic choice there prefers another usable offer.
 
 ## Connection measurements
 

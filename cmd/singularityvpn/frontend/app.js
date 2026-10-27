@@ -295,6 +295,10 @@
     const trouble = st === "degraded" ? window.health_text.degraded(status) : trouble_text[st] || "";
     $("trouble").hidden = !trouble;
     set_text("trouble", trouble);
+    // Failures nothing on this side explains are offered for a report until
+    // one is sent; a failure after it offers again.
+    const failures = status.failures;
+    $("report-problem").hidden = !(failures && failures.count && !(reported_at && Date.parse(failures.last) <= reported_at));
 
     // The information plate sits under the button, in the detailed mode.
     // Which server and how fast are on the server chip and not repeated here.
@@ -380,17 +384,17 @@
       }
     }
     $("chip").hidden = !title;
-    // Who chooses the server is said on the server itself. Until the
-    // strategy is known nothing claims to be automatic or not.
+    // Who chooses the server is said on the server itself, and only when it
+    // is not the person: a server picked by hand is the one named, which
+    // says so already. Until the strategy is known nothing claims to be
+    // automatic.
     const badge = $("chip-badge");
-    badge.hidden = strategy === null;
-    badge.className = "chip-badge" + (auto ? " auto" : "");
-    badge.textContent = !auto ? "Закреплён" : s.country ? "Авто" : "Авто · страна";
-    badge.dataset.tip = !auto
-      ? "Сервер выбран вами и не меняется сам. Чтобы снова выбирать автоматически, выберите в списке «Авто»."
-      : s.country
-        ? "Сервер в этой стране выбирается автоматически и меняется, если перестал работать. Чтобы закрепить, выберите сервер в списке."
-        : "Страна и сервер выбираются автоматически и меняются, если сервер перестал работать. Чтобы закрепить, выберите страну или сервер в списке.";
+    badge.hidden = strategy === null || !auto;
+    badge.className = "chip-badge auto";
+    badge.textContent = s.country ? "Авто" : "Авто · страна";
+    badge.dataset.tip = s.country
+      ? "Сервер в этой стране выбирается автоматически и меняется, если перестал работать. Чтобы закрепить, выберите сервер в списке."
+      : "Страна и сервер выбираются автоматически и меняются, если сервер перестал работать. Чтобы закрепить, выберите страну или сервер в списке.";
     $("chip").classList.toggle("auto", auto && strategy !== null);
     flag_into($("chip-flag"), code);
     set_text("place", title);
@@ -668,7 +672,9 @@
     }
     // A match ends when the tunnel moves to another server. Pinning the
     // server already connected to moves nothing.
-    const moves = ("node_id" in edit && edit.node_id !== live_node()) || ("country" in edit && edit.country !== strategy.country);
+    const live = view && view.status && view.status.session_id ? view.status.protocol || "" : "";
+    const moves = ("node_id" in edit && edit.node_id !== live_node()) || ("country" in edit && edit.country !== strategy.country) ||
+      ("protocol" in edit && edit.protocol && edit.protocol !== live);
     if (in_match && moves) {
       if (!(await ask("Идёт матч. Сменить сервер? Матч прервётся.", "Сменить"))) return;
     }
@@ -724,6 +730,14 @@
     el.hidden = !note;
     el.textContent = note;
     if (tip) el.dataset.tip = tip; else delete el.dataset.tip;
+
+    // The protocol is part of the strategy: it shows once the strategy is
+    // known, "Авто" standing for none picked by hand.
+    $("protocol").hidden = strategy === null;
+    for (const b of $("protocol").querySelectorAll("[data-protocol]")) {
+      b.setAttribute("aria-checked", b.dataset.protocol === (s.protocol || "") ? "true" : "false");
+      b.disabled = busy;
+    }
   }
 
   async function change_tunnel(mode) {
@@ -837,6 +851,7 @@
       case "network changed; moving the endpoint route failed": return ["Сеть изменилась, а маршрут к серверу перенести не удалось", "warn", a.error];
       case "strategy set": {
         const parts = [a.node_id ? "сервер закреплён: " + node_label(a.node_id) : "сервер — автоматически"];
+        if (a.protocol) parts.push("протокол: " + (protocol_names[a.protocol] || a.protocol));
         if (a.route === "true") parts.push("самый быстрый маршрут");
         if (a.bypass === "true") parts.push("обход блокировок");
         if (a.anonymity) parts.push("анонимность: " + (level_text[a.anonymity] || a.anonymity).toLowerCase());
@@ -1822,6 +1837,33 @@
 
   // The build is the application's, not the account's: it is said in the
   // settings, and only what the build supplied.
+  // reported_at is when a problem report with diagnostics was last sent:
+  // the failures it covered are not offered again.
+  let reported_at = 0;
+  try { reported_at = Number(localStorage.getItem("report.sent_at")) || 0; } catch (e) {}
+  window.problem_reported = () => {
+    reported_at = Date.now();
+    try { localStorage.setItem("report.sent_at", String(reported_at)); } catch (e) {}
+    render();
+  };
+
+  // report_place is where the failures happened, in the words of the chip.
+  function report_place(status) {
+    if (!status.session_id) return "";
+    const c = country_of(status.country);
+    const short = c.name ? short_name(status.node_name, status.country, status.city) : "";
+    const server = c.name ? c.name + (short ? " · " + short : "") : status.node_name || "";
+    const mode = { antizapret: "Антизапрет", vpn: "VPN", games: "только игры" }[status.tunnel] || "";
+    return "Сервер: " + [server, protocol_label(status.protocol), mode].filter(Boolean).join(", ");
+  }
+
+  function open_problem_report() {
+    const status = (view && view.status) || {};
+    close_pops();
+    open_pop("help", "help-button");
+    window.help_ui.report_problem(window.report_ui.message(status.failures, report_place(status)));
+  }
+
   // app_version is what the build supplied, for the changelog to mark.
   let app_version = "";
   async function load_version() {
@@ -1899,6 +1941,12 @@
     // $("goal-anonymity").addEventListener("click", open_levels);
     for (const b of $("mode").querySelectorAll("[data-mode]")) {
       b.addEventListener("click", () => change_tunnel(b.dataset.mode));
+    }
+    // It opens the help pop from outside it; the click must not go on to
+    // the handler that closes a pop clicked outside of.
+    $("report-problem").addEventListener("click", (e) => { e.stopPropagation(); open_problem_report(); });
+    for (const b of $("protocol").querySelectorAll("[data-protocol]")) {
+      b.addEventListener("click", () => { if (b.dataset.protocol !== ((strategy && strategy.protocol) || "")) change({ protocol: b.dataset.protocol }); });
     }
     // for (const b of $("levels").querySelectorAll("[data-level]")) {
     //   b.addEventListener("click", () => change({ anonymity: b.dataset.level }));

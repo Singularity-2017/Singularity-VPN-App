@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"singularity-vpn-app/internal/api"
@@ -64,6 +65,9 @@ func (a *Application) Feedback(ctx context.Context, params ipc.Feedback_params) 
 	if err := params.Validate(); err != nil {
 		return ipc.Feedback_result{}, err
 	}
+	if params.Draft != "" {
+		return a.send_problem_draft(ctx, params)
+	}
 	writer, ok := a.control_plane.(interface {
 		Feedback(context.Context, string, ipc.Feedback_params) (ipc.Feedback_result, error)
 	})
@@ -76,4 +80,44 @@ func (a *Application) Feedback(ctx context.Context, params ipc.Feedback_params) 
 	}
 	result, err := writer.Feedback(ctx, token, params)
 	return result, map_error(err)
+}
+
+// The control plane reader of problem reports, like the others above, is
+// found by shape; pin it to the real client.
+var _ interface {
+	Report_problem(context.Context, string, ipc.Feedback_params, json.RawMessage, string) (ipc.Feedback_result, error)
+} = (*api.Client)(nil)
+
+// send_problem_draft sends a problem report with the diagnostics and the log
+// tail the person was shown in the draft. The draft is taken out of the store
+// before it is posted, so two sends of it cannot both go out, and put back if
+// the send fails, so sending again is one press, until it expires.
+func (a *Application) send_problem_draft(ctx context.Context, params ipc.Feedback_params) (ipc.Feedback_result, error) {
+	draft, ok := a.drafts.take(params.Draft, a.now())
+	if !ok {
+		return ipc.Feedback_result{}, err_draft_expired
+	}
+	sent := false
+	defer func() {
+		if !sent {
+			a.drafts.put(params.Draft, draft, a.now())
+		}
+	}()
+
+	writer, ok := a.control_plane.(interface {
+		Report_problem(context.Context, string, ipc.Feedback_params, json.RawMessage, string) (ipc.Feedback_result, error)
+	})
+	if !ok {
+		return ipc.Feedback_result{}, errors.New("core: this control plane does not submit problem reports")
+	}
+	token, err := (&token_source{secrets: a.secrets}).Token(ctx)
+	if err != nil {
+		return ipc.Feedback_result{}, map_error(err)
+	}
+	result, err := writer.Report_problem(ctx, token, params, draft.diagnostics, draft.log)
+	if err != nil {
+		return result, map_error(err)
+	}
+	sent = true
+	return result, nil
 }

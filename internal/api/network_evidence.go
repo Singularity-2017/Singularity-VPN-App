@@ -56,6 +56,10 @@ type Connection_evidence struct {
 	Transfer_samples     int       `json:"transfer_samples"`
 	Observer_unavailable int       `json:"observer_unavailable"`
 	Counter_resets       int       `json:"counter_resets"`
+	// Reported counts the sessions the person sent a problem report about;
+	// each is already one of Failures. A control plane older than reports
+	// sends none.
+	Reported int `json:"reported,omitempty"`
 }
 
 type Observation_ack struct {

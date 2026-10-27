@@ -142,7 +142,13 @@
           <button role="radio" aria-checked="false" data-mode="vpn" data-tip="Весь трафик компьютера идёт через сервер.">VPN</button>
         </div>
         <span class="mode-note" id="mode-note" hidden></span>
-        <div class="problem-row"><div class="trouble-line" id="trouble" hidden></div></div>
+        <div class="segment protocol-pick" id="protocol" role="radiogroup" aria-label="Протокол" hidden>
+          <button role="radio" aria-checked="false" data-protocol="" data-tip="Протокол подбирается под вашу сеть и меняется сам, если перестал проходить.">Авто</button>
+          <button role="radio" aria-checked="false" data-protocol="amneziawg" data-tip="WireGuard с маскировкой: его труднее распознать и заблокировать.">AmneziaWG</button>
+          <button role="radio" aria-checked="false" data-protocol="wireguard" data-tip="Самый быстрый, но его легче всего распознать и заблокировать.">WireGuard</button>
+          <button role="radio" aria-checked="false" data-protocol="openvpn" data-tip="Медленнее других, но иногда проходит там, где они не проходят. Ведёт весь трафик компьютера: игры с ним ускоряются через полный VPN.">OpenVPN</button>
+        </div>
+        <div class="problem-row"><div class="trouble-line" id="trouble" hidden></div><button type="button" class="report-problem" id="report-problem" data-tip="Связь сбоила без видимой причины: сеть не менялась. Сообщение уже написано, к нему приложатся журнал, сведения о сети и лог службы — перед отправкой видно, что именно." hidden>Сообщить о сбое</button></div>
         <div class="error" id="action-error" role="alert" hidden></div>
       </div>
 
@@ -168,8 +174,7 @@
         <button class="chip" id="chip" aria-haspopup="listbox" aria-expanded="false">
           <span class="chip-flag" id="chip-flag"></span>
           <span class="chip-text">
-            <span class="chip-title"><span class="chip-name" id="place"></span><span class="chip-badge" id="chip-badge" hidden></span></span>
-            <span class="chip-sub" id="chip-sub" hidden></span>
+            <span class="chip-title"><span class="chip-name" id="place"></span><span class="chip-sub" id="chip-sub" hidden></span><span class="chip-badge" id="chip-badge" hidden></span></span>
             <span class="chip-sub" id="reason" hidden></span>
           </span>
           <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -262,6 +267,7 @@
 <script src="health.js"></script>
 <script src="themes.js"></script>
 <script src="account.js"></script>
+<script src="report.js"></script>
 <script src="help.js"></script>
 <script src="statistics.js"></script>
 <script src="about.js"></script>

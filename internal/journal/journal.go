@@ -15,10 +15,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -186,6 +188,39 @@ var Events = map[string]bool{
 // plane's address or a node's; a log file read by an administrator is.
 var ipv4 = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 
+// ipv6_candidate finds a run of characters that may be an IPv6 address. A
+// time of day or a MAC address looks like one until netip is asked, so the
+// regexp only proposes.
+var ipv6_candidate = regexp.MustCompile(`[0-9A-Fa-f:]*:[0-9A-Fa-f:]*`)
+
+// Mask_addresses replaces every IPv4 and IPv6 address in s with an ellipsis.
+// What goes into the journal passes through it, and so does a log tail sent
+// with a problem report, which is read by people the machine's owner does not
+// know. A run that is not an address, or is part of a longer word, stays.
+func Mask_addresses(s string) string {
+	s = ipv4.ReplaceAllString(s, "…")
+	var out strings.Builder
+	last := 0
+	for _, m := range ipv6_candidate.FindAllStringIndex(s, -1) {
+		start, end := m[0], m[1]
+		if start > 0 && is_word_byte(s[start-1]) || end < len(s) && is_word_byte(s[end]) {
+			continue
+		}
+		if ip, err := netip.ParseAddr(s[start:end]); err != nil || !ip.Is6() {
+			continue
+		}
+		out.WriteString(s[last:start])
+		out.WriteString("…")
+		last = end
+	}
+	out.WriteString(s[last:])
+	return out.String()
+}
+
+func is_word_byte(b byte) bool {
+	return b == '_' || '0' <= b && b <= '9' || 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z'
+}
+
 // Handler passes every record on to next and keeps the operations in j.
 func Handler(next slog.Handler, j *Journal) slog.Handler {
 	return &handler{next: next, journal: j}
@@ -208,7 +243,7 @@ func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 			if a.Key == "at" && r.Message == "event" {
 				return true // the record's own time says it
 			}
-			e.Attrs[a.Key] = ipv4.ReplaceAllString(a.Value.Resolve().String(), "…")
+			e.Attrs[a.Key] = Mask_addresses(a.Value.Resolve().String())
 			return true
 		}
 		for _, a := range h.attrs {

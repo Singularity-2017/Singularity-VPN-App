@@ -8,6 +8,10 @@ import (
 	"testing"
 
 	"singularity-vpn-app/internal/api"
+	"singularity-vpn-app/internal/protocols"
+	"singularity-vpn-app/internal/protocols/openvpn"
+	"singularity-vpn-app/internal/protocols/wireguard"
+	"singularity-vpn-app/internal/recovery"
 	"singularity-vpn-app/internal/state"
 )
 
@@ -278,5 +282,109 @@ func Test_a_region_played_from_home_keeps_the_game_out_of_the_tunnel(t *testing.
 	eu := state.State{Games: []string{"pubg"}, Game_region: "eu", Tunnel_mode: Tunnel_antizapret}
 	if split := split_for(eu); len(split.Games) == 0 {
 		t.Fatal("EU split carries no game; the boost toward EU goes through the tunnel")
+	}
+}
+
+// A protocol picked by hand is the one connected with, on whichever server
+// offers it, and recovery stays on it: another protocol is not what was
+// chosen.
+func Test_a_protocol_picked_by_hand_is_used_and_kept_through_recovery(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	env.store.state.Strategy = state.Strategy{Protocol: "openvpn"}
+	env.protocols.by_name["openvpn"] = &fake_protocol{name: "openvpn"}
+	env.control_plane.recommend_result = api.Recommendation{Node_id: "de-01", Protocol: "wireguard", Alternatives: []api.Alternative{
+		{Node: "de-01", Protocol: "openvpn"}, {Node: "nl-02", Protocol: "wireguard"}, {Node: "nl-02", Protocol: "openvpn"},
+	}}
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	if got, _ := manager.Session(); got.Protocol != "openvpn" || got.Node_id != "de-01" {
+		t.Fatalf("connected with %s on %s; want openvpn on de-01", got.Protocol, got.Node_id)
+	}
+	if len(manager.alternatives) == 0 {
+		t.Fatal("no alternatives kept; want openvpn on nl-02")
+	}
+	for _, alt := range manager.alternatives {
+		if alt.Protocol != "openvpn" {
+			t.Fatalf("alternatives %+v include another protocol while one is picked by hand", manager.alternatives)
+		}
+	}
+}
+
+// A protocol picked by hand that nothing offers is named as the reason,
+// rather than the build or the network.
+func Test_a_protocol_picked_by_hand_that_is_not_offered_is_named_as_the_cause(t *testing.T) {
+	env := new_test_env(t)
+	manager := env.build()
+	manager.local_state.Strategy = state.Strategy{Protocol: "openvpn"}
+	_, fault := manager.spoken_target(api.Recommendation{Node_id: "de-01", Protocol: "wireguard"})
+	if fault == nil || fault.Kind != Fault_protocol_unavailable || !strings.Contains(fault.Error(), "picked by hand, openvpn") {
+		t.Fatalf("fault = %v; want protocol_unavailable naming the protocol picked by hand", fault)
+	}
+}
+
+// effective_mode cannot ask an adapter, so it keeps the name of the one
+// protocol that carries only the whole machine; this holds the name to the
+// adapters.
+func Test_the_whole_machine_protocol_is_the_one_whose_adapter_says_so(t *testing.T) {
+	var ovpn any = &openvpn.Adapter{}
+	var wg any = &wireguard.Adapter{}
+	if _, whole := ovpn.(protocols.Whole_machine); !whole || !carries_only_whole_machine(openvpn.Name) {
+		t.Errorf("openvpn: adapter whole machine %v, named whole machine %v", whole, carries_only_whole_machine(openvpn.Name))
+	}
+	if _, whole := wg.(protocols.Whole_machine); whole || carries_only_whole_machine("wireguard") || carries_only_whole_machine("amneziawg") {
+		t.Error("wireguard and amneziawg carry games alone")
+	}
+}
+
+// A server and protocol this network sent a problem report about steps
+// aside for another usable offer on the same server, and is tried last in
+// recovery; alone, it is still used.
+func Test_what_this_network_reported_problems_with_steps_aside(t *testing.T) {
+	env := new_test_env(t)
+	env.protocols.by_name["amneziawg"] = &fake_protocol{name: "amneziawg"}
+	manager := env.build()
+	report := []api.Connection_evidence{{Source: "app", Node_id: "de-01", Protocol: "amneziawg", Mode: "full", Failures: 1, Reported: 1}}
+	rec := api.Recommendation{Node_id: "de-01", Protocol: "amneziawg", Evidence: report,
+		Alternatives: []api.Alternative{{Node: "de-01", Protocol: "wireguard"}}}
+	target, fault := manager.spoken_target(rec)
+	if fault != nil || target != (recovery.Target{Node_id: "de-01", Protocol: "wireguard"}) {
+		t.Fatalf("target=%+v fault=%v; want wireguard on de-01", target, fault)
+	}
+	offers := manager.recovery_offers(rec, target)
+	if len(offers) != 1 || offers[0].Protocol != "amneziawg" {
+		t.Fatalf("recovery offers %+v; want the reported amneziawg kept as the last resort", offers)
+	}
+	alone := api.Recommendation{Node_id: "de-01", Protocol: "amneziawg", Evidence: report}
+	if target, fault := manager.spoken_target(alone); fault != nil || target.Protocol != "amneziawg" {
+		t.Fatalf("alone: target=%+v fault=%v; want amneziawg still used", target, fault)
+	}
+}
+
+// A report made in another mode does not move this one.
+func Test_a_report_from_another_mode_moves_nothing(t *testing.T) {
+	env := new_test_env(t)
+	env.protocols.by_name["amneziawg"] = &fake_protocol{name: "amneziawg"}
+	manager := env.build()
+	rec := api.Recommendation{Node_id: "de-01", Protocol: "amneziawg",
+		Evidence:     []api.Connection_evidence{{Source: "app", Node_id: "de-01", Protocol: "amneziawg", Mode: "games", Failures: 1, Reported: 1}},
+		Alternatives: []api.Alternative{{Node: "de-01", Protocol: "wireguard"}}}
+	if target, fault := manager.spoken_target(rec); fault != nil || target.Protocol != "amneziawg" {
+		t.Fatalf("target=%+v fault=%v; want amneziawg, the report was about games alone", target, fault)
+	}
+}
+
+// A protocol picked by hand that freezes on this network is named as the
+// cause, not the build.
+func Test_a_picked_protocol_that_freezes_is_named_not_the_build(t *testing.T) {
+	env := new_test_env(t)
+	manager := env.build()
+	manager.local_state.Strategy = state.Strategy{Protocol: "wireguard"}
+	_, fault := manager.spoken_target(api.Recommendation{Node_id: "de-01", Protocol: "amneziawg",
+		Alternatives: []api.Alternative{{Node: "de-01", Protocol: "wireguard", State: state_frozen}}})
+	if fault == nil || !strings.Contains(fault.Error(), "picked by hand, wireguard, freezes") {
+		t.Fatalf("fault = %v; want the picked protocol named as freezing", fault)
 	}
 }

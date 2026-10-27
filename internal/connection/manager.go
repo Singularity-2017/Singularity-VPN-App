@@ -627,9 +627,21 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 	usable := func(target recovery.Target) bool {
 		return m.policy.Eligible(m.now(), target) && (effective_mode(m.local_state) != Tunnel_games || m.carries_alone(target.Protocol))
 	}
-	// Reevaluation keeps an offered working connection on the selected node.
+	// A server and protocol this network sent a problem report about steps
+	// aside for any other usable offer; with none, it is still used -- a
+	// report says the connection was bad, not that it does not connect.
+	// Reevaluation -- a goal changed while connected -- keeps an offered
+	// working connection on the selected node, reported or not: a setting
+	// that has nothing to do with it is no reason to drop it.
+	all_eligible := eligible
+	if kept := without_reported(eligible, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state))); slices.ContainsFunc(kept, usable) {
+		if len(kept) < len(eligible) {
+			m.logger.Info("leaving aside what this network reported problems with", "kept", len(kept), "offered", len(eligible))
+		}
+		eligible = kept
+	}
 	if current := m.get_state(); current == State_connected || current == State_degraded {
-		for _, target := range eligible {
+		for _, target := range all_eligible {
 			if target == m.current && target.Node_id == node && usable(target) {
 				return target, nil
 			}
@@ -672,6 +684,17 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect", Err: fmt.Errorf("connection: offered protocols are unavailable under the current mode or local failure cooldown")}
 	}
 
+	// A protocol picked by hand that nothing usable offers is the person's
+	// own choice standing in the way, and the reason has to say so: blaming
+	// the build would send them looking in the wrong place.
+	if picked := m.local_state.Strategy.Protocol; picked != "" {
+		why := "is not offered on this server"
+		if len(frozen) > 0 {
+			why = "freezes on this network (it connects, then stops passing traffic)"
+		}
+		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
+			Err: fmt.Errorf("connection: the protocol picked by hand, %s, %s; pick another protocol or automatic choice", picked, why)}
+	}
 	if len(frozen) > 0 {
 		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
 			Err: fmt.Errorf("connection: the control plane recommends %s for this network and has seen %s freeze on it (it connects, then stops passing traffic); this build speaks no protocol that gets through yet",
@@ -683,6 +706,29 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 	}
 	return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
 		Err: fmt.Errorf("connection: the control plane offered %s, and this build speaks none of them", strings.Join(slices.Compact(names), ", "))}
+}
+
+// without_reported drops the targets the evidence for this network carries
+// a problem report about, from the app's own observations in the same
+// mode: a report made while only games went through says nothing about
+// the whole machine going through.
+func without_reported(targets []recovery.Target, evidence []api.Connection_evidence, mode string) []recovery.Target {
+	reported := map[recovery.Target]bool{}
+	for _, row := range evidence {
+		if row.Source == "app" && row.Reported > 0 && row.Mode == mode {
+			reported[recovery.Target{Node_id: row.Node_id, Protocol: row.Protocol}] = true
+		}
+	}
+	if len(reported) == 0 {
+		return targets
+	}
+	kept := targets[:0:0]
+	for _, t := range targets {
+		if !reported[t] {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 // carries_alone reports whether protocol can put the games through the
@@ -859,18 +905,19 @@ func (m *Manager) create_profile(ctx context.Context, token string, request Conn
 	return target, config, nil
 }
 
-// pinned_to_node keeps, when the person picked a server by hand, only the
-// alternatives on that server: another protocol on it is still the server
-// they chose, another server is not. Automatic server choice is what moves
-// a connection to another node.
+// pinned_to_node keeps what the person picked by hand. A server picked by
+// hand keeps only the alternatives on that server: another protocol on it is
+// still the server they chose, another server is not. A protocol picked by
+// hand keeps only that protocol, on whichever server. Automatic choice is
+// what moves a connection to another node or protocol.
 func (m *Manager) pinned_to_node(list []recovery.Target) []recovery.Target {
-	pinned := m.local_state.Strategy.Node_id
-	if pinned == "" {
+	node, protocol := m.local_state.Strategy.Node_id, m.local_state.Strategy.Protocol
+	if node == "" && protocol == "" {
 		return list
 	}
 	kept := list[:0:0]
 	for _, t := range list {
-		if t.Node_id == pinned {
+		if (node == "" || t.Node_id == node) && (protocol == "" || t.Protocol == protocol) {
 			kept = append(kept, t)
 		}
 	}
@@ -1861,5 +1908,16 @@ func (m *Manager) recovery_offers(recommendation api.Recommendation, chosen reco
 		seen[candidate] = true
 		kept = append(kept, candidate)
 	}
-	return prefer_obfuscated(kept)
+	// What this network reported problems with is tried after the rest.
+	ordered := prefer_obfuscated(kept)
+	clean := without_reported(ordered, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state)))
+	if len(clean) == len(ordered) {
+		return ordered
+	}
+	for _, t := range ordered {
+		if !slices.Contains(clean, t) {
+			clean = append(clean, t)
+		}
+	}
+	return clean
 }

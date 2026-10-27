@@ -563,6 +563,16 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Logger:                 logger,
 		Journal:                operations,
 		Matches:                matches,
+		// What a problem report attaches: the log's tail, a description of
+		// the adapters, and the Windows version.
+		Log_path: p.log,
+		Network_summary: func(ctx context.Context) (any, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return winplatform.Network_summary()
+		},
+		Os_version: os_version(),
 	})
 }
 

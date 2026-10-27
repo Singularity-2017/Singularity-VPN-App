@@ -51,4 +51,8 @@ type Strategy struct {
 	// plane to pick -- which is automatic server selection, and what moves
 	// a connection off a node that dies.
 	Node_id string
+	// Protocol is a protocol the person picked by hand -- amneziawg,
+	// wireguard or openvpn -- or "" for the one that gets through, which is
+	// also what moves a connection to another protocol when one stops.
+	Protocol string
 }

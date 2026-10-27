@@ -93,6 +93,18 @@ type Dependencies struct {
 	// player's confirmations of them, are kept; nil keeps them in memory.
 	Matches *matchserver.Store
 	Now     func() time.Time
+
+	// Log_path is the service log whose newest part a problem report
+	// attaches; the one rolled over before it is read from path+".1".
+	// Empty attaches no log.
+	Log_path string
+	// Network_summary describes the machine's network adapters for a
+	// problem report -- classes of address, never the addresses. nil, or
+	// an error, leaves the network out of the report.
+	Network_summary func(context.Context) (any, error)
+	// Os_version is the operating system's version, for a problem report;
+	// empty leaves it out rather than guessing.
+	Os_version string
 }
 
 // Application is the running program: the connection state machine, wired
@@ -145,6 +157,16 @@ type Application struct {
 	game_pings  game_pings
 	node_rtts   node_game_rtts
 	matches     *matchserver.Detector
+
+	// evidence names the network under the machine for a problem report;
+	// nil is a collector that knows nothing.
+	evidence        *evidence.Collector
+	log_path        string
+	network_summary func(context.Context) (any, error)
+	os_version      string
+	// drafts holds the problem reports the person has been shown and not
+	// yet sent; see problem_drafts.
+	drafts problem_drafts
 }
 
 // New_application builds an Application, refusing a Dependencies missing
@@ -234,6 +256,12 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		pinger:      dependencies.Pinger,
 		game_pinger: dependencies.Game_pinger,
 		matches:     matchserver.New_detector(matches),
+
+		evidence:        dependencies.Evidence,
+		log_path:        dependencies.Log_path,
+		network_summary: dependencies.Network_summary,
+		os_version:      dependencies.Os_version,
+
 		resolve_ip4: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
 		},

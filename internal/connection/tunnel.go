@@ -22,9 +22,14 @@ const (
 // an AntiZapret profile would not carry and an AntiZapret node drops.
 // Anonymity forces the full tunnel too -- AntiZapret leaves most traffic
 // outside it, which defeats the goal. Only then is the person's own choice
-// heard, and full VPN is what is left.
+// heard, and full VPN is what is left. A protocol picked by hand that can
+// only carry the whole machine cannot put games through alone; the games
+// still go through, with everything else, as anonymity does it.
 func effective_mode(local state.State) string {
 	if len(split_for(local).Games) > 0 {
+		if carries_only_whole_machine(local.Strategy.Protocol) {
+			return Tunnel_vpn
+		}
 		return Tunnel_games
 	}
 	if local.Strategy.Anonymity != "" {
@@ -34,6 +39,14 @@ func effective_mode(local state.State) string {
 		return Tunnel_antizapret
 	}
 	return Tunnel_vpn
+}
+
+// carries_only_whole_machine names the protocol whose adapter is a
+// protocols.Whole_machine. effective_mode is decided from the stored state
+// alone, before any adapter is at hand, so the name is kept here; a test
+// holds it to the adapter.
+func carries_only_whole_machine(protocol string) bool {
+	return protocol == "openvpn"
 }
 
 // profile_for is the name Fetch_config is asked for: "antizapret" for the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,6 +65,108 @@ func Test_feedback_validation_and_auth_failure(t *testing.T) {
 	}
 	if _, err := client.Feedback(context.Background(), "token", ipc.Feedback_params{Kind: "problem", Message: "Synthetic problem"}); !Is_code(err, Code_unauthorized) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func Test_report_problem_posts_the_attachments_and_never_the_draft_id(t *testing.T) {
+	const draft = "0123456789abcdef0123456789abcdef"
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/api/v1/feedback" || r.Header.Get("Authorization") != "Bearer synthetic-token" {
+			t.Error("incorrect authenticated feedback request")
+		}
+		raw, _ = io.ReadAll(r.Body)
+		write_success(w, `{"accepted":true,"code":"R-TEST"}`)
+	}))
+	defer server.Close()
+	client, _ := New(Config{Base_url: server.URL})
+
+	diagnostics := json.RawMessage(`{"schema":1,"connection":{"state":"failed"}}`)
+	log := "time=2026-10-27T10:00:00Z level=INFO msg=\"service starting\"\n"
+	got, err := client.Report_problem(context.Background(), "synthetic-token",
+		ipc.Feedback_params{Kind: "problem", Message: " It keeps dropping ", Draft: draft}, diagnostics, log)
+	if err != nil || !got.Accepted || got.Code != "R-TEST" {
+		t.Fatalf("receipt = %+v, %v", got, err)
+	}
+	if strings.Contains(string(raw), draft) || strings.Contains(string(raw), "draft") {
+		t.Fatalf("the local draft id left the machine: %s", raw)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != 4 {
+		t.Fatalf("body fields = %d, want kind, message, diagnostics, log: %s", len(body), raw)
+	}
+	var kind, message, sent_log string
+	if json.Unmarshal(body["kind"], &kind) != nil || kind != "problem" ||
+		json.Unmarshal(body["message"], &message) != nil || message != "It keeps dropping" ||
+		json.Unmarshal(body["log"], &sent_log) != nil || sent_log != log {
+		t.Fatalf("unexpected body: %s", raw)
+	}
+	var sent_diagnostics map[string]any
+	if err := json.Unmarshal(body["diagnostics"], &sent_diagnostics); err != nil || sent_diagnostics["schema"] != float64(1) {
+		t.Fatalf("diagnostics went as an object? %s (%v)", body["diagnostics"], err)
+	}
+}
+
+func Test_feedback_without_attachments_posts_only_kind_and_message(t *testing.T) {
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		write_success(w, `{"accepted":true,"code":"R-TEST"}`)
+	}))
+	defer server.Close()
+	client, _ := New(Config{Base_url: server.URL})
+	// A draft id on plain feedback is the local service's business; the
+	// server hears nothing of it and no empty attachment either.
+	if _, err := client.Feedback(context.Background(), "t", ipc.Feedback_params{Kind: "problem", Message: "m", Draft: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"kind":"problem","message":"m"}` {
+		t.Fatalf("body = %s", raw)
+	}
+}
+
+// The per-attempt timeout is the client's; a report with attachments is given
+// more than that, and a plain receipt for a sentence is not.
+func Test_report_problem_with_attachments_outwaits_the_clients_attempt_timeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		write_success(w, `{"accepted":true,"code":"R-TEST"}`)
+	}))
+	defer server.Close()
+	client, _ := New(Config{Base_url: server.URL, Timeout: 100 * time.Millisecond})
+	params := ipc.Feedback_params{Kind: "problem", Message: "m"}
+
+	if _, err := client.Feedback(context.Background(), "t", params); err == nil {
+		t.Fatal("a plain receipt waited longer than the client's attempt timeout")
+	}
+	got, err := client.Report_problem(context.Background(), "t", params, json.RawMessage(`{"schema":1}`), "log\n")
+	if err != nil || got.Code != "R-TEST" {
+		t.Fatalf("a report with attachments: %+v, %v", got, err)
+	}
+	if client.timeout != 100*time.Millisecond {
+		t.Fatalf("the client's own timeout was changed to %v", client.timeout)
+	}
+}
+
+func Test_report_problem_refuses_attachments_that_do_not_belong(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		write_success(w, `{"accepted":true,"code":"R-TEST"}`)
+	}))
+	defer server.Close()
+	client, _ := New(Config{Base_url: server.URL})
+	if _, err := client.Report_problem(context.Background(), "t", ipc.Feedback_params{Kind: "idea", Message: "m"}, json.RawMessage(`{}`), ""); err == nil {
+		t.Fatal("an idea carried diagnostics")
+	}
+	if _, err := client.Report_problem(context.Background(), "t", ipc.Feedback_params{Kind: "problem", Message: "m"}, json.RawMessage(`{broken`), ""); err == nil {
+		t.Fatal("diagnostics that are not JSON were sent")
+	}
+	if calls != 0 {
+		t.Fatalf("%d requests went out", calls)
 	}
 }
 

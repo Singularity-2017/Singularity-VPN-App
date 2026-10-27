@@ -24,6 +24,9 @@ func Test_what_a_connect_asks_the_control_plane_for(t *testing.T) {
 		{"a game and anonymity", state.State{Games: []string{"pubg"}, Tunnel_mode: anti, Strategy: state.Strategy{Anonymity: "high"}}, Tunnel_vpn},
 		{"a touchy game and antizapret", state.State{Games: []string{"pubg", "cod"}, Tunnel_mode: anti}, Tunnel_antizapret},
 		{"a state file from before the field", state.State{Tunnel_mode: ""}, Tunnel_vpn},
+		{"a game and openvpn picked by hand", state.State{Games: []string{"pubg"}, Tunnel_mode: anti, Strategy: state.Strategy{Protocol: "openvpn"}}, Tunnel_vpn},
+		{"antizapret and openvpn picked by hand", state.State{Tunnel_mode: anti, Strategy: state.Strategy{Protocol: "openvpn"}}, Tunnel_antizapret},
+		{"a game and wireguard picked by hand", state.State{Games: []string{"pubg"}, Tunnel_mode: anti, Strategy: state.Strategy{Protocol: "wireguard"}}, Tunnel_games},
 	}
 	for _, c := range cases {
 		if got := effective_mode(c.local); got != c.want {

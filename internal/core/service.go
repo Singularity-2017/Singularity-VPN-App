@@ -67,6 +67,11 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 		}
 		result.Device_name = a.device_name
 	}
+	if a.journal != nil {
+		// Read before the session check: a connection that cannot be
+		// established has no session, and is the one failing most.
+		result.Failures = failure_signal(a.journal.List(), a.now())
+	}
 
 	session, ok := snapshot.Session, snapshot.Has_session
 	if !ok {
@@ -352,7 +357,7 @@ func (a *Application) Strategy(ctx context.Context) (ipc.Strategy, error) {
 	if err != nil {
 		return ipc.Strategy{}, map_error(err)
 	}
-	return ipc.Strategy{Anonymity: s.Anonymity, Bypass: s.Bypass, Country: s.Country, Route: s.Route, Node_id: s.Node_id}, nil
+	return ipc.Strategy{Anonymity: s.Anonymity, Bypass: s.Bypass, Country: s.Country, Route: s.Route, Node_id: s.Node_id, Protocol: s.Protocol}, nil
 }
 
 // Set_strategy answers Command_set_strategy: it records the strategy and,
@@ -364,13 +369,14 @@ func (a *Application) Set_strategy(ctx context.Context, strategy ipc.Strategy) e
 		return err
 	}
 	a.logger.Info("strategy set", "anonymity", strategy.Anonymity, "bypass", strategy.Bypass,
-		"country", strategy.Country, "route", strategy.Route, "node_id", strategy.Node_id)
+		"country", strategy.Country, "route", strategy.Route, "node_id", strategy.Node_id, "protocol", strategy.Protocol)
 	if err := a.manager.Set_strategy(state.Strategy{
 		Anonymity: strategy.Anonymity,
 		Bypass:    strategy.Bypass,
 		Country:   strategy.Country,
 		Route:     strategy.Route,
 		Node_id:   strategy.Node_id,
+		Protocol:  strategy.Protocol,
 	}); err != nil {
 		return map_error(err)
 	}

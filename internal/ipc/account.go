@@ -15,6 +15,9 @@ const Command_spending_page = "spending_page"
 type Feedback_params struct {
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
+	// Draft names a Problem_draft the service holds; its diagnostics and log
+	// tail go with the report. Only a problem report carries one.
+	Draft string `json:"draft,omitempty"`
 }
 
 func (p Feedback_params) Validate() error {
@@ -25,7 +28,24 @@ func (p Feedback_params) Validate() error {
 	if !utf8.ValidString(message) || message == "" || utf8.RuneCountInString(message) > 2000 {
 		return errors.New("invalid feedback message")
 	}
+	if p.Draft != "" && (p.Kind != "problem" || !is_draft_id(p.Draft)) {
+		return errors.New("invalid feedback draft")
+	}
 	return nil
+}
+
+// is_draft_id reports whether s is 32 lowercase hex characters, the shape of
+// Problem_draft.Id.
+func is_draft_id(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 type Feedback_result struct {

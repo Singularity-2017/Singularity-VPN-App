@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"singularity-vpn-app/internal/journal"
@@ -124,8 +126,12 @@ type Strategy struct {
 	Bypass    bool   `json:"bypass,omitempty"`
 	Country   string `json:"country,omitempty"` // ISO 3166-1 alpha-2, "" for anywhere
 	Route     bool   `json:"route,omitempty"`
-	Node_id   string `json:"node_id,omitempty"` // a server picked by hand, "" for automatic
+	Node_id   string `json:"node_id,omitempty"`  // a server picked by hand, "" for automatic
+	Protocol  string `json:"protocol,omitempty"` // a protocol picked by hand, "" for automatic
 }
+
+// Strategy_protocols are the protocols a person can pick by hand.
+var Strategy_protocols = []string{"amneziawg", "wireguard", "openvpn"}
 
 // Validate refuses an anonymity level that is not one of the three, a
 // country that is not two capital letters, and a node id that is not a
@@ -148,6 +154,9 @@ func (s Strategy) Validate() error {
 		if !(c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
 			return fmt.Errorf("ipc: strategy: node_id %q carries a character a node id does not", s.Node_id)
 		}
+	}
+	if s.Protocol != "" && !slices.Contains(Strategy_protocols, s.Protocol) {
+		return fmt.Errorf("ipc: strategy: protocol %q is not one of %s", s.Protocol, strings.Join(Strategy_protocols, ", "))
 	}
 	return nil
 }
@@ -513,6 +522,10 @@ type Status_result struct {
 	// the same condition as Node_name.
 	Reason string         `json:"reason,omitempty"`
 	Goals  []Goal_outcome `json:"goals,omitempty"`
+
+	// Failures is present when the connection has kept failing lately in a
+	// way no network change or disconnect explains; see Failure_signal.
+	Failures *Failure_signal `json:"failures,omitempty"`
 }
 
 // Version_result answers Command_version. Every field is omitempty for the
@@ -570,7 +583,9 @@ var (
 // "already vouched for" is not "correct", and a service running as
 // LocalSystem must not be able to be made to allocate without limit by a
 // user-mode process that got into a loop. 1 MiB is far beyond any real
-// frame here; the largest thing this protocol carries is a status line.
+// frame here. The largest thing this protocol carries is a problem draft: a
+// log tail and a diagnostics bundle, each bounded by the service so that the
+// two together, escaped for JSON in the worst case, stay well under it.
 const Max_frame_bytes = 1 << 20
 
 // Write_timeout bounds one frame write. A client that stops reading must

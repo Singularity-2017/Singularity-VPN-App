@@ -171,3 +171,40 @@ func Test_the_journal_outlives_the_service_and_marks_a_run_that_never_stopped(t 
 		t.Fatalf("after a run that never stopped: %+v", got)
 	}
 }
+
+func Test_mask_addresses(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"an IPv4 address", "node 203.0.113.7 refused", "node … refused"},
+		{"an IPv4 address with a port", "dial 203.0.113.7:51820 failed", "dial …:51820 failed"},
+		{"a full IPv6 address", "from 2001:0db8:0000:0000:0000:0000:0000:0001 ok", "from … ok"},
+		{"a compressed IPv6 address", "to 2001:db8::1 ok", "to … ok"},
+		{"the loopback and unspecified addresses", "bound ::1 and ::", "bound … and …"},
+		{"a link-local address", "via fe80::1c2d:3e4f:5a6b:7c8d", "via …"},
+		{"an IPv6 address in brackets with a port", "dial [2001:db8::1]:443 failed", "dial […]:443 failed"},
+		{"an IPv4-mapped address", "peer ::ffff:203.0.113.7 gone", "peer ::ffff:… gone"},
+		{"a key=value pair", "addr=2001:db8::1 next=1", "addr=… next=1"},
+		{"a time of day", "at 12:30:45 sharp", "at 12:30:45 sharp"},
+		{"a timestamp as slog writes it", "time=2026-10-27T12:00:00.123+03:00 level=INFO", "time=2026-10-27T12:00:00.123+03:00 level=INFO"},
+		{"a MAC address", "mac 00:1a:2b:3c:4d:5e", "mac 00:1a:2b:3c:4d:5e"},
+		{"a scope operator", "std::vector failed", "std::vector failed"},
+		{"a version", "version 0.1.4-dev", "version 0.1.4-dev"},
+		{"nothing to mask", "connected", "connected"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Mask_addresses(tc.in); got != tc.want {
+				t.Fatalf("\n got  %q\n want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func Test_the_journal_masks_an_IPv6_address_as_it_does_an_IPv4_one(t *testing.T) {
+	j := New(8)
+	logger, _ := logger_with(j)
+	logger.Warn("verification failed", "addr", "2001:db8::1", "peer", "203.0.113.7")
+	got := j.List()
+	if len(got) != 1 || got[0].Attrs["addr"] != "…" || got[0].Attrs["peer"] != "…" {
+		t.Fatalf("entries = %+v", got)
+	}
+}

@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-func evidence_mode(mode string) string {
+// Evidence_mode names a tunnel profile the way the control plane does:
+// antizapret is "selective", games is "games", anything else "full". A problem
+// report names the connection the same way the observations do.
+func Evidence_mode(mode string) string {
 	switch mode {
 	case Tunnel_games:
 		return "games"
@@ -21,6 +24,20 @@ func evidence_mode(mode string) string {
 		return "full"
 	}
 }
+
+// Observation_mode is the mode an observation made now would carry: the
+// effective mode of the stored choices, named as the control plane names it.
+// A problem report says it the same way, so the control plane can match the
+// two. It reads the store, which is safe from any goroutine, not the working
+// copy the connection code holds under its own lock.
+func (m *Manager) Observation_mode() (string, error) {
+	local, err := m.store.Load()
+	if err != nil {
+		return "", err
+	}
+	return Evidence_mode(effective_mode(local)), nil
+}
+
 func (m *Manager) prepare_evidence(ctx context.Context) {
 	if m.evidence == nil {
 		return
@@ -47,7 +64,7 @@ func (m *Manager) failed_observation(ctx context.Context, target recovery.Target
 			reason = "reachability_lost"
 		}
 	}
-	m.evidence.Record(ctx, api.Connection_observation{Client_id: m.local_state.Client_id, Node_id: target.Node_id, Protocol: target.Protocol, Mode: evidence_mode(effective_mode(m.local_state)), Session_id: evidence.New_id(), Kind: "connection_failed", Reason: reason})
+	m.evidence.Record(ctx, api.Connection_observation{Client_id: m.local_state.Client_id, Node_id: target.Node_id, Protocol: target.Protocol, Mode: Evidence_mode(effective_mode(m.local_state)), Session_id: evidence.New_id(), Kind: "connection_failed", Reason: reason})
 }
 func (m *Manager) established_observation(ctx context.Context, target recovery.Target) {
 	if m.evidence == nil {
@@ -57,7 +74,7 @@ func (m *Manager) established_observation(ctx context.Context, target recovery.T
 	m.evidence_started = m.now()
 	m.evidence_sleep_seen = false
 	m.evidence_target = target
-	m.evidence_mode = evidence_mode(effective_mode(m.local_state))
+	m.evidence_mode = Evidence_mode(effective_mode(m.local_state))
 	m.evidence_open = true
 	m.evidence.Record(ctx, api.Connection_observation{Client_id: m.local_state.Client_id, Node_id: target.Node_id, Protocol: target.Protocol, Mode: m.evidence_mode, Session_id: m.evidence_session_id, Kind: "connection_established", Reason: "verified"})
 }

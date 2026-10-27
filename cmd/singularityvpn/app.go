@@ -33,16 +33,21 @@ type App struct {
 	client *ipc.Client
 
 	tray *tray
+
+	// foreground remembers which programs were in front, for a problem
+	// report; see foreground_tracker.
+	foreground *foreground_tracker
 }
 
 func new_app() *App {
-	return &App{}
+	return &App{foreground: new_foreground_tracker()}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx, a.cancel = context.WithCancel(ctx)
 	a.tray = start_tray(a)
 	go a.watch()
+	go a.foreground.run(a.ctx, foreground_exe)
 }
 
 func (a *App) shutdown() {

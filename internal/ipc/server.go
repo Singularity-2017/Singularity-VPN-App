@@ -201,6 +201,23 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 		}
 		result, err := service.Feedback(ctx, params)
 		h.reply(req.Id, result, err)
+	case Command_problem_draft:
+		params, err := decode_params[Problem_draft_params](req)
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		if err := params.Validate(); err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		service, ok := h.service.(Problem_service)
+		if !ok {
+			h.reply(req.Id, nil, errors.New("problem reports are not supported by this service"))
+			return
+		}
+		result, err := service.Problem_draft(ctx, params)
+		h.reply(req.Id, result, err)
 	case Command_account:
 		service, ok := h.service.(Account_service)
 		if !ok {
