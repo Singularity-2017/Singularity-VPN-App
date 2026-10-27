@@ -1822,14 +1822,23 @@
 
   // The build is the application's, not the account's: it is said in the
   // settings, and only what the build supplied.
+  // app_version is what the build supplied, for the changelog to mark.
+  let app_version = "";
   async function load_version() {
     const v = await backend().Version();
     const parts = [];
+    app_version = v.version || "";
     if (v.version) parts.push("Версия " + v.version);
     if (v.commit) parts.push(v.commit);
     $("version").hidden = parts.length === 0;
     $("version").textContent = parts.join(" · ");
   }
+
+  // The changelog's folds are remembered; storage is a convenience.
+  const about_store = {
+    get: (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } },
+    set: (key, value) => { try { localStorage.setItem(key, value); } catch (e) { /* a convenience */ } }
+  };
 
   function start() {
     $("power").addEventListener("click", on_power);
@@ -1865,7 +1874,7 @@
     }, show_level);
     $("statistics-row").addEventListener("click", () => show_level("settings", "statistics-panel"));
     $("statistics-back").addEventListener("click", () => show_level("settings", "settings-main"));
-    $("about-row").addEventListener("click", () => { window.about_ui.render($("about-body"), ago); show_level("settings", "about-panel"); });
+    $("about-row").addEventListener("click", () => { window.about_ui.render($("about-body"), app_version, ago, about_store); show_level("settings", "about-panel"); });
     $("about-back").addEventListener("click", () => show_level("settings", "settings-main"));
     $("blocks-line").addEventListener("click", () => {
       services_open = !services_open;

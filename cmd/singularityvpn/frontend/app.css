@@ -568,10 +568,20 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
 .power #connection-duration { font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: .3px; text-transform: none; font-variant-numeric: tabular-nums; }
 #statistics-body { max-height: 55vh; overflow-y: auto; font-size: 12px; }
 #about-body { max-height: 55vh; overflow-y: auto; font-size: 12px; line-height: 1.4; padding: 0 4px 4px; width: 340px; max-width: 100%; }
-.about-version { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin: 10px 0 4px; font-weight: 600; color: var(--text); }
-.about-version:first-child { margin-top: 2px; color: var(--accent); }
-.about-when { font-weight: 400; color: var(--muted); }
-.about-items { margin: 0; padding-left: 16px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+#about-body summary { display: flex; align-items: baseline; gap: 8px; padding: 5px 2px; cursor: pointer; list-style: none; border-radius: 6px; }
+#about-body summary::-webkit-details-marker { display: none; }
+#about-body summary::before { content: "›"; flex: none; width: 8px; color: var(--muted); transition: transform var(--replace-duration) ease-out; }
+#about-body details[open] > summary::before { transform: rotate(90deg); }
+#about-body summary:hover { background: var(--hover); }
+#about-body details[open] > :not(summary) { animation: content-enter var(--replace-duration) ease-out; }
+.about-version > summary { font-weight: 600; color: var(--text); }
+.about-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.about-current { font-weight: 400; color: var(--accent); }
+.about-when, .about-count { font-weight: 400; color: var(--muted); }
+.about-group { margin-left: 12px; }
+.about-group > summary { color: var(--text); }
+.about-kind { flex: 1; }
+.about-group ul { margin: 0 0 4px; padding-left: 28px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
 button.blocks-line { text-align: left; border: 0; background: transparent; padding: 4px 0; color: var(--muted); font: inherit; }
 button.blocks-line:hover { color: var(--text); }
 #blocks-details { animation: content-enter var(--replace-duration) ease-out; }
