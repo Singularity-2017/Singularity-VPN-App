@@ -17,8 +17,8 @@
 
   const screens = ["screen-wait", "screen-service", "screen-untrusted", "screen-signin", "screen-main"];
   // The anonymity levels' pop-up is out of the window with the goal tiles.
-  const pops = ["menu", "help", "settings", "servers" /* , "levels" */];
-  const pop_owner = { help: "help-button", menu: "menu-button", settings: "settings-button", servers: "chip" /* , levels: "goal-anonymity" */ };
+  const pops = ["menu", "help", "settings", "servers", "protocol" /* , "levels" */];
+  const pop_owner = { help: "help-button", menu: "menu-button", settings: "settings-button", servers: "chip", protocol: "protocol-chip" /* , levels: "goal-anonymity" */ };
   // What the button says. Connected or not is the ring and this label;
   // nothing else on the screen repeats it.
   const power_text = {
@@ -733,10 +733,11 @@
 
     // The protocol is part of the strategy: it shows once the strategy is
     // known, "Авто" standing for none picked by hand.
-    $("protocol").hidden = strategy === null;
+    $("protocol-pick").hidden = strategy === null;
+    $("protocol-chip").disabled = busy;
+    set_text("protocol-value", protocol_names[s.protocol] || "Авто");
     for (const b of $("protocol").querySelectorAll("[data-protocol]")) {
-      b.setAttribute("aria-checked", b.dataset.protocol === (s.protocol || "") ? "true" : "false");
-      b.disabled = busy;
+      b.setAttribute("aria-selected", b.dataset.protocol === (s.protocol || "") ? "true" : "false");
     }
   }
 
@@ -1945,8 +1946,16 @@
     // It opens the help pop from outside it; the click must not go on to
     // the handler that closes a pop clicked outside of.
     $("report-problem").addEventListener("click", (e) => { e.stopPropagation(); open_problem_report(); });
+    $("protocol-chip").addEventListener("click", () => {
+      const opening = $("protocol").hidden;
+      close_pops();
+      if (opening) open_pop("protocol", "protocol-chip");
+    });
     for (const b of $("protocol").querySelectorAll("[data-protocol]")) {
-      b.addEventListener("click", () => { if (b.dataset.protocol !== ((strategy && strategy.protocol) || "")) change({ protocol: b.dataset.protocol }); });
+      b.addEventListener("click", () => {
+        close_pops();
+        if (b.dataset.protocol !== ((strategy && strategy.protocol) || "")) change({ protocol: b.dataset.protocol });
+      });
     }
     // for (const b of $("levels").querySelectorAll("[data-level]")) {
     //   b.addEventListener("click", () => change({ anonymity: b.dataset.level }));

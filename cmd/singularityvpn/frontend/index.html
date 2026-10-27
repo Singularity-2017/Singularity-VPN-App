@@ -137,17 +137,22 @@
           <svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>
           <span class="power-caption"><span id="power-label">Подключиться</span><small id="connection-duration" hidden></small></span>
         </button>
-        <div class="segment mode-pick" id="mode" role="radiogroup" aria-label="Режим" hidden>
-          <button role="radio" aria-checked="false" data-mode="antizapret" data-tip="Через сервер идут только сайты, заблокированные в России, остальное — напрямую: местные сайты и банки работают как без VPN.">Антизапрет</button>
-          <button role="radio" aria-checked="false" data-mode="vpn" data-tip="Весь трафик компьютера идёт через сервер.">VPN</button>
+        <div class="picks">
+          <div class="segment mode-pick" id="mode" role="radiogroup" aria-label="Режим" hidden>
+            <button role="radio" aria-checked="false" data-mode="antizapret" data-tip="Через сервер идут только сайты, заблокированные в России, остальное — напрямую: местные сайты и банки работают как без VPN.">Антизапрет</button>
+            <button role="radio" aria-checked="false" data-mode="vpn" data-tip="Весь трафик компьютера идёт через сервер.">VPN</button>
+          </div>
+          <div class="protocol-pick" id="protocol-pick" hidden>
+            <button class="protocol-chip" id="protocol-chip" aria-haspopup="listbox" aria-expanded="false"><span class="protocol-label">Протокол</span><span class="protocol-value" id="protocol-value"></span></button>
+            <div class="pop list protocol-pop" id="protocol" role="listbox" aria-label="Протокол" hidden>
+              <button class="opt" role="option" aria-selected="false" data-protocol=""><span class="opt-name">Авто</span><span class="opt-sub">Под вашу сеть; меняется сам, если перестал проходить</span></button>
+              <button class="opt" role="option" aria-selected="false" data-protocol="amneziawg"><span class="opt-name">AmneziaWG</span><span class="opt-sub">С маскировкой: его труднее заблокировать</span></button>
+              <button class="opt" role="option" aria-selected="false" data-protocol="wireguard"><span class="opt-name">WireGuard</span><span class="opt-sub">Самый быстрый, но его легче заблокировать</span></button>
+              <button class="opt" role="option" aria-selected="false" data-protocol="openvpn"><span class="opt-name">OpenVPN</span><span class="opt-sub">Медленнее, но проходит, где другие не могут; ведёт весь трафик</span></button>
+            </div>
+          </div>
         </div>
         <span class="mode-note" id="mode-note" hidden></span>
-        <div class="segment protocol-pick" id="protocol" role="radiogroup" aria-label="Протокол" hidden>
-          <button role="radio" aria-checked="false" data-protocol="" data-tip="Протокол подбирается под вашу сеть и меняется сам, если перестал проходить.">Авто</button>
-          <button role="radio" aria-checked="false" data-protocol="amneziawg" data-tip="WireGuard с маскировкой: его труднее распознать и заблокировать.">AmneziaWG</button>
-          <button role="radio" aria-checked="false" data-protocol="wireguard" data-tip="Самый быстрый, но его легче всего распознать и заблокировать.">WireGuard</button>
-          <button role="radio" aria-checked="false" data-protocol="openvpn" data-tip="Медленнее других, но иногда проходит там, где они не проходят. Ведёт весь трафик компьютера: игры с ним ускоряются через полный VPN.">OpenVPN</button>
-        </div>
         <div class="problem-row"><div class="trouble-line" id="trouble" hidden></div><button type="button" class="report-problem" id="report-problem" data-tip="Связь сбоила без видимой причины: сеть не менялась. Сообщение уже написано, к нему приложатся журнал, сведения о сети и лог службы — перед отправкой видно, что именно." hidden>Сообщить о сбое</button></div>
         <div class="error" id="action-error" role="alert" hidden></div>
       </div>

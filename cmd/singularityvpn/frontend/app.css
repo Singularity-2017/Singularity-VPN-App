@@ -172,17 +172,20 @@ button { cursor: pointer; }
 .side { display: flex; flex-direction: column; gap: 14px; }
 .choices { display: flex; flex-direction: column; gap: 18px; }
 
-.power-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 6px 0 4px; }
+.power-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 4px 0 2px; }
+/* The button is the size in both windows: a narrow window stacks
+   everything under it and cannot spare the height. */
 .power {
-  position: relative; --ring: 7px;
-  width: 212px; height: 212px; border-radius: 50%;
+  position: relative; --ring: 6px;
+  width: 180px; height: 180px; border-radius: 50%;
   border: var(--ring) solid var(--line); color: var(--muted);
   background: radial-gradient(circle at 50% 40%, var(--surface) 0%, var(--ground) 70%);
   box-shadow: 0 10px 30px rgba(0,0,0,.4);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
   transition: border-color .25s, box-shadow .25s, color .25s;
 }
-.power span { color: var(--text); font-size: 18px; font-weight: 600; }
+.power svg { width: 46px; height: 46px; }
+.power span { color: var(--text); font-size: 16px; font-weight: 600; }
 .power.on {
   border-color: var(--accent); color: var(--accent);
   box-shadow: 0 0 0 1px rgba(var(--accent-rgb),.4), 0 0 36px rgba(var(--accent-rgb),.55), 0 0 90px rgba(var(--accent-rgb),.25), inset 0 0 24px rgba(var(--accent-rgb),.15);
@@ -266,9 +269,22 @@ button { cursor: pointer; }
 .mode-note { font-size: 12px; color: var(--warn); text-align: center; }
 .segment.mode-pick { margin: 4px auto 0; padding: 3px; border-radius: 19px; }
 .segment.mode-pick button { min-width: 118px; min-height: 34px; padding: 0 18px; border-radius: 16px; font-size: 14px; }
-/* The protocol is chosen less often than the mode, and reads smaller. */
-.segment.protocol-pick { margin: 6px auto 0; }
-.segment.protocol-pick button { min-height: 26px; padding: 0 10px; border-radius: 13px; font-size: 12px; }
+/* The mode and the protocol are the tunnel's two choices and sit on one
+   line; the protocols are a list, so they open one level down from a
+   button that names the one chosen. */
+.picks { display: flex; flex-wrap: wrap; justify-content: center; align-items: stretch; gap: 8px; margin-top: 2px; }
+.picks .segment.mode-pick { margin: 0; }
+.picks .segment.mode-pick button { min-width: 0; padding: 0 14px; }
+.protocol-pick { position: relative; display: flex; }
+.protocol-chip {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px;
+  min-width: 100px; padding: 0 14px; border: 1px solid var(--line); border-radius: 19px; background: var(--inset);
+}
+.protocol-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+.protocol-value { font-size: 13px; font-weight: 600; color: var(--accent); }
+.protocol-chip:hover:not(:disabled) .protocol-value { color: var(--hot); }
+.protocol-chip:disabled { cursor: default; }
+.pop.list.protocol-pop { top: calc(100% + 6px); right: 0; width: 280px; }
 
 .chip {
   display: flex; align-items: center; gap: 12px; width: 100%; min-height: 58px; padding: 10px 14px;
@@ -487,9 +503,6 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
 .window.expanded .screen.main {
   display: grid; grid-template-columns: 300px minmax(0, 1fr); column-gap: 28px; align-items: start;
 }
-.window.expanded .power { width: 180px; height: 180px; --ring: 6px; gap: 10px; }
-.window.expanded .power svg { width: 46px; height: 46px; }
-.window.expanded .power span { font-size: 16px; }
 .window.expanded .choices { padding-top: 4px; }
 /* The journal runs the whole width under both columns. */
 .window.expanded .side { display: contents; }
