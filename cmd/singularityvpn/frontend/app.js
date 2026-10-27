@@ -799,7 +799,7 @@
 
   const event_text = {
     profile_changed: ["Профиль изменён", "ok"],
-    network_changed: ["Сеть изменилась", ""],
+    network_changed: ["Сеть изменилась", "net"],
     connection_established: ["Подключено", "ok"],
     connection_lost: ["Связь с сервером потеряна", "warn"],
     connection_degraded: ["Проверяем соединение", "warn"],
@@ -855,8 +855,8 @@
         return ["Перехват игр остановился — до следующего подключения игры идут напрямую", "warn", a.error];
       case "event": {
         if (a.kind === "connection_degraded") return [window.health_text.degraded(a), "warn"];
-        // One bad sample the next check did not confirm: shown, not alarming.
-        if (a.kind === "connection_blip") return ["Короткий провал · " + window.health_text.degraded(a), ""];
+        // One bad sample the next check did not confirm: still a failure.
+        if (a.kind === "connection_blip") return ["Короткий провал · " + window.health_text.degraded(a), "warn"];
         const t = event_text[a.kind];
         if (!t) return [a.kind, ""];
         // A tunnel that came up says where and how.
@@ -1865,6 +1865,8 @@
     }, show_level);
     $("statistics-row").addEventListener("click", () => show_level("settings", "statistics-panel"));
     $("statistics-back").addEventListener("click", () => show_level("settings", "settings-main"));
+    $("about-row").addEventListener("click", () => { window.about_ui.render($("about-body"), ago); show_level("settings", "about-panel"); });
+    $("about-back").addEventListener("click", () => show_level("settings", "settings-main"));
     $("blocks-line").addEventListener("click", () => {
       services_open = !services_open;
       try { localStorage.setItem("services.open", services_open ? "1" : "0"); } catch (e) {}

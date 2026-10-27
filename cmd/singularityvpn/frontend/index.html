@@ -65,8 +65,10 @@
         <button class="opt line opt-row" id="theme-row">
           <span class="opt-name" id="theme-row-name">Тема</span><span class="opt-value" id="theme-value"></span><svg class="chev-right" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
         </button>
+        <button class="opt line opt-row" id="about-row"><span>О программе</span><span aria-hidden="true">›</span></button>
       </div>
       <div class="pop-level" id="statistics-panel" hidden><button class="pop-back" id="statistics-back">‹ Статистика</button><div id="statistics-body"></div></div>
+      <div class="pop-level" id="about-panel" hidden><button class="pop-back" id="about-back">‹ О программе</button><div id="about-body"></div></div>
       <div class="pop-level" id="theme-panel" hidden>
         <button class="pop-back" id="theme-back"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg><span id="theme-title">Тема</span></button>
         <div id="theme-list" role="listbox" aria-labelledby="theme-title"></div>
@@ -262,6 +264,7 @@
 <script src="account.js"></script>
 <script src="help.js"></script>
 <script src="statistics.js"></script>
+<script src="about.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

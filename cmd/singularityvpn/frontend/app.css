@@ -15,6 +15,9 @@
      orange, so trouble never looks like "on". */
   --trouble: #ff5f5f;
   --trouble-rgb: 255,95,95;
+  /* What the network did: neither good nor bad news, a calm blue that
+     stays apart from the accent in every theme. */
+  --info: #7aa7ff;
   --hover: #323a42;
   --hot: #ffffff;
   --branch: #3a454f;
@@ -231,6 +234,7 @@ button { cursor: pointer; }
 .journal-list .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .journal-list li.warn .what { color: var(--trouble); }
 .journal-list li.ok .what { color: var(--accent); }
+.journal-list li.net .what { color: var(--info); }
 
 /* --- server: country and server in one chip, one menu -------------------- */
 
@@ -496,31 +500,31 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
   --ground: #1c1d1f; --surface: #27292c; --inset: #161719; --line: #3b3e42;
   --text: #eef1f3; --muted: #a2a7ad; --hover: #303337; --branch: #464a4f;
   --accent: #eef1f3; --accent-rgb: 238,241,243; --accent-ink: #1c1d1f;
-  --trouble: #ff6262; --trouble-rgb: 255,98,98;
+  --trouble: #ff6262; --trouble-rgb: 255,98,98; --info: #8db4ea;
 }
 :root[data-theme="amber"] {
   --ground: #1f1a15; --surface: #2b241d; --inset: #191511; --line: #45392d;
   --text: #f3ebe1; --muted: #b8a893; --hover: #352c23; --branch: #4e4134;
   --accent: #ffb547; --accent-rgb: 255,181,71; --accent-ink: #2b1a00;
-  --trouble: #ff5a4a; --trouble-rgb: 255,90,74;
+  --trouble: #ff5a4a; --trouble-rgb: 255,90,74; --info: #8fb3f5;
 }
 :root[data-theme="berserk"] {
   --ground: #121316; --surface: #1b1d22; --inset: #0d0e11; --line: #3b2c33;
   --text: #ece6e8; --muted: #a0939a; --hover: #26191e; --branch: #47323a;
   --accent: #ff3b5c; --accent-rgb: 255,59,92; --accent-ink: #2a0910;
-  --trouble: #ff8a2a; --trouble-rgb: 255,138,42;
+  --trouble: #ff8a2a; --trouble-rgb: 255,138,42; --info: #6aa6ff;
 }
 :root[data-theme="toxin"] {
   --ground: #0f120f; --surface: #181d18; --inset: #0a0d0a; --line: #2c3a2a;
   --text: #e6f2e0; --muted: #93a68c; --hover: #1d261b; --branch: #34452f;
   --accent: #a6ff2e; --accent-rgb: 166,255,46; --accent-ink: #142200;
-  --trouble: #ff4d4d; --trouble-rgb: 255,77,77;
+  --trouble: #ff4d4d; --trouble-rgb: 255,77,77; --info: #52b8ff;
 }
 :root[data-theme="synthwave"] {
   --ground: #150e22; --surface: #22173b; --inset: #100a1b; --line: #3e2d64;
   --text: #f1e8ff; --muted: #ad9cc9; --hover: #2a1d47; --branch: #4a3675;
   --accent: #ff4fd8; --accent-rgb: 255,79,216; --accent-ink: #2b0627;
-  --trouble: #ff5c45; --trouble-rgb: 255,92,69;
+  --trouble: #ff5c45; --trouble-rgb: 255,92,69; --info: #62d0ff;
 }
 
 :root.sharp body { font-family: "Bahnschrift", "Segoe UI Variable Text", "Segoe UI", sans-serif; }
@@ -563,6 +567,11 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
 .power .power-caption { display: flex; flex-direction: column; align-items: center; gap: 3px; }
 .power #connection-duration { font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: .3px; text-transform: none; font-variant-numeric: tabular-nums; }
 #statistics-body { max-height: 55vh; overflow-y: auto; font-size: 12px; }
+#about-body { max-height: 55vh; overflow-y: auto; font-size: 12px; line-height: 1.4; padding: 0 4px 4px; width: 340px; max-width: 100%; }
+.about-version { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin: 10px 0 4px; font-weight: 600; color: var(--text); }
+.about-version:first-child { margin-top: 2px; color: var(--accent); }
+.about-when { font-weight: 400; color: var(--muted); }
+.about-items { margin: 0; padding-left: 16px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
 button.blocks-line { text-align: left; border: 0; background: transparent; padding: 4px 0; color: var(--muted); font: inherit; }
 button.blocks-line:hover { color: var(--text); }
 #blocks-details { animation: content-enter var(--replace-duration) ease-out; }

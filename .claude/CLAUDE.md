@@ -79,6 +79,11 @@ reporting it as done.
 - Verbatim content — never paraphrase, abbreviate, or translate author wording
   or formatting.
 - Line endings are LF, enforced by `.gitattributes`.
+- The changelog the window shows under Settings -> About lives in
+  `cmd/singularityvpn/frontend/about.js`. Every change a person can see or
+  feel adds a line to its unreleased entry in the same commit, in plain
+  Russian from the user's side of the screen; a release dates that entry
+  and opens a new one. The owner relies on it to know what is done.
 - A number shown in the interface is either a real measurement or it is absent.
   Never a zero, a dash or a placeholder standing for "unknown". A version the
   build did not supply is not printed.
