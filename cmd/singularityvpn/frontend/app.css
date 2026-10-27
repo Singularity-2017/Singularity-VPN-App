@@ -579,6 +579,13 @@ span[data-tip], div[data-tip] { text-decoration: underline dotted rgba(159,176,1
 .about-current { font-weight: 400; color: var(--accent); }
 .about-when, .about-count { font-weight: 400; color: var(--muted); }
 .about-group { margin-left: 12px; }
+/* Plans are drawn apart from what is done: a dashed edge and a muted name. */
+.about-plans { border: 1px dashed var(--line); border-radius: 8px; margin-bottom: 6px; padding: 0 4px; }
+.about-plans > summary { color: var(--muted); }
+.about-plan { margin-left: 12px; }
+.about-plan > summary { font-weight: 600; color: var(--muted); }
+.about-plan .about-group ul { opacity: .85; }
+.about-mark { font-weight: 400; font-size: 11px; color: var(--muted); border: 1px dashed currentColor; border-radius: 4px; padding: 0 4px; }
 .about-group > summary { color: var(--text); }
 .about-kind { flex: 1; }
 .about-group ul { margin: 0 0 4px; padding-left: 28px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }

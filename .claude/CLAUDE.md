@@ -84,6 +84,9 @@ reporting it as done.
   feel adds a line to its unreleased entry in the same commit, in plain
   Russian from the user's side of the screen; a release dates that entry
   and opens a new one. The owner relies on it to know what is done.
+  What is planned lives in the same file (`plans`): only the nearest version
+  carries a number, the rest is "later". A plan that is done moves into the
+  unreleased entry. Versions are SemVer: a new capability raises MINOR.
 - A number shown in the interface is either a real measurement or it is absent.
   Never a zero, a dash or a placeholder standing for "unknown". A version the
   build did not supply is not printed.

@@ -36,3 +36,13 @@ test('a build without a version names none and marks none',()=>{
   assert.equal(e[0].title,'Не выпущена');
   assert.equal(e.filter(x=>x.current).length,0);
 });
+test('only the nearest plan has a number, and it is ahead of every release',()=>{
+  const {plans}=require('../frontend/about.js');
+  assert.ok(plans.length>0);
+  assert.match(plans[0].version,/^\d+\.\d+\.\d+$/);
+  for(const p of plans.slice(1)) assert.equal(p.version,undefined);
+  const n=s=>s.split('.').map(Number);
+  const [a,b]=[n(plans[0].version),n(changes[1].version)];
+  assert.ok(a[0]>b[0]||a[0]===b[0]&&(a[1]>b[1]||a[1]===b[1]&&a[2]>b[2]));
+  for(const p of plans) for(const [kind,items] of p.groups) assert.ok(kind&&items.length>0,kind);
+});

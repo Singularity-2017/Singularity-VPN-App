@@ -27,7 +27,7 @@
         ['Окно', [
           'Окно у нижнего края экрана остаётся у края, когда меняет высоту.',
           'В узком окне журнал сжимается первым, а когда места почти нет — сворачивается.',
-          'Раздел «О программе»: изменения по версиям и разделам, старые версии свёрнуты, текущая отмечена своим номером.',
+          'Раздел «О программе»: изменения по версиям и разделам, старые версии свёрнуты, текущая отмечена своим номером, сверху — планы.',
           'Аккаунт и тариф, справка, статистика соединения, редактор тем.',
           'Сборка между выпусками носит номер следующей версии (0.1.4-dev…), а не прошлой.'
         ]],
@@ -92,6 +92,50 @@
     }
   ];
 
+  // plans is what comes next, in the order it is meant to come. Only the
+  // nearest version has a number; the rest is "later", because a far
+  // number would only change. A plan that is done moves into the
+  // unreleased entry above.
+  const plans = [
+    {
+      version: '0.2.0',
+      groups: [
+        ['Игры', [
+          'На карточке игры — пинг напрямую и через VPN рядом; путь выбирается по замеру.',
+          'Сервер VPN подбирается по пингу до игрового сервера, а не только до вас.',
+          'Кроме пинга учитываются потери пакетов и джиттер.',
+          'CS2 и Dota 2 через сеть Valve, Call of Duty.'
+        ]]
+      ]
+    },
+    {
+      groups: [
+        ['Безопасность', [
+          'Kill switch: по желанию трафик не идёт мимо VPN, если туннель упал.'
+        ]],
+        ['Диагностика', [
+          'Экран проверки: сервер, интернет и VPN — задержка, потери, DNS и кнопка «Проверить».'
+        ]],
+        ['Обход блокировок', [
+          'Протоколы Xray и VLESS для сетей, где режут всё остальное.'
+        ]],
+        ['Игры', [
+          'Пакеты игры дублируются по двум путям — без потерь на плохой сети.',
+          'Игра не уходит на серверы за пределами выбранного региона.'
+        ]],
+        ['Другие системы', [
+          'Приложения для Android и iOS — ориентир версия 0.6.',
+          'macOS и Linux.'
+        ]],
+        ['Удобство', [
+          'Управление с клавиатуры: стрелки между карточками и списками.',
+          'Свои правила: какие программы и адреса идут через VPN.',
+          'Подписанный установщик — Windows перестанет предупреждать при установке.'
+        ]]
+      ]
+    }
+  ];
+
   // entries is the changelog as this build sees it. A build of a release
   // marks that release as current and has nothing unreleased to show; any
   // other build -- dev or dirty -- is the unreleased entry, named by the
@@ -122,6 +166,32 @@
       return d;
     };
     const span = (cls, text) => { const e = document.createElement('span'); e.className = cls; e.textContent = text; return e; };
+    const groups = (parent, key, list) => {
+      for (const [kind, items] of list) {
+        const g = fold(key + '.' + kind, false, [span('about-kind', kind), span('about-count', String(items.length))]);
+        g.className = 'about-group';
+        const ul = document.createElement('ul');
+        for (const text of items) {
+          const li = document.createElement('li');
+          li.textContent = text;
+          ul.append(li);
+        }
+        g.append(ul);
+        parent.append(g);
+      }
+    };
+    // What is planned sits above what is done, folded and drawn apart, so
+    // it never reads as something this build already has.
+    const ahead = fold('about.plans', false, [span('about-title', 'Планы'), span('about-count', String(plans.length))]);
+    ahead.className = 'about-version about-plans';
+    for (const p of plans) {
+      const title = p.version ? 'Версия ' + p.version : 'Позже';
+      const v = fold('about.plan.' + title, false, [span('about-title', title), span('about-mark', 'план')]);
+      v.className = 'about-version about-plan';
+      groups(v, 'about.plan.' + title, p.groups);
+      ahead.append(v);
+    }
+    box.append(ahead);
     for (const e of entries(version)) {
       const head = [span('about-title', e.title)];
       if (e.current) head.push(span('about-current', 'текущая'));
@@ -134,22 +204,11 @@
       }
       const v = fold('about.' + (e.date ? e.title : 'next'), e.current, head);
       v.className = 'about-version';
-      for (const [kind, items] of e.groups) {
-        const g = fold('about.' + (e.date ? e.title : 'next') + '.' + kind, false, [span('about-kind', kind), span('about-count', String(items.length))]);
-        g.className = 'about-group';
-        const list = document.createElement('ul');
-        for (const text of items) {
-          const li = document.createElement('li');
-          li.textContent = text;
-          list.append(li);
-        }
-        g.append(list);
-        v.append(g);
-      }
+      groups(v, 'about.' + (e.date ? e.title : 'next'), e.groups);
       box.append(v);
     }
   }
 
-  if (typeof module !== 'undefined') module.exports = { changes, entries };
-  root.about_ui = { changes, entries, render };
+  if (typeof module !== 'undefined') module.exports = { changes, plans, entries };
+  root.about_ui = { changes, plans, entries, render };
 })(typeof window !== 'undefined' ? window : globalThis);
