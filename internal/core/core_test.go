@@ -165,7 +165,7 @@ func (p *fake_prober) Probe(ctx context.Context) (diagnostics.Sample, error) {
 // it was asked. If enter is set it announces each arrival, and if release is
 // set it waits there until the test lets it go.
 type fake_reach_prober struct {
-	results []reach.Result
+	results []reach.Result // set through script once probes may run
 	err     error
 	calls   atomic.Int32
 	enter   chan struct{}
@@ -196,7 +196,17 @@ func (p *fake_reach_prober) Probe(ctx context.Context, targets []reach.Target) (
 			return nil, ctx.Err()
 		}
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.results, p.err
+}
+
+// script sets what the next probes answer, under the lock a probe running
+// in the background reads them with.
+func (p *fake_reach_prober) script(results []reach.Result, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.results, p.err = results, err
 }
 
 // fake_pinger answers an echo from a script: an address with an entry in

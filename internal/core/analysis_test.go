@@ -314,7 +314,7 @@ func Test_a_failed_background_analysis_is_tried_again_at_the_next_change(t *test
 	with_network(f, "network-a")
 	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	with_clock(f, start)
-	f.reach_prober.err = errors.New("no network")
+	f.reach_prober.script(f.reach_prober.results, errors.New("no network"))
 
 	f.app.Network_changed(context.Background())
 	deadline := time.Now().Add(2 * time.Second)
@@ -324,7 +324,7 @@ func Test_a_failed_background_analysis_is_tried_again_at_the_next_change(t *test
 	time.Sleep(50 * time.Millisecond)
 
 	// A flapping link does not probe back to back.
-	f.reach_prober.err = nil
+	f.reach_prober.script(f.reach_prober.results, nil)
 	with_clock(f, start.Add(analysis_automatic_spacing-time.Second))
 	f.app.Network_changed(context.Background())
 	time.Sleep(50 * time.Millisecond)

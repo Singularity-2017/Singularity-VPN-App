@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,9 +183,11 @@ func (p *fake_process) Kill() {
 	p.exit()
 }
 
-type fake_device struct{ closed bool }
+// fake_device is closed from the goroutine that watches openvpn.exe, and
+// read by the test.
+type fake_device struct{ closed atomic.Bool }
 
-func (d *fake_device) Close() error { d.closed = true; return nil }
+func (d *fake_device) Close() error { d.closed.Store(true); return nil }
 
 type harness struct {
 	adapter *Adapter
@@ -212,7 +215,7 @@ func (h *harness) connect(ctx context.Context) error {
 
 func (h *harness) assert_nothing_left(t *testing.T) {
 	t.Helper()
-	if !h.device.closed {
+	if !h.device.closed.Load() {
 		t.Error("the adapter was left behind")
 	}
 	if _, err := os.Stat(h.profile); !errors.Is(err, os.ErrNotExist) {

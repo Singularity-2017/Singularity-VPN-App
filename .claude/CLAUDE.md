@@ -39,7 +39,10 @@ reporting it as done.
 
 ## Environment facts (do not rediscover these)
 
-- `go test -race` cannot run here (Cygwin toolchain). Skip it and say so.
+- `go test -race` needs a C compiler that targets plain Windows; Cygwin's
+  own gcc does not. Run it as
+  `CC=/c/cygwin64/bin/x86_64-w64-mingw32-gcc.exe CGO_ENABLED=1 go test -race ./...`
+  (Cygwin package mingw64-x86_64-gcc-core).
 - Cyrillic through a bash heredoc arrives corrupted. Russian text goes through
   the Write/Edit tools or Python, never a heredoc.
 - Shell state does not persist between Bash calls. Use absolute paths.

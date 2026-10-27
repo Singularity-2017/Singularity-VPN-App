@@ -101,6 +101,22 @@ func logging(f *fixture) *log_buffer {
 	return out
 }
 
+// watch_analysis_until_done runs the watcher for a test and waits for it to
+// stop before the test's timers are put back: the cleanup that restores
+// them runs after this one, and a watcher still reading them would race it.
+func watch_analysis_until_done(t *testing.T, f *fixture, ctx context.Context, cancel context.CancelFunc) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.app.watch_analysis(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
 // set_analysis_timers makes the pacing of the automatic runs short for a
 // test, and puts it back after.
 func set_analysis_timers(t *testing.T, check, start, down time.Duration) {
@@ -244,7 +260,7 @@ func Test_a_successful_run_marks_its_network_and_a_failed_one_does_not(t *testin
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	with_clock(f, now)
 
-	f.reach_prober.err = errors.New("no network")
+	f.reach_prober.script(f.reach_prober.results, errors.New("no network"))
 	if _, err := f.app.Analyze(context.Background()); err == nil {
 		t.Fatal("Analyze() with the probes failing = nil")
 	}
@@ -254,7 +270,7 @@ func Test_a_successful_run_marks_its_network_and_a_failed_one_does_not(t *testin
 		}
 	})
 
-	f.reach_prober.err = nil
+	f.reach_prober.script(f.reach_prober.results, nil)
 	if _, err := f.app.Analyze(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +498,7 @@ func Test_the_service_start_triggers_a_check(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go f.app.watch_analysis(ctx)
+	watch_analysis_until_done(t, f, ctx, cancel)
 	wait_for_analysis_event(t, ch)
 	if got := f.reach_prober.calls.Load(); got != 1 {
 		t.Fatalf("probes after the start = %d, want 1", got)
@@ -500,7 +516,7 @@ func Test_the_connection_going_down_triggers_a_check_after_it_settles(t *testing
 	defer unsubscribe()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go f.app.watch_analysis(ctx)
+	watch_analysis_until_done(t, f, ctx, cancel)
 	time.Sleep(50 * time.Millisecond) // let the watcher subscribe
 
 	if got := f.reach_prober.calls.Load(); got != 0 {
@@ -524,7 +540,7 @@ func Test_a_connection_that_comes_back_before_the_settle_is_not_measured(t *test
 	connect(t, f)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go f.app.watch_analysis(ctx)
+	watch_analysis_until_done(t, f, ctx, cancel)
 	time.Sleep(50 * time.Millisecond)
 
 	if err := f.app.Disconnect(context.Background()); err != nil {
@@ -549,7 +565,7 @@ func Test_the_periodic_check_measures_a_machine_that_stays_on_one_network_daily(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go f.app.watch_analysis(ctx)
+	watch_analysis_until_done(t, f, ctx, cancel)
 	wait_for_analysis_event(t, ch)
 	// Many checks pass, and none of them is due.
 	time.Sleep(100 * time.Millisecond)
