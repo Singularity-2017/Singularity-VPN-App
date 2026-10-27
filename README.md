@@ -103,8 +103,10 @@ Roskomnadzor's blocking; that is 1.0. The first release is v0.1.0.
 scripts/release.ps1 [-Minimum v1.2.0] [-Urgent] [-Mirror https://...]
 ```
 
-`VERSION` is the single source of the base version (`X.Y.Z`). Change it and
-commit it with the release changes. Both scripts read that file; an optional
+`VERSION` is the single source of the base version (`X.Y.Z`): the release
+being worked towards, not the last one out, so a build between releases reads
+as a pre-release of the next (`v0.1.4-dev.<commit>` after `v0.1.3`). A release
+tags that number; the commit after it raises `VERSION` to the next. Both scripts read that file; an optional
 `-Version` must match it and cannot hide uncommitted changes. All binaries and
 the setup receive the same version. Uncommitted changes, including new source
 files, append `-dirty`; untracked agent-local files are excluded. A clean build

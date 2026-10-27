@@ -21,8 +21,8 @@ test('the changelog is newest first, with only the unreleased version undated',(
   }
 });
 test('a dev build is the unreleased entry, named by its own version',()=>{
-  const e=entries('v0.1.3-dev.d8dacdf');
-  assert.equal(e[0].title,'Версия 0.1.3-dev.d8dacdf');
+  const e=entries('v0.1.4-dev.d8dacdf');
+  assert.equal(e[0].title,'Версия 0.1.4-dev.d8dacdf');
   assert.equal(e[0].current,true);
   assert.equal(e.filter(x=>x.current).length,1);
 });
