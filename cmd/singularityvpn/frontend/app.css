@@ -307,6 +307,10 @@ button { cursor: pointer; }
 .chip-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .chip-title > .chip-name, .chip-title > .chip-badge { flex: none; }
 .chip-title > .chip-sub { min-width: 0; }
+/* Chosen automatically, the badge takes the room: server, protocol and
+   delay go to a second line rather than out of sight. */
+.chip.auto .chip-title { flex-wrap: wrap; row-gap: 2px; }
+.chip.auto .chip-title > .chip-sub { order: 1; flex-basis: 100%; }
 .chip-badge {
   flex: none; padding: 1px 7px; border-radius: 9px; font-size: 10px; font-weight: 700;
   letter-spacing: .8px; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line);

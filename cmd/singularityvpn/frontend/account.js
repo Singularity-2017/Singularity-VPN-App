@@ -100,46 +100,47 @@
     return account.plan && (account.plan.name || account.plan.id) || '';
   }
   function open_plan() {
-    show_panel('Тариф', (body) => {
-      if (!account) { body.append(make('div', 'Не удалось загрузить тариф.', 'pop-note')); return; }
-      row(body, 'Тариф', plan_name());
-      if (account.plan.subscription_active === true) dated(body, 'Срок подписки', account.plan.expires_at);
-      row(body, 'Профилей', number(account.plan.client_limit));
-      if (typeof account.plan.target_kbps === 'number') {
-        const speed = row(body, 'Целевая скорость, Мбит/с', number(account.plan.target_kbps / 1000));
-        speed.dataset.tip = 'Целевая скорость доступна не на всех серверах. Это условие тарифа, а не замер текущего соединения.';
-        speed.tabIndex = 0;
-      }
-      if (typeof account.plan.rate_kbps === 'number') row(body, 'Гарантировано тарифом, Мбит/с', number(account.plan.rate_kbps / 1000));
-      if (account.plan.personal_bandwidth === true) {
-        row(body, 'Персональная скорость, Мбит/с', typeof account.plan.effective_rate_kbps === 'number' ? number(account.plan.effective_rate_kbps / 1000) : '');
-        row(body, 'Персональный максимум, Мбит/с', typeof account.plan.effective_ceil_kbps === 'number' ? number(account.plan.effective_ceil_kbps / 1000) : '');
-      }
-      row(body, 'Цена', money(account.plan.amount_minor, account.plan.currency));
-      if (typeof account.plan.period_days === 'number') row(body, 'Период, дней', number(account.plan.period_days));
-      if (account.section_errors && account.section_errors.policies) row(body, 'Условия тарифа', 'Не удалось обновить');
-      if (account.section_errors && account.section_errors.prices) row(body, 'Цена', 'Не удалось обновить');
-      if (account.plan.sponsored_place === true) row(body, 'Доступ', 'Бесплатное место');
-      else if (account.plan.subscription_active === false) row(body, 'Подписка', 'Без платной подписки');
-      if (Array.isArray(account.payments) || account.section_errors && account.section_errors.payments) {
-        // Allocations belong to the tariff: who paid is not said, so they are never spending.
-        const credited = make('button', undefined, 'opt line opt-row');
-        credited.type = 'button';
-        credited.append(make('span', 'Зачисления', 'opt-name'), make('span', '›'));
-        credited.dataset.tip = 'Оплаченные периоды этого тарифа, в том числе оплаченные другими.';
-        credited.addEventListener('click', () => show_panel('Зачисления на тариф', draw_allocations, true));
-        body.append(credited);
-      }
-      const portal = make('button', 'Открыть личный кабинет', 'plain');
-      portal.dataset.tip = 'Продление и смена тарифа — через администратора в личном кабинете.';
-      portal.addEventListener('click', async () => {
-        const app = root.go && root.go.main && root.go.main.App;
-        if (!app || typeof app.Open_account_portal !== 'function') return;
-        const result = await app.Open_account_portal().catch(() => ({code:'failed'}));
-        if (result && result.code) portal.textContent = 'Не удалось открыть личный кабинет';
-      });
-      body.append(portal);
+    show_panel('Тариф', draw_plan);
+  }
+  function draw_plan(body) {
+    if (!account) { body.append(make('div', 'Не удалось загрузить тариф.', 'pop-note')); return; }
+    row(body, 'Тариф', plan_name());
+    if (account.plan.subscription_active === true) dated(body, 'Срок подписки', account.plan.expires_at);
+    row(body, 'Профилей', number(account.plan.client_limit));
+    if (typeof account.plan.target_kbps === 'number') {
+      const speed = row(body, 'Целевая скорость, Мбит/с', number(account.plan.target_kbps / 1000));
+      speed.dataset.tip = 'Целевая скорость доступна не на всех серверах. Это условие тарифа, а не замер текущего соединения.';
+      speed.tabIndex = 0;
+    }
+    if (typeof account.plan.rate_kbps === 'number') row(body, 'Гарантировано тарифом, Мбит/с', number(account.plan.rate_kbps / 1000));
+    if (account.plan.personal_bandwidth === true) {
+      row(body, 'Персональная скорость, Мбит/с', typeof account.plan.effective_rate_kbps === 'number' ? number(account.plan.effective_rate_kbps / 1000) : '');
+      row(body, 'Персональный максимум, Мбит/с', typeof account.plan.effective_ceil_kbps === 'number' ? number(account.plan.effective_ceil_kbps / 1000) : '');
+    }
+    row(body, 'Цена', money(account.plan.amount_minor, account.plan.currency));
+    if (typeof account.plan.period_days === 'number') row(body, 'Период, дней', number(account.plan.period_days));
+    if (account.section_errors && account.section_errors.policies) row(body, 'Условия тарифа', 'Не удалось обновить');
+    if (account.section_errors && account.section_errors.prices) row(body, 'Цена', 'Не удалось обновить');
+    if (account.plan.sponsored_place === true) row(body, 'Доступ', 'Бесплатное место');
+    else if (account.plan.subscription_active === false) row(body, 'Подписка', 'Без платной подписки');
+    if (Array.isArray(account.payments) || account.section_errors && account.section_errors.payments) {
+      // Allocations belong to the tariff: who paid is not said, so they are never spending.
+      const credited = make('button', undefined, 'opt line opt-row');
+      credited.type = 'button';
+      credited.append(make('span', 'Зачисления', 'opt-name'), make('span', '›'));
+      credited.dataset.tip = 'Оплаченные периоды этого тарифа, в том числе оплаченные другими.';
+      credited.addEventListener('click', () => show_panel('Зачисления на тариф', draw_allocations, true));
+      body.append(credited);
+    }
+    const portal = make('button', 'Открыть личный кабинет', 'plain');
+    portal.dataset.tip = 'Продление и смена тарифа — через администратора в личном кабинете.';
+    portal.addEventListener('click', async () => {
+      const app = root.go && root.go.main && root.go.main.App;
+      if (!app || typeof app.Open_account_portal !== 'function') return;
+      const result = await app.Open_account_portal().catch(() => ({code:'failed'}));
+      if (result && result.code) portal.textContent = 'Не удалось открыть личный кабинет';
     });
+    body.append(portal);
   }
   function draw_allocations(body) {
     if (!Array.isArray(account.payments) || account.section_errors && account.section_errors.payments) {
@@ -371,6 +372,11 @@
     $('header-credits').addEventListener('click', () => $('menu-button').click());
     $('account-plan').addEventListener('click', (event) => {
       event.stopPropagation();
+      // A second click on the tariff closes what the first one opened.
+      if (!$('menu').hidden && !$('account-panel').hidden && current_panel && current_panel.draw === draw_plan) {
+        $('menu-button').click();
+        return;
+      }
       root.dispatchEvent(new CustomEvent('account-plan-open'));
       open_plan();
     });
