@@ -818,7 +818,7 @@
     connection_established: ["Подключено", "ok"],
     connection_lost: ["Связь с сервером потеряна", "warn"],
     connection_degraded: ["Проверяем соединение", "warn"],
-    switch_started: ["Переключение на другой сервер", ""],
+    switch_started: ["Переключение", ""],
     switch_completed: ["Переключено", "ok"],
     switch_failed: ["Переключиться не удалось", "warn"]
   };
@@ -841,7 +841,18 @@
         return ["Сервер: " + node_label(a.node_id) + why + "; рекомендован " + p, ""];
       }
       case "using an offered alternative this build speaks":
-        return ["Рекомендованного протокола в приложении пока нет — пробуем " + p, ""];
+        return ["Пробуем " + p + " вместо рекомендованного", ""];
+      case "leaving aside what this network reported or keeps losing":
+        return ["Протоколы, которые в этой сети отваливались или о которых вы сообщали, пробуются последними", ""];
+      case "the connection keeps dropping; moving to another protocol": {
+        const to = [a.next_node_id && a.next_node_id !== a.node_id ? node_label(a.next_node_id) : "", protocol_label(a.next_protocol)].filter(Boolean).join(", ");
+        return [p + ": связь то и дело пропадает — переходим на " + (to || "другой протокол"), "warn"];
+      }
+      case "the connection keeps dropping; there is nothing else to move to":
+        return [p + ": связь то и дело пропадает, а перейти не на что", "warn", a.reason];
+      case "the connection keeps dropping after a move for drops; staying":
+        return [p + " пропадает так же часто — дело не в протоколе. Следующая смена не раньше чем через час", "warn"];
+      case "openvpn event": return window.health_text.openvpn(a.event);
       case "using the offered protocol that worked last on this node":
         return ["Пробуем " + p + ": в прошлый раз на этом сервере сработал он", ""];
       case "verification failed":
@@ -907,8 +918,11 @@
     $("journal-retry").hidden = !journal_error || journal_unsupported;
     box.hidden = !show;
     if (!show) return;
-    const list = $("journal-list");
     const entries = journal_entries || [];
+    // A problem the journal shows can be reported from it for as long as it
+    // is there, not only while it is fresh enough to count as failing now.
+    $("journal-report").hidden = !entries.some((e) => Date.parse(e.at) > reported_at && journal_line(e)[1] === "warn");
+    const list = $("journal-list");
     const key = entries.length + ":" + (entries[entries.length - 1] || {}).at + ":" + (servers ? servers.length : -1);
     if (list.dataset.key === key) return;
     list.dataset.key = key;
@@ -1860,9 +1874,11 @@
 
   function open_problem_report() {
     const status = (view && view.status) || {};
+    const place = report_place(status);
     close_pops();
     open_pop("help", "help-button");
-    window.help_ui.report_problem(window.report_ui.message(status.failures, report_place(status)));
+    window.help_ui.report_problem(window.report_ui.message(status.failures, place) ||
+      "Связь сбоила — подробности в журнале." + (place ? " " + place + "." : ""));
   }
 
   // app_version is what the build supplied, for the changelog to mark.
@@ -1946,6 +1962,7 @@
     // It opens the help pop from outside it; the click must not go on to
     // the handler that closes a pop clicked outside of.
     $("report-problem").addEventListener("click", (e) => { e.stopPropagation(); open_problem_report(); });
+    $("journal-report").addEventListener("click", (e) => { e.stopPropagation(); open_problem_report(); });
     $("protocol-chip").addEventListener("click", () => {
       const opening = $("protocol").hidden;
       close_pops();

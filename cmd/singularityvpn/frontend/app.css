@@ -216,7 +216,11 @@ button { cursor: pointer; }
 
 /* The journal: the service's operations, newest first, in the detailed
    mode under the connection plate. */
-.journal { align-self: stretch; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.journal { align-self: stretch; display: flex; flex-direction: column; gap: 8px; min-height: 0; position: relative; }
+/* Over the free end of the title row, so it moves nothing when it comes and goes. */
+.journal-report { position: absolute; top: 0; right: 0; min-height: 20px; padding: 0 8px; border: 1px solid rgba(var(--trouble-rgb),.5); border-radius: 10px; background: transparent; color: var(--trouble); font: inherit; font-size: 11px; cursor: pointer; }
+.journal-report:hover, .journal-report:focus-visible { border-color: var(--hot); color: var(--hot); }
+.window:not(.expanded) .journal-report { top: 5px; } /* level with the framed title */
 .journal .server-label { align-self: flex-start; }
 .journal-list {
   list-style: none; margin: 0; padding: 10px 14px; max-height: 320px; overflow-y: auto;

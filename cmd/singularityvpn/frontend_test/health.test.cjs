@@ -22,3 +22,16 @@ test('lost UDP datagrams are stated as such', () => {
   assert.match(text, /13%/);
   assert.doesNotMatch(health.degraded({degraded_udp:true}), /undefined|NaN|\d/);
 });
+test('what OpenVPN reports reads as what happened, not as its log label', () => {
+  const [restart, tone] = health.openvpn('ping-restart');
+  assert.match(restart, /^OpenVPN: /);
+  assert.doesNotMatch(restart, /ping-restart/);
+  assert.equal(tone, 'warn');
+  // Stopping it is the service's own doing when it reconnects or switches.
+  assert.equal(health.openvpn('SIGTERM')[1], '');
+  for (const marker of ['Inactivity timeout', 'Connection reset', 'Connection timed out', 'SIGUSR1', 'TLS handshake failed', 'AUTH_FAILED', 'Exiting due to fatal error', 'Options error:', 'Cannot open TUN/TAP dev', 'Cannot load private key', 'ERROR: Windows route add command failed']) {
+    assert.ok(!health.openvpn(marker)[0].includes(marker), marker);
+  }
+  // A label added to the service later is shown as it is rather than hidden.
+  assert.equal(health.openvpn('Something new')[0], 'OpenVPN: Something new');
+});
