@@ -1882,18 +1882,15 @@
     return "Сервер: " + [server, protocol_label(status.protocol), mode].filter(Boolean).join(", ");
   }
 
-  // failing_place names where the newest problem the journal shows since the
-  // last report happened, as the service binds the report: one written an
-  // hour after the loss is about that connection, not the one made since.
+  // failing_place names where the problem the journal shows since the last
+  // report happened, as the service binds the report: one written an hour
+  // after the loss is about that connection, not the one made since.
   function failing_place() {
-    const entries = journal_entries || [];
-    for (let i = entries.length - 1; i >= 0 && Date.parse(entries[i].at) > reported_at; i--) {
-      const a = entries[i].attrs || {};
-      if (!a.node_id || !a.protocol || journal_line(entries[i])[1] !== "warn") continue;
-      const mode = { antizapret: "Антизапрет", vpn: "VPN", games: "только игры" }[a.tunnel] || "";
-      return "Сервер: " + [node_label(a.node_id), protocol_label(a.protocol), mode].filter(Boolean).join(", ");
-    }
-    return "";
+    const failure = window.report_ui.failing_entry(journal_entries || [], reported_at, e => journal_line(e)[1] === "warn");
+    if (!failure) return "";
+    const a = failure.attrs;
+    const mode = { antizapret: "Антизапрет", vpn: "VPN", games: "только игры" }[a.tunnel] || "";
+    return "Сервер: " + [node_label(a.node_id), protocol_label(a.protocol), mode].filter(Boolean).join(", ");
   }
 
   function open_problem_report() {

@@ -78,7 +78,23 @@
     return rows;
   }
 
-  const api = { message, attached, plural, windows_name };
+  // failing_entry is the failure after `since` that says which connection
+  // broke, by the rule the service's report follows: one naming its session
+  // over one that does not, a loss over a blip, the newest among equals. A
+  // failure naming no server and protocol names no place. Entries are oldest
+  // first; is_failure says which entries are failures.
+  function failing_entry(entries, since, is_failure) {
+    let blamed = null, blamed_rank = -1;
+    for (let i = entries.length - 1; i >= 0 && Date.parse(entries[i].at) > since; i--) {
+      const a = entries[i].attrs || {};
+      if (!a.node_id || !a.protocol || !is_failure(entries[i])) continue;
+      const rank = a.session_id ? (a.kind === 'connection_blip' ? 1 : 2) : 0;
+      if (rank > blamed_rank) blamed = entries[i], blamed_rank = rank;
+    }
+    return blamed;
+  }
+
+  const api = { message, attached, plural, windows_name, failing_entry };
   if (typeof module !== 'undefined') module.exports = api;
   root.report_ui = api;
 })(typeof window !== 'undefined' ? window : globalThis);

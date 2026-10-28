@@ -87,9 +87,11 @@ func failure_signal(entries []journal.Entry, now time.Time) *ipc.Failure_signal 
 }
 
 // failures_since is failure_signal over the failures since cutoff, and the
-// newest failure it counted: the entry that names the connection the failures
-// happened on, which need not be the one held now -- the service may have
-// restarted since, or the person brought the connection back by hand.
+// counted failure that names the connection they happened on, which need not
+// be the one held now -- the service may have restarted since, or the person
+// brought the connection back by hand. That is the newest hard failure naming
+// a connection, else the newest failure naming one, else the newest failure:
+// a blip on the connection made afterwards is not what broke.
 func failures_since(entries []journal.Entry, now, cutoff time.Time) (*ipc.Failure_signal, journal.Entry) {
 	ordered := slices.Clone(entries)
 	slices.SortStableFunc(ordered, func(a, b journal.Entry) int { return a.At.Compare(b.At) })
@@ -110,7 +112,8 @@ func failures_since(entries []journal.Entry, now, cutoff time.Time) (*ipc.Failur
 
 	var (
 		signal       ipc.Failure_signal
-		last         journal.Entry
+		blamed       journal.Entry
+		blamed_rank  int
 		disconnected bool
 		score        int
 	)
@@ -148,10 +151,26 @@ func failures_since(entries []journal.Entry, now, cutoff time.Time) (*ipc.Failur
 			signal.First = entry.At
 		}
 		signal.Last = entry.At
-		last = entry
+		if rank := blame_rank(class, entry); rank >= blamed_rank {
+			blamed, blamed_rank = entry, rank
+		}
 	}
 	if score < failure_threshold {
 		return nil, journal.Entry{}
 	}
-	return &signal, last
+	return &signal, blamed
+}
+
+// blame_rank is how well a failure says which connection broke: one naming
+// its session, node and protocol over one that does not, a loss or failure
+// over a blip.
+func blame_rank(class failure_class, entry journal.Entry) int {
+	rank := 0
+	if entry.Attrs["session_id"] != "" && entry.Attrs["node_id"] != "" && entry.Attrs["protocol"] != "" {
+		rank += 2
+		if class != failure_blip {
+			rank++
+		}
+	}
+	return rank
 }

@@ -560,6 +560,49 @@ func Test_a_draft_names_the_connection_that_broke_an_hour_ago(t *testing.T) {
 	}
 	connect(t, f.fixture)
 
+	got := f.draft_connection(t)
+	want := map[string]string{"session_id": "5a65bb277d237fdfe01f64db1ccb04e0", "node_id": "node-failing", "protocol": "wireguard", "mode": "full"}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("connection.%s = %q, want %q: the report is about the connection that broke", key, got[key], value)
+		}
+	}
+}
+
+// A blip on the connection made afterwards does not take the report from the
+// connection that broke: a short dip on a healthy tunnel is not what the
+// person is reporting.
+func Test_a_blip_after_the_loss_does_not_take_the_report_from_it(t *testing.T) {
+	f := new_report_fixture(t)
+	lost := []slog.Attr{
+		slog.String("kind", "connection_lost"),
+		slog.String("session_id", "5a65bb277d237fdfe01f64db1ccb04e0"),
+		slog.String("node_id", "node-failing"),
+		slog.String("protocol", "wireguard"),
+		slog.String("tunnel", "vpn"),
+	}
+	f.record(t, 57*time.Minute, "event", lost...)
+	f.record(t, 56*time.Minute, "event", lost...)
+	f.record(t, 5*time.Minute, "event",
+		slog.String("kind", "connection_blip"),
+		slog.String("session_id", "0b1c2d3e4f5a69788796a5b4c3d2e1f0"),
+		slog.String("node_id", "node-healthy"),
+		slog.String("protocol", "amneziawg"),
+		slog.String("tunnel", "antizapret"),
+	)
+
+	got := f.draft_connection(t)
+	want := map[string]string{"session_id": "5a65bb277d237fdfe01f64db1ccb04e0", "node_id": "node-failing", "protocol": "wireguard", "mode": "full"}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("connection.%s = %q, want %q: a blip afterwards took the report from the loss", key, got[key], value)
+		}
+	}
+}
+
+// draft_connection makes a draft and returns the connection it names.
+func (f *report_fixture) draft_connection(t *testing.T) map[string]string {
+	t.Helper()
 	draft, err := f.app.Problem_draft(context.Background(), ipc.Problem_draft_params{})
 	if err != nil {
 		t.Fatal(err)
@@ -570,12 +613,7 @@ func Test_a_draft_names_the_connection_that_broke_an_hour_ago(t *testing.T) {
 	if err := json.Unmarshal(draft.Diagnostics, &bundle); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"session_id": "5a65bb277d237fdfe01f64db1ccb04e0", "node_id": "node-failing", "protocol": "wireguard", "mode": "full"}
-	for key, value := range want {
-		if bundle.Connection[key] != value {
-			t.Errorf("connection.%s = %q, want %q: the report is about the connection that broke", key, bundle.Connection[key], value)
-		}
-	}
+	return bundle.Connection
 }
 
 // send_draft makes a draft and sends it, and returns what was sent.

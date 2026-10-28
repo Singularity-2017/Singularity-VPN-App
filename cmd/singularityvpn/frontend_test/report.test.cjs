@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {message,attached,plural,windows_name}=require('../frontend/report.js');
+const {message,attached,plural,windows_name,failing_entry}=require('../frontend/report.js');
 test('counts read in Russian',()=>{
   const f=n=>n+' '+plural(n,'сбой','сбоя','сбоев');
   assert.deepEqual([1,2,5,11,12,21,22,25,111].map(f),['1 сбой','2 сбоя','5 сбоев','11 сбоев','12 сбоев','21 сбой','22 сбоя','25 сбоев','111 сбоев']);
@@ -39,4 +39,17 @@ test('Windows is named as it names itself',()=>{
   assert.equal(windows_name('10.0.26300'),'Windows 11, сборка 26300');
   assert.equal(windows_name('10.0.19045'),'Windows 10, сборка 19045');
   assert.equal(windows_name(''),'');
+});
+test('the failure blamed is the loss, not a blip on the connection made after it',()=>{
+  const lost=at=>({at,attrs:{kind:'connection_lost',session_id:'s-old',node_id:'n-old',protocol:'wireguard'}});
+  const blip={at:'2026-10-28T20:00:00Z',attrs:{kind:'connection_blip',session_id:'s-new',node_id:'n-new',protocol:'amneziawg'}};
+  const all=()=>true;
+  const entries=[lost('2026-10-28T19:08:00Z'),lost('2026-10-28T19:09:00Z'),blip];
+  assert.equal(failing_entry(entries,0,all),entries[1]);
+  assert.equal(failing_entry([blip],0,all),blip);
+  assert.equal(failing_entry(entries,Date.parse('2026-10-28T19:30:00Z'),all),blip,'what was reported is not blamed again');
+  assert.equal(failing_entry(entries,0,e=>e.attrs.kind!=='connection_lost'),blip,'only failures are blamed');
+  const unnamed={at:'2026-10-28T20:01:00Z',attrs:{node_id:'n-x',protocol:'openvpn'}};
+  assert.equal(failing_entry([blip,unnamed],0,all),blip,'one naming its session wins');
+  assert.equal(failing_entry([{at:'2026-10-28T20:02:00Z',attrs:{kind:'connection_lost'}}],0,all),null,'one naming no server names no place');
 });
