@@ -66,7 +66,16 @@ earlier accepted report already carried are not sent again, across restarts
 too. The report names the session the failures happened on, even when the
 service has restarted since. The control plane counts a reported server and
 protocol as a failed session on that network, and the next automatic choice
-there prefers another usable offer.
+there prefers another usable offer. It does the same for a protocol that failed
+on most attempts on that network. The journal offers a report as long as it
+shows a problem no report has covered yet.
+
+In automatic mode a connection that keeps dropping for a moment — five short
+drops within fifteen minutes — moves to another protocol on its own, whatever
+the machine is doing, outside a game match. The next such move waits an hour:
+a protocol that drops as often says the protocol was not the cause. When nothing
+else comes up, the move returns to the connection it left, which dropped but
+worked. A network change starts the count and the hour afresh.
 
 ## Connection measurements
 

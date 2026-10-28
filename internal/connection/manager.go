@@ -189,6 +189,11 @@ type Manager struct {
 	// cleared by the next sample: a second bad one confirms degradation.
 	degraded_pending         bool
 	consecutive_probe_errors int
+	// drops are the moments the current connection dropped for a moment
+	// within unstable_window; unstable_moved_at is when drops last moved
+	// it on this network. See instability.go.
+	drops             []time.Time
+	unstable_moved_at time.Time
 
 	// retried_at is when a lost tunnel last came back on a retry of the
 	// same target. Lost again soon after, the target is not retried a
@@ -634,9 +639,9 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 	// working connection on the selected node, reported or not: a setting
 	// that has nothing to do with it is no reason to drop it.
 	all_eligible := eligible
-	if kept := without_reported(eligible, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state))); slices.ContainsFunc(kept, usable) {
+	if kept := without_troubled(eligible, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state))); slices.ContainsFunc(kept, usable) {
 		if len(kept) < len(eligible) {
-			m.logger.Info("leaving aside what this network reported problems with", "kept", len(kept), "offered", len(eligible))
+			m.logger.Info("leaving aside what this network reported or keeps losing", "kept", len(kept), "offered", len(eligible))
 		}
 		eligible = kept
 	}
@@ -708,14 +713,22 @@ func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Tar
 		Err: fmt.Errorf("connection: the control plane offered %s, and this build speaks none of them", strings.Join(slices.Compact(names), ", "))}
 }
 
-// without_reported drops the targets the evidence for this network carries
-// a problem report about, from the app's own observations in the same
-// mode: a report made while only games went through says nothing about
-// the whole machine going through.
-func without_reported(targets []recovery.Target, evidence []api.Connection_evidence, mode string) []recovery.Target {
+// troubled says whether a row of this network's evidence holds its target
+// against: the person sent a problem report about it, or most attempts on
+// it here ended in a failure -- WireGuard that a filter cuts seconds after
+// every connect. One failure is chance, not a pattern, so it takes two.
+func troubled(row api.Connection_evidence) bool {
+	return row.Reported > 0 || (row.Failures >= 2 && 2*row.Failures > row.Attempts)
+}
+
+// without_troubled drops the targets the evidence for this network holds
+// against, from the app's own observations in the same mode: a report made
+// while only games went through says nothing about the whole machine going
+// through.
+func without_troubled(targets []recovery.Target, evidence []api.Connection_evidence, mode string) []recovery.Target {
 	reported := map[recovery.Target]bool{}
 	for _, row := range evidence {
-		if row.Source == "app" && row.Reported > 0 && row.Mode == mode {
+		if row.Source == "app" && row.Mode == mode && troubled(row) {
 			reported[recovery.Target{Node_id: row.Node_id, Protocol: row.Protocol}] = true
 		}
 	}
@@ -1033,7 +1046,9 @@ func (m *Manager) settle_connected(ctx context.Context, now time.Time, target re
 	m.baseline = diagnostics.Baseline{}
 	m.monitor = probe_schedule{}
 	m.degraded_since_set = false
+	m.degraded_pending = false
 	m.consecutive_probe_errors = 0
+	m.drops = nil
 	m.last_reevaluation = now
 	m.policy.Record_success(now, target)
 
@@ -1466,6 +1481,7 @@ func (m *Manager) clear_session() {
 	m.current_config = protocols.Connection_config{}
 	m.degraded_since_set = false
 	m.consecutive_probe_errors = 0
+	m.drops, m.unstable_moved_at = nil, time.Time{}
 	m.retried_at, m.retried_target = time.Time{}, recovery.Target{}
 }
 
@@ -1502,6 +1518,15 @@ func (m *Manager) Switch(ctx context.Context, target recovery.Target) error {
 // different state from "connected" even when the attempt finds nowhere to
 // go.
 func (m *Manager) switch_loop(ctx context.Context, now time.Time, target recovery.Target) error {
+	return m.switch_with_way_back(ctx, now, target, recovery.Target{})
+}
+
+// switch_with_way_back is switch_loop that, when the switch budget or the
+// alternatives run out, tries back once before failing, outside the budget:
+// a connection left for dropping now and then still carried traffic, and a
+// move that finds nothing better must not end with no connection at all.
+// An empty back is no way back.
+func (m *Manager) switch_with_way_back(ctx context.Context, now time.Time, target, back recovery.Target) error {
 	m.end_observation(ctx, "replaced", false)
 	token, err := m.token.Token(ctx)
 	if err != nil {
@@ -1533,7 +1558,10 @@ func (m *Manager) switch_loop(ctx context.Context, now time.Time, target recover
 
 		next, nerr := m.policy.Next_target(now, recovery.Reason_hard_fail, target, m.alternatives)
 		if nerr != nil {
-			return m.fail(now, fault)
+			if back == (recovery.Target{}) || back == target {
+				return m.fail(now, fault)
+			}
+			next, back = back, recovery.Target{}
 		}
 		target = next
 	}
@@ -1627,6 +1655,7 @@ func (m *Manager) Network_changed(ctx context.Context, now time.Time) {
 	m.monitor = probe_schedule{}
 	m.baseline = diagnostics.Baseline{}
 	m.degraded_since_set = false
+	m.drops, m.unstable_moved_at = nil, time.Time{}
 	if repinner, ok := m.protocol_handle.(protocols.Repinner); ok {
 		if err := repinner.Repin(ctx); err != nil {
 			m.logger.Warn("network changed; moving the endpoint route failed", "error", err)
@@ -1703,6 +1732,7 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		if current == State_connected && !pending {
 			m.degraded_pending = true
 			m.publish(events.Kind_connection_blip, detail)
+			m.note_drop(ctx, now)
 			return
 		}
 		if current != State_degraded || !m.degraded_since_set {
@@ -1908,9 +1938,9 @@ func (m *Manager) recovery_offers(recommendation api.Recommendation, chosen reco
 		seen[candidate] = true
 		kept = append(kept, candidate)
 	}
-	// What this network reported problems with is tried after the rest.
+	// What this network reported or keeps losing is tried after the rest.
 	ordered := prefer_obfuscated(kept)
-	clean := without_reported(ordered, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state)))
+	clean := without_troubled(ordered, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state)))
 	if len(clean) == len(ordered) {
 		return ordered
 	}

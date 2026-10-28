@@ -363,6 +363,46 @@ func Test_what_this_network_reported_problems_with_steps_aside(t *testing.T) {
 	}
 }
 
+// A protocol this network keeps losing -- most attempts on it here ended in
+// a failure -- steps aside like one a report was sent about: WireGuard cut
+// seconds after every connect is not the first thing tried again. Half is
+// not most, and openvpn with one failure in two is still used.
+func Test_what_keeps_failing_on_this_network_steps_aside(t *testing.T) {
+	env := new_test_env(t)
+	env.protocols.by_name["amneziawg"] = &fake_protocol{name: "amneziawg"}
+	env.protocols.by_name["openvpn"] = &fake_protocol{name: "openvpn"}
+	manager := env.build()
+	evidence := []api.Connection_evidence{
+		{Source: "app", Node_id: "de-01", Protocol: "amneziawg", Mode: "full", Attempts: 6, Failures: 3, Reported: 1},
+		{Source: "app", Node_id: "de-01", Protocol: "wireguard", Mode: "full", Attempts: 6, Failures: 4},
+		{Source: "app", Node_id: "de-01", Protocol: "openvpn", Mode: "full", Attempts: 2, Failures: 1},
+	}
+	rec := api.Recommendation{Node_id: "de-01", Protocol: "amneziawg", Evidence: evidence,
+		Alternatives: []api.Alternative{{Node: "de-01", Protocol: "wireguard"}, {Node: "de-01", Protocol: "openvpn"}}}
+	target, fault := manager.spoken_target(rec)
+	if fault != nil || target != (recovery.Target{Node_id: "de-01", Protocol: "openvpn"}) {
+		t.Fatalf("target=%+v fault=%v; want openvpn on de-01", target, fault)
+	}
+	offers := manager.recovery_offers(rec, target)
+	if len(offers) != 2 || offers[0].Protocol != "amneziawg" || offers[1].Protocol != "wireguard" {
+		t.Fatalf("recovery offers %+v; want amneziawg then wireguard, both kept as the last resort", offers)
+	}
+}
+
+// Most is more than half, and one failure is chance: the line sits between
+// 2 of 4 and 2 of 3.
+func Test_keeps_failing_means_most_attempts_and_more_than_once(t *testing.T) {
+	for _, c := range []struct {
+		failures, attempts int
+		want               bool
+	}{{1, 1, false}, {1, 2, false}, {2, 4, false}, {2, 3, true}, {4, 6, true}} {
+		row := api.Connection_evidence{Failures: c.failures, Attempts: c.attempts}
+		if got := troubled(row); got != c.want {
+			t.Errorf("%d failures of %d attempts: troubled %v, want %v", c.failures, c.attempts, got, c.want)
+		}
+	}
+}
+
 // A report made in another mode does not move this one.
 func Test_a_report_from_another_mode_moves_nothing(t *testing.T) {
 	env := new_test_env(t)
