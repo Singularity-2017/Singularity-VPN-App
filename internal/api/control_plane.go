@@ -9,26 +9,29 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-// Config configures a Client. The zero value of every field except Base_url
-// is a reasonable default.
+// Config configures a Client. Exactly one of Base_url and Base_urls is
+// required; the zero value of every other field is a reasonable default.
 type Config struct {
-	Base_url    string                                           // required; trailing slash tolerated
+	Base_url    string                                           // a fixed address; trailing slash tolerated
 	Http_client *http.Client                                     // nil means a client with sane transport defaults
 	Timeout     time.Duration                                    // per attempt; zero means 15s
 	Retries     int                                              // extra attempts after the first; zero means 2
 	Sleep       func(ctx context.Context, d time.Duration) error // nil means real
 
-	// Mirror selection belongs here in the design, but the update channels
-	// that need it are stage 6 work; a mirror list this client cannot yet
-	// receive would be speculation, so it is not modeled yet.
+	// Base_urls is read on every request, so a control plane that moved
+	// is reached without restarting the client. The address that last
+	// answered goes first; see docs/adr/0001-control-plane-address.md.
+	Base_urls func() []string
 }
 
 // Client talks to one control plane. It is safe for concurrent use.
 type Client struct {
-	base_url    string
+	base_urls   func() []string
+	answered    *atomic.Pointer[string] // the address that last answered; tried first, shared by copies
 	http_client *http.Client
 	timeout     time.Duration
 	retries     int
@@ -39,15 +42,23 @@ type Client struct {
 // into an absolute URL -- a client with nowhere to send requests is a
 // configuration mistake caught here, not at the first request.
 func New(config Config) (*Client, error) {
-	if strings.TrimSpace(config.Base_url) == "" {
-		return nil, fmt.Errorf("api: base url is required")
-	}
-	parsed, err := url.Parse(config.Base_url)
-	if err != nil {
-		return nil, fmt.Errorf("api: base url does not parse: %w", err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("api: base url %q is not absolute", config.Base_url)
+	base_urls := config.Base_urls
+	switch {
+	case base_urls != nil && config.Base_url != "":
+		return nil, fmt.Errorf("api: Base_url and Base_urls are both set")
+	case base_urls == nil:
+		if strings.TrimSpace(config.Base_url) == "" {
+			return nil, fmt.Errorf("api: base url is required")
+		}
+		parsed, err := url.Parse(config.Base_url)
+		if err != nil {
+			return nil, fmt.Errorf("api: base url does not parse: %w", err)
+		}
+		if parsed.Scheme == "" || parsed.Host == "" {
+			return nil, fmt.Errorf("api: base url %q is not absolute", config.Base_url)
+		}
+		fixed := []string{parsed.String()}
+		base_urls = func() []string { return fixed }
 	}
 
 	http_client := config.Http_client
@@ -77,7 +88,8 @@ func New(config Config) (*Client, error) {
 	}
 
 	return &Client{
-		base_url:    strings.TrimRight(parsed.String(), "/"),
+		base_urls:   base_urls,
+		answered:    new(atomic.Pointer[string]),
 		http_client: http_client,
 		timeout:     timeout,
 		retries:     retries,
@@ -160,9 +172,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		payload = encoded
 	}
 
-	full_url := c.base_url + path
+	suffix := path
 	if len(query) > 0 {
-		full_url += "?" + query.Encode()
+		suffix += "?" + query.Encode()
 	}
 
 	attempts := 1 + c.retries
@@ -178,43 +190,45 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			return err
 		}
 
-		attempt_ctx, cancel := context.WithTimeout(ctx, c.timeout)
-
-		var body_reader io.Reader
-		if payload != nil {
-			body_reader = bytes.NewReader(payload)
+		// A transport failure at one address moves on to the next within
+		// the same attempt. A request that must not repeat goes to one
+		// address only: a failure after sending says nothing about
+		// whether the server acted on it.
+		bases := c.order()
+		if len(bases) == 0 {
+			return fmt.Errorf("api: no control plane address is configured")
 		}
-		req, err := http.NewRequestWithContext(attempt_ctx, method, full_url, body_reader)
-		if err != nil {
-			cancel()
-			return fmt.Errorf("api: building request: %w", err)
+		if !allow_retry {
+			bases = bases[:1]
 		}
-		if payload != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-
-		resp, err := c.http_client.Do(req)
-		if err != nil {
-			cancel()
+		var resp *http.Response
+		var base string
+		var cancel context.CancelFunc
+		for _, base = range bases {
+			var err error
+			resp, cancel, err = c.send(ctx, method, base+suffix, token, payload)
+			if err == nil {
+				break
+			}
 			// The caller's own context, not just this attempt's deadline,
 			// ending is not something a retry can fix, and backing off
 			// would only delay reporting it.
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if !allow_retry || attempt == attempts-1 {
-				return err
-			}
 			last_err = err
+		}
+		if resp == nil {
+			if !allow_retry || attempt == attempts-1 {
+				return last_err
+			}
 			if sleep_err := c.sleep(ctx, delay); sleep_err != nil {
 				return sleep_err
 			}
 			delay *= 2
 			continue
 		}
+		c.answered.Store(&base)
 
 		raw, read_err := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -250,4 +264,48 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 
 	return last_err
+}
+
+// order is the current addresses, the one that last answered first.
+func (c *Client) order() []string {
+	var list []string
+	for _, base := range c.base_urls() {
+		list = append(list, strings.TrimRight(base, "/"))
+	}
+	answered := c.answered.Load()
+	for i, base := range list {
+		if answered != nil && base == *answered && i > 0 {
+			copy(list[1:i+1], list[:i])
+			list[0] = base
+			break
+		}
+	}
+	return list
+}
+
+// send makes one HTTP exchange. On success the caller closes the body and
+// then calls cancel; on failure cancel has already been called.
+func (c *Client) send(ctx context.Context, method, full_url, token string, payload []byte) (*http.Response, context.CancelFunc, error) {
+	attempt_ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	var body_reader io.Reader
+	if payload != nil {
+		body_reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(attempt_ctx, method, full_url, body_reader)
+	if err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("api: building request: %w", err)
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.http_client.Do(req)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return resp, cancel, nil
 }
