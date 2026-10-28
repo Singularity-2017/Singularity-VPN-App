@@ -23,6 +23,7 @@ import (
 
 	"singularity-vpn-app/internal/api"
 	"singularity-vpn-app/internal/buildinfo"
+	"singularity-vpn-app/internal/control_address"
 	"singularity-vpn-app/internal/core"
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/evidence"
@@ -254,7 +255,14 @@ func start(console bool) (*running_service, error) {
 		logger.Warn("removing a DNS rule left from before failed", "error", err.Error())
 	}
 
-	application, err := build_application(p, logger, operations)
+	// The control plane's current address: compiled in at first, replaced
+	// by the list a signed manifest names; see docs/adr/0001.
+	addresses := control_address.Open(p.root, buildinfo.Control_plane, logger)
+	addresses.On_change(func([]string) {
+		logger.Info(control_plane_moved)
+	})
+
+	application, err := build_application(p, logger, operations, addresses)
 	if err != nil {
 		logger.Error("service did not start", "error", err.Error())
 		log_file.Close()
@@ -274,7 +282,7 @@ func start(console bool) (*running_service, error) {
 	// stops this service, and a service still reporting START_PENDING does
 	// not accept a stop. The connection is held back meanwhile, and
 	// started only if the swap never stops us.
-	updater := build_updater(p, application, logger)
+	updater := build_updater(p, application, addresses, logger)
 	pending := updater != nil && updater.Has_staged()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -438,7 +446,11 @@ func openvpn_adapter(p paths, logger *slog.Logger) *openvpn.Adapter {
 // sessions' worth of connects, switches and failures.
 const journal_size = 300
 
-func build_application(p paths, logger *slog.Logger, operations *journal.Journal) (*core.Application, error) {
+// control_plane_moved is the journal line for a new control plane address.
+// It carries no address: the journal is shown and sent in problem reports.
+const control_plane_moved = "the control plane moved; its address came from a signed manifest"
+
+func build_application(p paths, logger *slog.Logger, operations *journal.Journal, addresses *control_address.Store) (*core.Application, error) {
 	secrets, err := security.Open_file_store(p.secrets, security.New_dpapi_cipher())
 	if err != nil {
 		return nil, err
@@ -447,7 +459,7 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 	if err != nil {
 		return nil, err
 	}
-	control_plane, err := api.New(api.Config{Base_url: buildinfo.Control_plane})
+	control_plane, err := api.New(api.Config{Base_urls: addresses.Current})
 	if err != nil {
 		return nil, err
 	}
@@ -538,7 +550,7 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 				return string(value), err
 			},
 			Capture: func(ctx context.Context) (string, *http.Client, error) {
-				return winplatform.Capture_network(ctx, buildinfo.Control_plane)
+				return winplatform.Capture_network(ctx, addresses.Current()[0])
 			},
 		})
 	}

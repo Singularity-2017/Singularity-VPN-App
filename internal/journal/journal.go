@@ -171,6 +171,7 @@ var Operations = map[string]bool{
 	"game router stopped": true,
 	"game router: capture stopped; games go direct until the next connect": true,
 	"event": true,
+	"the control plane moved; its address came from a signed manifest": true,
 }
 
 // Events are the event kinds kept from "event" records; the others repeat

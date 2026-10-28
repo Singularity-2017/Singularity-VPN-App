@@ -836,6 +836,8 @@
       case "service ended without stopping": return ["Служба завершилась, не остановившись: сбой или выключение компьютера", "warn"];
       case "connect requested": return [a.node_id ? "Подключение к " + node_label(a.node_id) : "Подключение, сервер выбирается автоматически", ""];
       case "disconnect requested": return ["Отключение по вашей команде", ""];
+      case "the control plane moved; its address came from a signed manifest":
+        return ["Сервер управления переехал — новый адрес взят из подписанного обновления", ""];
       case "control plane recommendation": {
         const why = reason_text[a.reason] ? ", " + reason_text[a.reason] : "";
         return ["Сервер: " + node_label(a.node_id) + why + "; рекомендован " + p, ""];

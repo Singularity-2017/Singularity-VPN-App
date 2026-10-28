@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 
 	"singularity-vpn-app/internal/buildinfo"
+	"singularity-vpn-app/internal/control_address"
 	"singularity-vpn-app/internal/core"
 	"singularity-vpn-app/internal/update"
 )
@@ -25,7 +27,7 @@ const create_breakaway_from_job = 0x01000000
 
 // build_updater wires internal/update to this service. A failure here
 // costs updates, never the service: it is logged and nil is returned.
-func build_updater(p paths, application *core.Application, logger *slog.Logger) *update.Updater {
+func build_updater(p paths, application *core.Application, addresses *control_address.Store, logger *slog.Logger) *update.Updater {
 	logger = logger.With("component", "update")
 	// The update directory sits inside the private data directory, so
 	// what is staged there and the copy of svpn-swap run from there are
@@ -41,7 +43,12 @@ func build_updater(p paths, application *core.Application, logger *slog.Logger) 
 		return nil
 	}
 	updater, err := update.New(update.Config{
-		Control_planes:  func() []string { return []string{buildinfo.Control_plane} },
+		Control_planes: addresses.Current,
+		Offer_control_planes: func(list []string, released_at time.Time) {
+			if _, err := addresses.Offer(list, released_at); err != nil {
+				logger.Warn("the signed manifest names control plane addresses that are not usable", "err", err)
+			}
+		},
 		Fallback:        buildinfo.Update_mirror,
 		Current_version: buildinfo.Version,
 		Keys:            keys,
