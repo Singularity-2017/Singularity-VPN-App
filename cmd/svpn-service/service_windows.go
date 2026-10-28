@@ -576,6 +576,7 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Reach_list_path:        filepath.Join(p.root, "reach-list.json"),
 		Evidence:               observations,
 		Control_plane:          control_plane,
+		Control_plane_address:  func() string { return addresses.Current()[0] },
 		Secrets:                secrets,
 		Store:                  store,
 		Protocols:              registry,

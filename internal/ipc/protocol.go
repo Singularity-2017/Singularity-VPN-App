@@ -536,6 +536,11 @@ type Version_result struct {
 	Version string `json:"version,omitempty"`
 	Commit  string `json:"commit,omitempty"`
 	Built   string `json:"built,omitempty"`
+
+	// Control_plane is the control plane's current base URL, which a
+	// signed manifest may have changed since the build; the window opens
+	// the account portal there.
+	Control_plane string `json:"control_plane,omitempty"`
 }
 
 // Error codes a Response carries in its Error_body.

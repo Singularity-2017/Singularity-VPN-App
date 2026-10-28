@@ -343,11 +343,15 @@ func (a *Application) Subscribe() (<-chan events.Event, func()) {
 // left empty stays empty here and is omitted on the wire -- never
 // "unknown", never "dev".
 func (a *Application) Version(ctx context.Context) (ipc.Version_result, error) {
-	return ipc.Version_result{
+	result := ipc.Version_result{
 		Version: buildinfo.Version,
 		Commit:  buildinfo.Commit,
 		Built:   buildinfo.Built_at,
-	}, nil
+	}
+	if a.control_plane_address != nil {
+		result.Control_plane = a.control_plane_address()
+	}
+	return result, nil
 }
 
 // Strategy answers Command_strategy: what the connection is for, as last

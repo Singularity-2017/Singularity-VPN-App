@@ -75,17 +75,20 @@ type Dependencies struct {
 	Network_key   func(ctx context.Context) (string, error)
 	Evidence      *evidence.Collector
 	Control_plane Control_plane
-	Secrets       security.Secure_store
-	Store         connection.State_store
-	Protocols     protocols.Manager
-	Prober        diagnostics.Prober
-	Reach_prober  Reach_prober
-	Pinger        platform.Pinger // the latency to every listed server; see Application.Ping_servers
-	Game_pinger   Game_pinger     // a running game's latency to its match server; nil measures none
-	Bus           *events.Bus
-	Config        connection.Config
-	Device_name   string       // what a minted device token is called on the account
-	Logger        *slog.Logger // nil means slog.New(slog.DiscardHandler)
+	// Control_plane_address is the control plane's current base URL, for
+	// the window's portal link; nil leaves it out.
+	Control_plane_address func() string
+	Secrets               security.Secure_store
+	Store                 connection.State_store
+	Protocols             protocols.Manager
+	Prober                diagnostics.Prober
+	Reach_prober          Reach_prober
+	Pinger                platform.Pinger // the latency to every listed server; see Application.Ping_servers
+	Game_pinger           Game_pinger     // a running game's latency to its match server; nil measures none
+	Bus                   *events.Bus
+	Config                connection.Config
+	Device_name           string       // what a minted device token is called on the account
+	Logger                *slog.Logger // nil means slog.New(slog.DiscardHandler)
 	// Journal is what Command_journal reads; the logger above feeds it.
 	// nil means an empty journal.
 	Journal *journal.Journal
@@ -115,21 +118,22 @@ type Dependencies struct {
 // to a real control plane, a real secure store and a real set of protocol
 // adapters, speaking ipc.Service to whatever serves the pipe.
 type Application struct {
-	statistics_stop      chan struct{}
-	statistics_stop_once sync.Once
-	statistics_save_mu   sync.Mutex
-	statistics           *statistics.Store
-	statistics_error     atomic.Bool
-	analysis_cache_path  string
-	manager              *connection.Manager
-	control_plane        Control_plane
-	secrets              security.Secure_store
-	store                connection.State_store
-	bus                  *events.Bus
-	device_name          string
-	logger               *slog.Logger
-	journal              *journal.Journal
-	now                  func() time.Time
+	statistics_stop       chan struct{}
+	statistics_stop_once  sync.Once
+	statistics_save_mu    sync.Mutex
+	statistics            *statistics.Store
+	statistics_error      atomic.Bool
+	analysis_cache_path   string
+	manager               *connection.Manager
+	control_plane         Control_plane
+	control_plane_address func() string
+	secrets               security.Secure_store
+	store                 connection.State_store
+	bus                   *events.Bus
+	device_name           string
+	logger                *slog.Logger
+	journal               *journal.Journal
+	now                   func() time.Time
 
 	reach_prober Reach_prober
 	analysis     analysis_cache
@@ -242,19 +246,20 @@ func New_application(dependencies Dependencies) (*Application, error) {
 	}
 
 	app := &Application{
-		statistics_stop:     make(chan struct{}),
-		statistics:          stats,
-		analysis_cache_path: dependencies.Analysis_cache_path,
-		manager:             manager,
-		control_plane:       dependencies.Control_plane,
-		secrets:             dependencies.Secrets,
-		store:               dependencies.Store,
-		bus:                 dependencies.Bus,
-		device_name:         dependencies.Device_name,
-		logger:              logger,
-		journal:             dependencies.Journal,
-		now:                 now,
-		reach_prober:        dependencies.Reach_prober,
+		statistics_stop:       make(chan struct{}),
+		statistics:            stats,
+		analysis_cache_path:   dependencies.Analysis_cache_path,
+		manager:               manager,
+		control_plane:         dependencies.Control_plane,
+		control_plane_address: dependencies.Control_plane_address,
+		secrets:               dependencies.Secrets,
+		store:                 dependencies.Store,
+		bus:                   dependencies.Bus,
+		device_name:           dependencies.Device_name,
+		logger:                logger,
+		journal:               dependencies.Journal,
+		now:                   now,
+		reach_prober:          dependencies.Reach_prober,
 
 		analysis_networks_path: dependencies.Analysis_networks_path,
 		network_key:            dependencies.Network_key,

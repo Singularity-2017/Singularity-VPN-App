@@ -735,3 +735,14 @@ func Test_a_store_that_cannot_tell_presence_is_a_fault_not_a_sign_out(t *testing
 		t.Fatalf("Status() = %v, want the store's failure reported as a fault", err)
 	}
 }
+
+// The window builds the account portal link from this, not from the
+// build: after a move the build's address may belong to someone else.
+func Test_version_names_the_current_control_plane(t *testing.T) {
+	f := new_fixture(t)
+	f.app.control_plane_address = func() string { return "http://203.0.113.7/vpn" }
+	got, err := f.app.Version(context.Background())
+	if err != nil || got.Control_plane != "http://203.0.113.7/vpn" {
+		t.Fatalf("Version() = %+v, %v; want the current control plane", got, err)
+	}
+}
