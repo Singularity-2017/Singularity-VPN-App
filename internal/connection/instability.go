@@ -40,7 +40,7 @@ func (m *Manager) note_drop(ctx context.Context, now time.Time) {
 		m.logger.Info("the connection keeps dropping after a move for drops; staying", "node_id", m.current.Node_id, "protocol", m.current.Protocol)
 		return
 	}
-	next, err := m.policy.Next_target(now, recovery.Reason_degraded, m.current, m.alternatives)
+	next, err := m.policy.Next_target(now, recovery.Reason_degraded, m.current, m.holding(m.alternatives))
 	if err != nil {
 		m.logger.Info("the connection keeps dropping; there is nothing else to move to", "node_id", m.current.Node_id, "protocol", m.current.Protocol, "reason", err.Error())
 		return
@@ -48,7 +48,10 @@ func (m *Manager) note_drop(ctx context.Context, now time.Time) {
 	m.unstable_moved_at = now
 	m.logger.Info("the connection keeps dropping; moving to another protocol", "node_id", m.current.Node_id, "protocol", m.current.Protocol,
 		"next_node_id", next.Node_id, "next_protocol", next.Protocol)
+	// Dropping, it still carried traffic, however soon after connecting: it
+	// is the way back if the move does not hold.
+	m.note_held(m.current)
 	m.set_state(State_switching)
 	m.publish(events.Kind_switch_started, next)
-	_ = m.switch_with_way_back(ctx, now, next, m.current)
+	_ = m.switch_to(ctx, now, next, true)
 }

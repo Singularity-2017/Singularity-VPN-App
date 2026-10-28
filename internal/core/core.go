@@ -346,33 +346,53 @@ func (a *Application) Start(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				attrs := []any{"kind", string(event.Kind), "at", event.At, "session_id", event.Session_id}
-				if detail, ok := event.Data.(diagnostics.Degradation); ok && (event.Kind == events.Kind_connection_degraded || event.Kind == events.Kind_connection_blip) {
-					attrs = append(attrs, "degraded_latency", detail.High_latency, "degraded_probes", detail.Failed_probes, "loss_percent", detail.Packet_loss*100)
-					if detail.Resent_probes {
-						attrs = append(attrs, "degraded_resent", true, "resent_percent", detail.Resent*100)
-					}
-					if detail.Udp_lost {
-						attrs = append(attrs, "degraded_udp", true, "udp_loss_percent", detail.Udp_loss*100)
-					}
-					if detail.Rtt > 0 {
-						attrs = append(attrs, "rtt_ms", float64(detail.Rtt)/float64(time.Millisecond))
-					}
-					if detail.High_latency && detail.Baseline_rtt > 0 {
-						attrs = append(attrs, "baseline_rtt_ms", float64(detail.Baseline_rtt)/float64(time.Millisecond))
-					}
-				}
-				// Which node and protocol a tunnel came up on, while the
-				// session the event names is still the current one.
-				if s, ok := a.manager.Session(); ok && s.Id == event.Session_id {
-					attrs = append(attrs, "node_id", s.Node_id, "protocol", s.Protocol, "tunnel", s.Tunnel)
-				}
-				a.logger.Info("event", attrs...)
+				session, ok := a.manager.Session()
+				a.logger.Info("event", event_attrs(event, session, ok)...)
 			}
 		}
 	}()
 
 	return nil
+}
+
+// event_attrs is what the log says of one event: what a degradation measured,
+// where a switch goes and why one failed, and which node and protocol the
+// session is on while the event names the current one -- for a switch, the
+// one being left.
+func event_attrs(event events.Event, session connection.Session, has_session bool) []any {
+	attrs := []any{"kind", string(event.Kind), "at", event.At, "session_id", event.Session_id}
+	switch data := event.Data.(type) {
+	case diagnostics.Degradation:
+		if event.Kind == events.Kind_connection_degraded || event.Kind == events.Kind_connection_blip {
+			attrs = append(attrs, "degraded_latency", data.High_latency, "degraded_probes", data.Failed_probes, "loss_percent", data.Packet_loss*100)
+			if data.Resent_probes {
+				attrs = append(attrs, "degraded_resent", true, "resent_percent", data.Resent*100)
+			}
+			if data.Udp_lost {
+				attrs = append(attrs, "degraded_udp", true, "udp_loss_percent", data.Udp_loss*100)
+			}
+			if data.Rtt > 0 {
+				attrs = append(attrs, "rtt_ms", float64(data.Rtt)/float64(time.Millisecond))
+			}
+			if data.High_latency && data.Baseline_rtt > 0 {
+				attrs = append(attrs, "baseline_rtt_ms", float64(data.Baseline_rtt)/float64(time.Millisecond))
+			}
+		}
+	case recovery.Target:
+		if event.Kind == events.Kind_switch_started && data != (recovery.Target{}) {
+			attrs = append(attrs, "to_node_id", data.Node_id, "to_protocol", data.Protocol)
+		}
+	case *connection.Fault:
+		if data != nil { // a nil Fault in an interface is not a nil error
+			attrs = append(attrs, "error", data.Error())
+		}
+	case error:
+		attrs = append(attrs, "error", data.Error())
+	}
+	if has_session && session.Id == event.Session_id {
+		attrs = append(attrs, "node_id", session.Node_id, "protocol", session.Protocol, "tunnel", session.Tunnel)
+	}
+	return attrs
 }
 
 // Stop disconnects if there is anything up, using its own context so that a

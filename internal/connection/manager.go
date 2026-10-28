@@ -194,6 +194,15 @@ type Manager struct {
 	// it on this network. See instability.go.
 	drops             []time.Time
 	unstable_moved_at time.Time
+	// held are the targets of this connection that carried traffic for
+	// hold_time, or were left for drops while carrying it, the newest last:
+	// the way back when automatic recovery runs out. did_not_hold are the
+	// targets moved to and left for them, which a move for drops does not
+	// take again on this network. connected_at is when the current tunnel
+	// came up. See way_back.go.
+	held         []recovery.Target
+	did_not_hold []recovery.Target
+	connected_at time.Time
 
 	// retried_at is when a lost tunnel last came back on a retry of the
 	// same target. Lost again soon after, the target is not retried a
@@ -470,6 +479,7 @@ func (m *Manager) connect_locked(ctx context.Context, request Connect_request) e
 	now := m.now()
 	m.mode = request.Mode
 	m.policy.Reset() // a person asked for this connect: the budget and cooldowns start over
+	m.forget_way_back()
 	m.set_state(State_connecting)
 	m.publish(events.Kind_connection_started, nil)
 	// Only a recommendation asked for during this connect may describe
@@ -1049,6 +1059,7 @@ func (m *Manager) settle_connected(ctx context.Context, now time.Time, target re
 	m.degraded_pending = false
 	m.consecutive_probe_errors = 0
 	m.drops = nil
+	m.connected_at = m.now()
 	m.last_reevaluation = now
 	m.policy.Record_success(now, target)
 
@@ -1074,6 +1085,7 @@ func (m *Manager) settle_connected(ctx context.Context, now time.Time, target re
 func (m *Manager) fail(now time.Time, fault *Fault) error {
 	m.stop_companion(context.Background())
 	m.set_state(State_failed)
+	m.logger.Warn("the connection failed", "error", fault.Error())
 	m.publish(events.Kind_error, fault)
 	return fault
 }
@@ -1289,6 +1301,7 @@ func (m *Manager) Apply_games(ctx context.Context) error {
 			m.state_mu.Lock()
 			m.session.Tunnel = want
 			m.state_mu.Unlock()
+			m.forget_way_back()
 			m.set_state(State_switching)
 			m.publish(events.Kind_switch_started, target)
 			_ = m.switch_loop(ctx, m.now(), target)
@@ -1301,6 +1314,7 @@ func (m *Manager) Apply_games(ctx context.Context) error {
 	if reflect.DeepEqual(split, m.current_config.Split) && want == session.Tunnel {
 		return nil
 	}
+	m.forget_way_back()
 	if profile_for(want) != profile_for(session.Tunnel) {
 		token, err := m.token.Token(ctx)
 		if err != nil {
@@ -1379,6 +1393,7 @@ func (m *Manager) Apply_strategy(ctx context.Context) error {
 	// connect does: it is not a failure, and it must neither spend the
 	// budget Tick relies on nor be refused as flapping.
 	m.policy.Reset()
+	m.forget_way_back()
 	previous := m.current
 	now := m.now()
 	m.set_state(State_switching)
@@ -1483,6 +1498,7 @@ func (m *Manager) clear_session() {
 	m.consecutive_probe_errors = 0
 	m.drops, m.unstable_moved_at = nil, time.Time{}
 	m.retried_at, m.retried_target = time.Time{}, recovery.Target{}
+	m.forget_way_back()
 }
 
 // --- Switch ----------------------------------------------------------
@@ -1518,15 +1534,15 @@ func (m *Manager) Switch(ctx context.Context, target recovery.Target) error {
 // different state from "connected" even when the attempt finds nowhere to
 // go.
 func (m *Manager) switch_loop(ctx context.Context, now time.Time, target recovery.Target) error {
-	return m.switch_with_way_back(ctx, now, target, recovery.Target{})
+	return m.switch_to(ctx, now, target, false)
 }
 
-// switch_with_way_back is switch_loop that, when the switch budget or the
-// alternatives run out, tries back once before failing, outside the budget:
-// a connection left for dropping now and then still carried traffic, and a
-// move that finds nothing better must not end with no connection at all.
-// An empty back is no way back.
-func (m *Manager) switch_with_way_back(ctx context.Context, now time.Time, target, back recovery.Target) error {
+// switch_to is switch_loop that, for automatic recovery (ways_back), tries
+// the targets that held when the switch budget or the alternatives run out,
+// the newest first, outside the budget, before failing: a connection that
+// carried traffic, even dropping now and then, is better than none. A switch
+// a person asked for is not ended somewhere they did not ask for.
+func (m *Manager) switch_to(ctx context.Context, now time.Time, target recovery.Target, ways_back bool) error {
 	m.end_observation(ctx, "replaced", false)
 	token, err := m.token.Token(ctx)
 	if err != nil {
@@ -1556,12 +1572,18 @@ func (m *Manager) switch_with_way_back(ctx context.Context, now time.Time, targe
 		m.publish(events.Kind_switch_failed, fault)
 		m.policy.Record_failure(now, target)
 
-		next, nerr := m.policy.Next_target(now, recovery.Reason_hard_fail, target, m.alternatives)
+		next, nerr := m.policy.Next_target(now, recovery.Reason_hard_fail, target, m.holding_first(m.alternatives))
 		if nerr != nil {
-			if back == (recovery.Target{}) || back == target {
+			// Each target tried has been recorded as failed, so a way back
+			// that does not come up is not offered again.
+			back, ok := m.way_back(now, target)
+			if !ways_back || !ok {
+				if ways_back {
+					m.gave_up(fault)
+				}
 				return m.fail(now, fault)
 			}
-			next, back = back, recovery.Target{}
+			next = back
 		}
 		target = next
 	}
@@ -1615,6 +1637,7 @@ func (m *Manager) retry_current(ctx context.Context) bool {
 	}
 
 	m.protocol_handle = protocol
+	m.connected_at = m.now()
 	m.established_observation(ctx, m.current)
 	if m.get_state() == State_switching {
 		m.set_state(State_connected)
@@ -1656,6 +1679,7 @@ func (m *Manager) Network_changed(ctx context.Context, now time.Time) {
 	m.baseline = diagnostics.Baseline{}
 	m.degraded_since_set = false
 	m.drops, m.unstable_moved_at = nil, time.Time{}
+	m.did_not_hold = nil
 	if repinner, ok := m.protocol_handle.(protocols.Repinner); ok {
 		if err := repinner.Repin(ctx); err != nil {
 			m.logger.Warn("network changed; moving the endpoint route failed", "error", err)
@@ -1711,6 +1735,7 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 	detail := diagnostics.Degradation_of(sample, m.baseline, diagnostics.Default_thresholds())
 	m.set_sample(sample, detail)
 	verdict := diagnostics.Judge(sample, m.baseline, diagnostics.Default_thresholds())
+	m.note_carrying(now, verdict)
 	m.monitor.observe(now, verdict == diagnostics.Verdict_healthy && sample.Dns_ok && m.baseline.Ready(), m.config.Monitor_interval, m.config.Monitor_max_interval)
 
 	pending := m.degraded_pending
@@ -1798,7 +1823,9 @@ func (m *Manager) handle_lost(ctx context.Context, now time.Time) {
 		// reached through switching, which a retry has already set and a
 		// target not retried has not.
 		m.set_state(State_switching)
-		m.fail(now, &Fault{Kind: Fault_protocol_connection, Op: "tick", Err: errors.New("connection: the chosen server stopped answering and did not come back")})
+		fault := &Fault{Kind: Fault_protocol_connection, Op: "tick", Err: errors.New("connection: the chosen server stopped answering and did not come back")}
+		m.gave_up(fault)
+		m.fail(now, fault)
 		return
 	}
 	m.escalate(ctx, now, recovery.Reason_hard_fail)
@@ -1823,7 +1850,10 @@ func (m *Manager) handle_lost(ctx context.Context, now time.Time) {
 // switching does), and "the machine is attempting to leave" is true the
 // moment recovery is consulted.
 func (m *Manager) escalate(ctx context.Context, now time.Time, reason recovery.Reason) {
-	next, err := m.policy.Next_target(now, reason, m.current, m.alternatives)
+	if m.go_back(ctx, now, reason) {
+		return
+	}
+	next, err := m.policy.Next_target(now, reason, m.current, m.holding_first(m.alternatives))
 	if err != nil {
 		if reason == recovery.Reason_degraded {
 			if !errors.Is(err, recovery.Err_too_soon) {
@@ -1831,15 +1861,21 @@ func (m *Manager) escalate(ctx context.Context, now time.Time, reason recovery.R
 			}
 			return
 		}
-		m.set_state(State_switching)
-		m.publish(events.Kind_switch_started, nil)
-		m.fail(now, fault_from_recovery_error("tick", err))
-		return
+		back, ok := m.way_back(now, m.current)
+		if !ok {
+			m.set_state(State_switching)
+			m.publish(events.Kind_switch_started, nil)
+			fault := fault_from_recovery_error("tick", err)
+			m.gave_up(fault)
+			m.fail(now, fault)
+			return
+		}
+		next = back
 	}
 
 	m.set_state(State_switching)
 	m.publish(events.Kind_switch_started, next)
-	_ = m.switch_loop(ctx, now, next)
+	_ = m.switch_to(ctx, now, next, true)
 }
 
 // maybe_reevaluate offers a better option once per Reevaluation_interval

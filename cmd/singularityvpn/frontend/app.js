@@ -854,6 +854,9 @@
         return [p + ": связь то и дело пропадает, а перейти не на что", "warn", a.reason];
       case "the connection keeps dropping after a move for drops; staying":
         return [p + " пропадает так же часто — дело не в протоколе. Следующая смена не раньше чем через час", "warn"];
+      case "the connection moved to did not hold; going back":
+        return [p + " не удержался — возвращаемся на " + protocol_label(a.back_protocol), "warn"];
+      case "the connection failed": return ["Не подключено — нажмите «Подключиться»", "warn", a.error];
       case "openvpn event": return window.health_text.openvpn(a.event);
       case "using the offered protocol that worked last on this node":
         return ["Пробуем " + p + ": в прошлый раз на этом сервере сработал он", ""];
@@ -886,6 +889,10 @@
         if (a.kind === "connection_degraded") return [window.health_text.degraded(a), "warn"];
         // One bad sample the next check did not confirm: still a failure.
         if (a.kind === "connection_blip") return ["Короткий провал · " + window.health_text.degraded(a), "warn"];
+        if (a.kind === "switch_started" && a.to_protocol) {
+          const to = [a.to_node_id && a.to_node_id !== a.node_id ? node_label(a.to_node_id) : "", protocol_label(a.to_protocol)].filter(Boolean).join(", ");
+          return ["Переключение на " + to, ""];
+        }
         const t = event_text[a.kind];
         if (!t) return [a.kind, ""];
         // A tunnel that came up says where and how.
@@ -893,7 +900,8 @@
           const how = [node_label(a.node_id), p, tunnel_text[a.tunnel]].filter(Boolean).join(", ");
           return [t[0] + ": " + how, t[1]];
         }
-        return [t[0], t[1]];
+        // A failed switch says why on hover.
+        return [t[0], t[1], a.error];
       }
     }
     const detail = Object.keys(a).map((k) => k + "=" + a[k]).join(" ");
@@ -1874,9 +1882,23 @@
     return "Сервер: " + [server, protocol_label(status.protocol), mode].filter(Boolean).join(", ");
   }
 
+  // failing_place names where the newest problem the journal shows since the
+  // last report happened, as the service binds the report: one written an
+  // hour after the loss is about that connection, not the one made since.
+  function failing_place() {
+    const entries = journal_entries || [];
+    for (let i = entries.length - 1; i >= 0 && Date.parse(entries[i].at) > reported_at; i--) {
+      const a = entries[i].attrs || {};
+      if (!a.node_id || !a.protocol || journal_line(entries[i])[1] !== "warn") continue;
+      const mode = { antizapret: "Антизапрет", vpn: "VPN", games: "только игры" }[a.tunnel] || "";
+      return "Сервер: " + [node_label(a.node_id), protocol_label(a.protocol), mode].filter(Boolean).join(", ");
+    }
+    return "";
+  }
+
   function open_problem_report() {
     const status = (view && view.status) || {};
-    const place = report_place(status);
+    const place = failing_place() || report_place(status);
     close_pops();
     open_pop("help", "help-button");
     window.help_ui.report_problem(window.report_ui.message(status.failures, place) ||

@@ -539,6 +539,45 @@ func Test_a_draft_names_the_session_the_failures_happened_in(t *testing.T) {
 	}
 }
 
+// A report is about the failures it carries, not only those of the last half
+// hour: a connection that broke an hour ago and was brought back by hand is
+// what the person reports, not the healthy one that replaced it, nor the mode
+// chosen since (R-ZWP9, 2026-10-28: sent 55 minutes after the loss, it named
+// the connection made afterwards, in Antizapret).
+func Test_a_draft_names_the_connection_that_broke_an_hour_ago(t *testing.T) {
+	f := new_report_fixture(t)
+	failing := []slog.Attr{
+		slog.String("kind", "connection_lost"),
+		slog.String("session_id", "5a65bb277d237fdfe01f64db1ccb04e0"),
+		slog.String("node_id", "node-failing"),
+		slog.String("protocol", "wireguard"),
+		slog.String("tunnel", "vpn"),
+	}
+	f.record(t, 57*time.Minute, "event", failing...)
+	f.record(t, 56*time.Minute, "event", failing...)
+	if err := f.app.Set_tunnel_mode(context.Background(), ipc.Tunnel_mode{Mode: ipc.Tunnel_antizapret}); err != nil {
+		t.Fatal(err)
+	}
+	connect(t, f.fixture)
+
+	draft, err := f.app.Problem_draft(context.Background(), ipc.Problem_draft_params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bundle struct {
+		Connection map[string]string `json:"connection"`
+	}
+	if err := json.Unmarshal(draft.Diagnostics, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"session_id": "5a65bb277d237fdfe01f64db1ccb04e0", "node_id": "node-failing", "protocol": "wireguard", "mode": "full"}
+	for key, value := range want {
+		if bundle.Connection[key] != value {
+			t.Errorf("connection.%s = %q, want %q: the report is about the connection that broke", key, bundle.Connection[key], value)
+		}
+	}
+}
+
 // send_draft makes a draft and sends it, and returns what was sent.
 func (f *report_fixture) send_draft(t *testing.T) (journal_messages []string, log string) {
 	t.Helper()

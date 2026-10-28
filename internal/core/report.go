@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"singularity-vpn-app/internal/buildinfo"
+	"singularity-vpn-app/internal/connection"
 	"singularity-vpn-app/internal/ipc"
 	"singularity-vpn-app/internal/journal"
 )
@@ -169,10 +170,14 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 	}
 	// The failure signal is the report's own field; the status copy inside
 	// the bundle would only say it twice.
-	failures, last_failure := failure_reading(entries, now)
+	failures := failure_signal(entries, now)
 	status.Failures = nil
 	// What an earlier report carried is not carried again.
 	sent := a.reported_until(now)
+	cutoff := now.Add(-diagnostics_journal_window)
+	// The report is about the failures it carries, however long ago in its
+	// span they were: the person may write an hour after the loss.
+	_, last_failure := failures_since(entries, now, later(cutoff, sent))
 	diagnostics := problem_diagnostics{
 		Schema:      diagnostics_schema,
 		Created_at:  now,
@@ -201,7 +206,6 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 		a.logger.Warn("problem report: the tunnel mode could not be read", "error", err.Error())
 	}
 
-	cutoff := now.Add(-diagnostics_journal_window)
 	for _, entry := range entries {
 		if entry.At.Before(cutoff) || !entry.At.After(sent) {
 			continue
@@ -222,16 +226,17 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 	if diagnostics.Connection.Node_id == "" {
 		diagnostics.Connection.Node_id, diagnostics.Connection.Protocol = latest_target(entries)
 	}
-	// A report about failures is about the connection they happened on,
-	// which is not the one held now when the service has restarted since.
-	if failures != nil {
-		diagnostics.Connection = failing_connection(diagnostics.Connection, last_failure)
-	}
 	// The mode is what an observation made now would carry, session or not.
 	if mode, err := a.manager.Observation_mode(); err == nil {
 		diagnostics.Connection.Mode = mode
 	} else {
 		a.logger.Warn("problem report: the mode could not be read", "error", err.Error())
+	}
+	// A report about failures is about the connection they happened on,
+	// which is not the one held now when the service has restarted since or
+	// the person connected again, perhaps in another mode.
+	if !last_failure.At.IsZero() {
+		diagnostics.Connection = failing_connection(diagnostics.Connection, last_failure)
 	}
 
 	if a.network_summary != nil {
@@ -274,12 +279,22 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 // failure entry names in their place -- all three or none, so the report never
 // pairs one connection's session with another's node. The state stays the one
 // held now: it is what the person is looking at.
-func failing_connection(connection problem_connection, failure journal.Entry) problem_connection {
+func failing_connection(named problem_connection, failure journal.Entry) problem_connection {
 	session, node, protocol := failure.Attrs["session_id"], failure.Attrs["node_id"], failure.Attrs["protocol"]
 	if session != "" && node != "" && protocol != "" {
-		connection.Session_id, connection.Node_id, connection.Protocol = session, node, protocol
+		named.Session_id, named.Node_id, named.Protocol = session, node, protocol
+		if tunnel := failure.Attrs["tunnel"]; tunnel != "" {
+			named.Mode = connection.Evidence_mode(tunnel)
+		}
 	}
-	return connection
+	return named
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // latest_target is the node and protocol named by the newest journal entry
