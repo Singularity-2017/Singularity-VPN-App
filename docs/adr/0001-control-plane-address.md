@@ -140,10 +140,11 @@ Details:
   restarting the service. With several addresses, requests go to the first;
   the one that last answered moves to the front. This is failover between
   addresses we signed, not discovery.
-- **Faster than six hours.** When the control plane has failed to answer
-  for N consecutive attempts (proposed: 3, at least 10 minutes apart), the
-  service asks the updater for an early check against the mirrors only.
-  Rate-limited to once an hour so an outage does not hammer the mirrors.
+- **Faster than six hours.** When no address of the control plane has
+  answered anything for 30 minutes (an HTTP error counts as an answer),
+  the updater checks early. It is an ordinary check: the silent control
+  plane costs one request timeout, then the mirrors answer. At most once
+  an hour, so an outage does not hammer the mirrors.
 - **Journal.** A change of address is a journal line in plain Russian
   ("Сервер управления переехал, адрес обновлён из подписанного манифеста"),
   with no address in it.

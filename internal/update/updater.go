@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,12 +49,44 @@ type Config struct {
 	Swap_grace       time.Duration // how long a launched swap has to stop the service; zero means ten minutes
 }
 
+// A control plane silent this long may have moved: the next check comes
+// early, at most once per early_check_gap, so an outage does not hammer
+// the mirrors. See docs/adr/0001-control-plane-address.md.
+const (
+	silence_before_early_check = 30 * time.Minute
+	early_check_gap            = time.Hour
+)
+
 // Updater checks for, stages and applies new versions.
 type Updater struct {
 	config  Config
 	current Version
 	enabled bool
 	logger  *slog.Logger
+
+	silence      sync.Mutex
+	silent_since time.Time // zero while the control plane answers
+	last_early   time.Time
+	early        atomic.Bool // Run checks at its next turn
+}
+
+// Control_plane_answered hears whether the control plane answered a
+// request at all. A silence of silence_before_early_check brings the next
+// check forward, so a signed list naming where it moved is fetched soon.
+func (u *Updater) Control_plane_answered(ok bool) {
+	u.silence.Lock()
+	defer u.silence.Unlock()
+	now := u.config.Now()
+	switch {
+	case ok:
+		u.silent_since = time.Time{}
+	case u.silent_since.IsZero():
+		u.silent_since = now
+	case now.Sub(u.silent_since) >= silence_before_early_check &&
+		(u.last_early.IsZero() || now.Sub(u.last_early) >= early_check_gap):
+		u.last_early = now
+		u.early.Store(true)
+	}
 }
 
 // Err_not_a_release is a build whose own version cannot be compared.
@@ -411,6 +445,10 @@ func (u *Updater) Run(ctx context.Context) {
 			}
 			u.logger.Warn("the update swap did not stop the service; carrying on")
 			continue
+		}
+		if u.early.Swap(false) {
+			u.logger.Info("the control plane has been silent; checking for a signed address early")
+			next_check = u.config.Now()
 		}
 		if !u.config.Now().Before(next_check) {
 			if _, err := u.Check(ctx); err != nil {

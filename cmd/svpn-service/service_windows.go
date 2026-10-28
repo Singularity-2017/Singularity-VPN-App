@@ -39,6 +39,7 @@ import (
 	"singularity-vpn-app/internal/reach"
 	"singularity-vpn-app/internal/security"
 	"singularity-vpn-app/internal/state"
+	"singularity-vpn-app/internal/update"
 )
 
 const (
@@ -262,7 +263,16 @@ func start(console bool) (*running_service, error) {
 		logger.Info(control_plane_moved)
 	})
 
-	application, err := build_application(p, logger, operations, addresses)
+	// The updater is built after the application but hears whether the
+	// control plane answers: a long silence brings its next check forward.
+	var silence_listener atomic.Pointer[update.Updater]
+	answered := func(ok bool) {
+		if u := silence_listener.Load(); u != nil {
+			u.Control_plane_answered(ok)
+		}
+	}
+
+	application, err := build_application(p, logger, operations, addresses, answered)
 	if err != nil {
 		logger.Error("service did not start", "error", err.Error())
 		log_file.Close()
@@ -283,6 +293,9 @@ func start(console bool) (*running_service, error) {
 	// not accept a stop. The connection is held back meanwhile, and
 	// started only if the swap never stops us.
 	updater := build_updater(p, application, addresses, logger)
+	if updater != nil {
+		silence_listener.Store(updater)
+	}
 	pending := updater != nil && updater.Has_staged()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -450,7 +463,7 @@ const journal_size = 300
 // It carries no address: the journal is shown and sent in problem reports.
 const control_plane_moved = "the control plane moved; its address came from a signed manifest"
 
-func build_application(p paths, logger *slog.Logger, operations *journal.Journal, addresses *control_address.Store) (*core.Application, error) {
+func build_application(p paths, logger *slog.Logger, operations *journal.Journal, addresses *control_address.Store, answered func(ok bool)) (*core.Application, error) {
 	secrets, err := security.Open_file_store(p.secrets, security.New_dpapi_cipher())
 	if err != nil {
 		return nil, err
@@ -459,7 +472,7 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 	if err != nil {
 		return nil, err
 	}
-	control_plane, err := api.New(api.Config{Base_urls: addresses.Current})
+	control_plane, err := api.New(api.Config{Base_urls: addresses.Current, Answered: answered})
 	if err != nil {
 		return nil, err
 	}

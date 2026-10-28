@@ -98,3 +98,51 @@ func Test_every_current_control_plane_address_is_a_channel(t *testing.T) {
 		t.Fatalf("Check = %v, %v; want staged from the second address", staged, err)
 	}
 }
+
+// A control plane that stops answering may have moved; the next check then
+// comes early, so the signed list of where it went is fetched from the
+// mirrors within minutes instead of hours.
+func Test_a_long_silence_brings_the_check_forward_once_an_hour(t *testing.T) {
+	public, _ := new_key(t)
+	h := new_harness(t, "v1.0.0", []ed25519.PublicKey{public}, "", "")
+	u := h.updater
+	start := h.now
+
+	u.Control_plane_answered(false)
+	h.now = start.Add(29 * time.Minute)
+	u.Control_plane_answered(false)
+	if u.early.Load() {
+		t.Fatal("early check after 29 minutes of silence, want 30")
+	}
+	h.now = start.Add(30 * time.Minute)
+	u.Control_plane_answered(false)
+	if !u.early.Swap(false) {
+		t.Fatal("no early check after 30 minutes of silence")
+	}
+	h.now = start.Add(89 * time.Minute)
+	u.Control_plane_answered(false)
+	if u.early.Load() {
+		t.Fatal("a second early check within the hour")
+	}
+	h.now = start.Add(90 * time.Minute)
+	u.Control_plane_answered(false)
+	if !u.early.Load() {
+		t.Fatal("no early check an hour after the first")
+	}
+}
+
+func Test_an_answer_ends_the_silence(t *testing.T) {
+	public, _ := new_key(t)
+	h := new_harness(t, "v1.0.0", []ed25519.PublicKey{public}, "", "")
+	u := h.updater
+	start := h.now
+
+	u.Control_plane_answered(false)
+	h.now = start.Add(20 * time.Minute)
+	u.Control_plane_answered(true)
+	h.now = start.Add(40 * time.Minute)
+	u.Control_plane_answered(false)
+	if u.early.Load() {
+		t.Fatal("silence counted across an answer")
+	}
+}

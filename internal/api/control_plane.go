@@ -26,12 +26,18 @@ type Config struct {
 	// is reached without restarting the client. The address that last
 	// answered goes first; see docs/adr/0001-control-plane-address.md.
 	Base_urls func() []string
+
+	// Answered, when set, hears after each attempt whether any address
+	// answered at all -- an HTTP error counts, the control plane is there.
+	// A long silence is how the service learns it may have moved.
+	Answered func(ok bool)
 }
 
 // Client talks to one control plane. It is safe for concurrent use.
 type Client struct {
 	base_urls   func() []string
 	answered    *atomic.Pointer[string] // the address that last answered; tried first, shared by copies
+	on_answer   func(ok bool)
 	http_client *http.Client
 	timeout     time.Duration
 	retries     int
@@ -90,6 +96,7 @@ func New(config Config) (*Client, error) {
 	return &Client{
 		base_urls:   base_urls,
 		answered:    new(atomic.Pointer[string]),
+		on_answer:   config.Answered,
 		http_client: http_client,
 		timeout:     timeout,
 		retries:     retries,
@@ -218,6 +225,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			}
 			last_err = err
 		}
+		c.report(resp != nil)
 		if resp == nil {
 			if !allow_retry || attempt == attempts-1 {
 				return last_err
@@ -264,6 +272,12 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 
 	return last_err
+}
+
+func (c *Client) report(ok bool) {
+	if c.on_answer != nil {
+		c.on_answer(ok)
+	}
 }
 
 // order is the current addresses, the one that last answered first.

@@ -125,3 +125,47 @@ func Test_an_empty_source_fails_the_request_not_the_process(t *testing.T) {
 		t.Fatal("Login succeeded with no address")
 	}
 }
+
+func Test_answered_reports_whether_any_address_answered(t *testing.T) {
+	dead, _ := dropping(t)
+	alive, _ := counting(t)
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusUnauthorized)
+	}))
+	t.Cleanup(failing.Close)
+	cases := []struct {
+		name  string
+		bases []string
+		want  bool
+	}{
+		{"every address dropped", []string{dead.URL}, false},
+		{"the second answered", []string{dead.URL, alive.URL}, true},
+		// An HTTP error is still an answer: the control plane is there.
+		{"an error status", []string{failing.URL}, true},
+	}
+	for _, c := range cases {
+		var heard []bool
+		client, err := New(Config{Base_urls: func() []string { return c.bases }, Sleep: no_sleep,
+			Answered: func(ok bool) { heard = append(heard, ok) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client.Login(context.Background(), "u", "p")
+		if len(heard) == 0 || heard[len(heard)-1] != c.want {
+			t.Errorf("%s: heard %v, want last %v", c.name, heard, c.want)
+		}
+	}
+}
+
+func Test_a_cancelled_request_reports_nothing(t *testing.T) {
+	dead, _ := dropping(t)
+	var heard []bool
+	client, _ := New(Config{Base_urls: func() []string { return []string{dead.URL} }, Sleep: no_sleep,
+		Answered: func(ok bool) { heard = append(heard, ok) }})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client.Login(ctx, "u", "p")
+	if len(heard) != 0 {
+		t.Fatalf("heard %v, want nothing", heard)
+	}
+}
