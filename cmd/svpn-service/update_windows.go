@@ -46,7 +46,7 @@ func build_updater(p paths, application *core.Application, addresses *control_ad
 		Control_planes: addresses.Current,
 		Offer_control_planes: func(list []string, released_at time.Time) {
 			if _, err := addresses.Offer(list, released_at); err != nil {
-				logger.Warn("the signed manifest names control plane addresses that are not usable", "err", err)
+				logger.Warn("the signed manifest's control plane addresses were not taken", "err", err)
 			}
 		},
 		Fallback:        buildinfo.Update_mirror,

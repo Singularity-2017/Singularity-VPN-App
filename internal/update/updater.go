@@ -160,8 +160,8 @@ func (u *Updater) channels(state State) []Channel {
 		list = append(list, c)
 	}
 	if u.config.Control_planes != nil {
-		for _, base := range u.config.Control_planes() {
-			add(Control_plane_channel(base))
+		for i, base := range u.config.Control_planes() {
+			add(Control_plane_channel(base, i+1))
 		}
 	}
 	for _, m := range state.Mirrors {

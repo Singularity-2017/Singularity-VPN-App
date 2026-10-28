@@ -29,11 +29,12 @@ type Channel struct {
 
 // Control_plane_channel is the control plane's own release endpoints. It
 // is tried first: it is the one address the application must reach to be
-// useful at all.
-func Control_plane_channel(base string) Channel {
+// useful at all. number tells the control plane's addresses apart in
+// names, which reach the log and the journal and so carry no address.
+func Control_plane_channel(base string, number int) Channel {
 	base = strings.TrimRight(base, "/")
 	return Channel{
-		Name:      "control plane " + base,
+		Name:      fmt.Sprintf("control plane %d", number),
 		manifest:  base + "/api/v1/app/update",
 		signature: base + "/api/v1/app/update.sig",
 		artifact: func(_, file string) string {

@@ -152,3 +152,37 @@ func Test_current_returns_a_copy(t *testing.T) {
 		t.Fatal("Current exposes the store's own slice")
 	}
 }
+
+// A manifest dated far ahead -- a typo, a wrong clock on the signing
+// machine -- would otherwise lock the list against every later release.
+func Test_a_statement_dated_in_the_future_is_refused(t *testing.T) {
+	s := Open(t.TempDir(), compiled, quiet)
+	s.now = func() time.Time { return at(10) }
+	if changed, err := s.Offer([]string{"http://203.0.113.7/vpn"}, at(10).Add(25*time.Hour)); err == nil || changed {
+		t.Fatalf("Offer from tomorrow and a bit = %v, %v; want refused", changed, err)
+	}
+	if changed, err := s.Offer([]string{"http://203.0.113.7/vpn"}, at(10).Add(23*time.Hour)); err != nil || !changed {
+		t.Fatalf("Offer within a day of skew = %v, %v; want taken", changed, err)
+	}
+}
+
+// A manifest without the field still raises the bar: otherwise an older
+// manifest naming an address we gave up is taken on a store that has
+// never seen a list.
+func Test_a_newer_statement_without_a_list_still_raises_the_bar(t *testing.T) {
+	dir := t.TempDir()
+	s := Open(dir, compiled, quiet)
+	if changed, err := s.Offer(nil, at(10)); err != nil || changed {
+		t.Fatalf("Offer(nil) = %v, %v", changed, err)
+	}
+	if got := s.Current(); !reflect.DeepEqual(got, []string{compiled}) {
+		t.Fatalf("Current = %v, want the compiled address", got)
+	}
+	again := Open(dir, compiled, quiet)
+	if changed, _ := again.Offer([]string{"http://192.0.2.66/vpn"}, at(9)); changed {
+		t.Fatal("an older statement was taken after a newer one without a list")
+	}
+	if changed, _ := again.Offer([]string{"http://203.0.113.7/vpn"}, at(11)); !changed {
+		t.Fatal("a newer list was not taken")
+	}
+}

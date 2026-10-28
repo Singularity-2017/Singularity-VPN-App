@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,5 +145,21 @@ func Test_an_answer_ends_the_silence(t *testing.T) {
 	u.Control_plane_answered(false)
 	if u.early.Load() {
 		t.Fatal("silence counted across an answer")
+	}
+}
+
+// Update errors reach the log and the journal; channel names must not
+// carry the control plane's address.
+func Test_control_plane_channels_are_named_without_the_address(t *testing.T) {
+	h := new_harness(t, "v1.0.0", nil, "", "")
+	h.updater.config.Control_planes = func() []string { return []string{"http://203.0.113.7/vpn", "http://192.0.2.4/vpn"} }
+	channels := h.updater.channels(State{})
+	if len(channels) != 2 {
+		t.Fatalf("%d channels, want 2", len(channels))
+	}
+	for _, c := range channels {
+		if strings.Contains(c.Name, "203.0.113.7") || strings.Contains(c.Name, "192.0.2.4") {
+			t.Errorf("channel name %q carries the address", c.Name)
+		}
 	}
 }
