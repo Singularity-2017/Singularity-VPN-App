@@ -41,7 +41,7 @@ func build_updater(p paths, application *core.Application, logger *slog.Logger) 
 		return nil
 	}
 	updater, err := update.New(update.Config{
-		Control_plane:   buildinfo.Control_plane,
+		Control_planes:  func() []string { return []string{buildinfo.Control_plane} },
 		Fallback:        buildinfo.Update_mirror,
 		Current_version: buildinfo.Version,
 		Keys:            keys,

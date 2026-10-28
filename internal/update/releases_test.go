@@ -205,7 +205,7 @@ func Test_a_starved_download_moves_on_to_the_next_channel(t *testing.T) {
 
 	dir := t.TempDir()
 	u, err := New(Config{
-		Control_plane:   plane.URL,
+		Control_planes:  fixed(plane.URL),
 		Fallback:        host.releases,
 		Current_version: "v1.0.0",
 		Keys:            []ed25519.PublicKey{public},
@@ -270,7 +270,7 @@ func Test_a_slow_but_steady_download_is_not_cut(t *testing.T) {
 	}))
 	t.Cleanup(plane.Close)
 	u, err := New(Config{
-		Control_plane:   plane.URL,
+		Control_planes:  fixed(plane.URL),
 		Current_version: "v1.0.0",
 		Keys:            []ed25519.PublicKey{public},
 		Dir:             t.TempDir(),

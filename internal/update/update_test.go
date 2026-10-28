@@ -91,7 +91,7 @@ func new_harness(t *testing.T, current string, keys []ed25519.PublicKey, control
 	h := &harness{dir: t.TempDir(), idle: true, now: time.Now()}
 	u, err := New(Config{
 		Now:             func() time.Time { return h.now },
-		Control_plane:   control_plane,
+		Control_planes:  fixed(control_plane),
 		Fallback:        fallback,
 		Current_version: current,
 		Keys:            keys,
@@ -331,7 +331,7 @@ func Test_a_stalled_channel_does_not_hang_the_check(t *testing.T) {
 
 	dir := t.TempDir()
 	u, err := New(Config{
-		Control_plane:   stalled.URL,
+		Control_planes:  fixed(stalled.URL),
 		Fallback:        mirror.URL,
 		Current_version: "v1.0.0",
 		Keys:            []ed25519.PublicKey{public},

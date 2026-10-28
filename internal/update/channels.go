@@ -33,7 +33,7 @@ type Channel struct {
 func Control_plane_channel(base string) Channel {
 	base = strings.TrimRight(base, "/")
 	return Channel{
-		Name:      "control plane",
+		Name:      "control plane " + base,
 		manifest:  base + "/api/v1/app/update",
 		signature: base + "/api/v1/app/update.sig",
 		artifact: func(_, file string) string {

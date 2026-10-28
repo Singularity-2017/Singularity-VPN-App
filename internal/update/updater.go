@@ -15,9 +15,9 @@ import (
 
 // Config is everything an Updater needs.
 type Config struct {
-	Control_plane   string // base URL; empty skips that channel
-	Fallback        string // a mirror compiled into the build; empty means none
-	Current_version string // buildinfo.Version
+	Control_planes  func() []string // current base URLs; nil or empty skips that channel
+	Fallback        string          // a mirror compiled into the build; empty means none
+	Current_version string          // buildinfo.Version
 	Keys            []ed25519.PublicKey
 	Dir             string // private directory for state and staged files
 	Http_client     *http.Client
@@ -29,6 +29,10 @@ type Config struct {
 	// Apply hands a staged setup to svpn-swap. It returns once the swap
 	// has been launched; the swap itself stops this service.
 	Apply func(Staged) error
+
+	// Offer_control_planes receives the control plane list and released_at
+	// of the newest manifest that verified; nil ignores them.
+	Offer_control_planes func(list []string, released_at time.Time)
 
 	Logger *slog.Logger
 	Now    func() time.Time
@@ -121,8 +125,10 @@ func (u *Updater) channels(state State) []Channel {
 		}
 		list = append(list, c)
 	}
-	if u.config.Control_plane != "" {
-		add(Control_plane_channel(u.config.Control_plane))
+	if u.config.Control_planes != nil {
+		for _, base := range u.config.Control_planes() {
+			add(Control_plane_channel(base))
+		}
 	}
 	for _, m := range state.Mirrors {
 		if mirror_ok(m) == nil {
@@ -231,6 +237,9 @@ func (u *Updater) Check(ctx context.Context) (bool, error) {
 	// reaches installations that are already up to date.
 	state.Highest_version = best.Version
 	state.Mirrors = best.Mirrors
+	if u.config.Offer_control_planes != nil {
+		u.config.Offer_control_planes(best.Control_planes, best.Released_at)
+	}
 	staged, err := u.stage(ctx, &state, *best, u.download_order(state, best_channel, best.Setup.Sha256, served))
 	if serr := Save_state(u.config.Dir, state); serr != nil && err == nil {
 		err = serr

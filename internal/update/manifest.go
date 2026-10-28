@@ -45,6 +45,12 @@ type Manifest struct {
 	// the artifacts by name. Being inside the signed document is what lets
 	// a blocked mirror be replaced by installing the next version.
 	Mirrors []string `json:"mirrors,omitempty"`
+
+	// Control_planes are the control plane's current base URLs. Signed
+	// with the release, they move installations to a re-addressed control
+	// plane; see docs/adr/0001-control-plane-address.md. Absent means
+	// unchanged, never none.
+	Control_planes []string `json:"control_planes,omitempty"`
 }
 
 // Err_bad_signature is a manifest whose signature no trusted key accepts.
