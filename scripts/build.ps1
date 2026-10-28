@@ -89,9 +89,10 @@ $console = @($Target | Where-Object { $_ -ne $gui })
 
 Push-Location $root
 try {
-    # The icon the window and the setup carry is drawn, not stored: write
-    # it as a resource object beside both before they are built.
-    & go run ./cmd/svpn-winres ./cmd/singularityvpn ./cmd/svpn-setup
+    # What Explorer shows of each program -- the icon on the window and the
+    # setup, the version, name and description on all of them -- is
+    # written as a resource object beside each before it is built.
+    & go run ./cmd/svpn-winres -version $version @($Target + "./cmd/svpn-setup" | Select-Object -Unique)
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if ($console.Count -gt 0) {
         & go build -ldflags ($ldflags -join " ") -o $out_dir @console
@@ -175,4 +176,8 @@ if ($Setup) {
         Pop-Location
     }
 }
-Write-Host "built into $Out"
+if ($Setup) {
+    Write-Host "setup: $(Join-Path $out_dir 'SingularityVPN-setup.exe')" -ForegroundColor Green
+} else {
+    Write-Host "built into $out_dir"
+}

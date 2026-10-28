@@ -41,15 +41,16 @@ const Setup_manifest = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </assembly>
 `
 
-// Syso is a COFF object for amd64 holding the application icon, and the
-// manifest when one is given, as a resource section. Placed beside a main
-// package as *_windows_amd64.syso, the Go linker links it in.
-func Syso(manifest string) []byte {
+// Syso is a COFF object for amd64 holding, as a resource section, the
+// application icon when icon is set, the version Explorer shows when one is
+// given, and the manifest when one is given. Placed beside a main package as
+// *_windows_amd64.syso, the Go linker links it in.
+func Syso(icon bool, manifest string, version *Version_info) ([]byte, error) {
 	type resource struct {
 		kind, id uint32
 		data     []byte
 	}
-	const rt_icon, rt_group_icon = 3, 14
+	const rt_icon, rt_group_icon, rt_version = 3, 14, 16
 
 	var resources []resource
 	var group bytes.Buffer
@@ -58,6 +59,9 @@ func Syso(manifest string) []byte {
 	gw(uint16(1))          // type: icon
 	gw(uint16(len(sizes))) // count
 	for i, size := range sizes {
+		if !icon {
+			break
+		}
 		img := Draw(size, Look_up, true)
 		var data []byte
 		if size >= 256 {
@@ -82,7 +86,16 @@ func Syso(manifest string) []byte {
 		gw(uint32(len(data)))
 		gw(uint16(id))
 	}
-	resources = append(resources, resource{rt_group_icon, Icon_group_id, group.Bytes()})
+	if icon {
+		resources = append(resources, resource{rt_group_icon, Icon_group_id, group.Bytes()})
+	}
+	if version != nil {
+		data, err := version_resource(*version)
+		if err != nil {
+			return nil, err
+		}
+		resources = append(resources, resource{rt_version, 1, data})
+	}
 	if manifest != "" {
 		const rt_manifest, create_process_manifest = 24, 1
 		resources = append(resources, resource{rt_manifest, create_process_manifest, []byte(manifest)})
@@ -91,8 +104,8 @@ func Syso(manifest string) []byte {
 	// The resource tree: type, then id, then language, each a directory
 	// of one level, and a data entry per resource. Types are sorted
 	// ascending, as the loader's binary search expects; RT_ICON (3), then
-	// RT_GROUP_ICON (14), then RT_MANIFEST (24), the ids within a type
-	// ascending.
+	// RT_GROUP_ICON (14), RT_VERSION (16), then RT_MANIFEST (24), the ids
+	// within a type ascending.
 	type kind_group struct {
 		kind  uint32
 		items []resource
@@ -200,7 +213,7 @@ func Syso(manifest string) []byte {
 	out.WriteByte(3) // storage class: static
 	out.WriteByte(0) // no auxiliary records
 	w(uint32(4))     // string table: only its own size
-	return out.Bytes()
+	return out.Bytes(), nil
 }
 
 // dib is an icon image in the classic form: a BITMAPINFOHEADER of twice
