@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -499,5 +500,118 @@ func Test_diagnostics_too_big_without_a_journal_are_refused(t *testing.T) {
 	big := json.RawMessage(`"` + strings.Repeat("x", 100) + `"`)
 	if _, err := fit_diagnostics(problem_diagnostics{Schema: 1, Created_at: log_now, Network: big}, 100); err == nil {
 		t.Fatal("diagnostics over the limit before the journal were cut and sent")
+	}
+}
+
+func Test_a_draft_names_the_session_the_failures_happened_in(t *testing.T) {
+	f := new_report_fixture(t)
+	failing := []slog.Attr{
+		slog.String("kind", "connection_blip"),
+		slog.String("session_id", "27d09bc16e421d8933137a3c967c4169"),
+		slog.String("node_id", "node-failing"),
+		slog.String("protocol", "amneziawg"),
+	}
+	f.record(t, 20*time.Minute, "event", failing...)
+	f.record(t, 15*time.Minute, "event", failing...)
+	f.record(t, 10*time.Minute, "event", failing...)
+	// The service restarted since, and holds a new, healthy session.
+	connect(t, f.fixture)
+	status, err := f.app.Status(context.Background())
+	if err != nil || status.Session_id == "" || status.Session_id == "27d09bc16e421d8933137a3c967c4169" {
+		t.Fatalf("the fixture has no session of its own: %+v, %v", status, err)
+	}
+
+	draft, err := f.app.Problem_draft(context.Background(), ipc.Problem_draft_params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bundle struct {
+		Connection map[string]string `json:"connection"`
+	}
+	if err := json.Unmarshal(draft.Diagnostics, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"session_id": "27d09bc16e421d8933137a3c967c4169", "node_id": "node-failing", "protocol": "amneziawg", "state": "connected"}
+	for key, value := range want {
+		if bundle.Connection[key] != value {
+			t.Errorf("connection.%s = %q, want %q: the report is about the connection that failed", key, bundle.Connection[key], value)
+		}
+	}
+}
+
+// send_draft makes a draft and sends it, and returns what was sent.
+func (f *report_fixture) send_draft(t *testing.T) (journal_messages []string, log string) {
+	t.Helper()
+	draft, err := f.app.Problem_draft(context.Background(), ipc.Problem_draft_params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.Feedback(context.Background(), ipc.Feedback_params{Kind: "problem", Message: "It keeps dropping", Draft: draft.Id}); err != nil {
+		t.Fatal(err)
+	}
+	var bundle struct {
+		Journal []journal.Entry `json:"journal"`
+	}
+	if err := json.Unmarshal(f.plane.diagnostics[len(f.plane.diagnostics)-1], &bundle); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range bundle.Journal {
+		journal_messages = append(journal_messages, entry.Message)
+	}
+	return journal_messages, f.plane.logs[len(f.plane.logs)-1]
+}
+
+func Test_a_report_does_not_send_again_what_an_earlier_one_sent(t *testing.T) {
+	f := new_report_fixture(t)
+	f.app.report_sent_path = filepath.Join(t.TempDir(), "report-sent.json")
+	f.record(t, 10*time.Minute, "connect requested")
+	journal_first, log_first := f.send_draft(t)
+	if !slices.Contains(journal_first, "connect requested") || !strings.Contains(log_first, "service starting") {
+		t.Fatalf("the first report did not carry what there was: %q, %q", journal_first, log_first)
+	}
+
+	f.now = f.now.Add(5 * time.Minute)
+	f.record(t, time.Minute, "disconnect requested")
+	write_log(t, f.log, log_line(time.Hour, "service starting"), log_line(time.Minute, "connect requested token=abc"), log_line(-4*time.Minute, "after the first report"))
+	journal_second, log_second := f.send_draft(t)
+	if slices.Contains(journal_second, "connect requested") || !slices.Contains(journal_second, "disconnect requested") {
+		t.Errorf("second journal = %q: only what came after the first report", journal_second)
+	}
+	if strings.Contains(log_second, "service starting") || strings.Contains(log_second, "connect requested") || !strings.Contains(log_second, "after the first report") {
+		t.Errorf("second log = %q: only what came after the first report", log_second)
+	}
+}
+
+func Test_what_was_sent_is_remembered_across_a_restart(t *testing.T) {
+	sent_path := filepath.Join(t.TempDir(), "report-sent.json")
+	f := new_report_fixture(t)
+	f.app.report_sent_path = sent_path
+	f.send_draft(t)
+
+	// A service started afresh: the same files, an empty journal.
+	g := new_report_fixture(t)
+	g.app.report_sent_path = sent_path
+	g.app.log_path = f.log
+	g.now = f.now.Add(time.Minute)
+	if _, log := g.send_draft(t); log != "" {
+		t.Errorf("after a restart the log went again: %q", log)
+	}
+}
+
+func Test_a_report_that_failed_to_send_does_not_count_as_sent(t *testing.T) {
+	f := new_report_fixture(t)
+	f.app.report_sent_path = filepath.Join(t.TempDir(), "report-sent.json")
+	draft, err := f.app.Problem_draft(context.Background(), ipc.Problem_draft_params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.plane.report_error = errors.New("control plane unreachable")
+	if _, err := f.app.Feedback(context.Background(), ipc.Feedback_params{Kind: "problem", Message: "x", Draft: draft.Id}); err == nil {
+		t.Fatal("the send should have failed")
+	}
+	f.plane.report_error = nil
+	f.now = f.now.Add(time.Minute)
+	if _, log := f.send_draft(t); !strings.Contains(log, "service starting") {
+		t.Errorf("log = %q: nothing went the first time, so all of it goes now", log)
 	}
 }

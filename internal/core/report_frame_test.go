@@ -51,7 +51,7 @@ func Test_a_log_tail_that_grows_when_escaped_is_cut_to_fit_the_frame(t *testing.
 	}
 	write_log(t, path, lines...)
 
-	text, from, err := read_log_tail(path, log_now)
+	text, from, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func Test_a_log_tail_that_grows_when_escaped_is_cut_to_fit_the_frame(t *testing.
 func Test_a_log_with_bytes_that_are_not_text_is_repaired_before_it_is_measured(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "service.log")
 	write_log(t, path, "time="+log_now.Add(-time.Minute).Format("2006-01-02T15:04:05.000Z07:00")+" level=INFO msg=\"a\xff\xfeb\"\n")
-	text, _, err := read_log_tail(path, log_now)
+	text, _, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}

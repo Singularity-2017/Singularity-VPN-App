@@ -119,5 +119,8 @@ func (a *Application) send_problem_draft(ctx context.Context, params ipc.Feedbac
 		return result, map_error(err)
 	}
 	sent = true
+	// The journal and the log up to the draft's making have gone; the next
+	// report starts after them.
+	a.record_reported(draft.created)
 	return result, nil
 }

@@ -163,10 +163,16 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 	}
 	now := a.now()
 
+	var entries []journal.Entry
+	if a.journal != nil {
+		entries = a.journal.List()
+	}
 	// The failure signal is the report's own field; the status copy inside
 	// the bundle would only say it twice.
-	failures := status.Failures
+	failures, last_failure := failure_reading(entries, now)
 	status.Failures = nil
+	// What an earlier report carried is not carried again.
+	sent := a.reported_until(now)
 	diagnostics := problem_diagnostics{
 		Schema:      diagnostics_schema,
 		Created_at:  now,
@@ -195,16 +201,14 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 		a.logger.Warn("problem report: the tunnel mode could not be read", "error", err.Error())
 	}
 
-	if a.journal != nil {
-		cutoff := now.Add(-diagnostics_journal_window)
-		for _, entry := range a.journal.List() {
-			if entry.At.Before(cutoff) {
-				continue
-			}
-			entry.Message = redact_log_line(entry.Message)
-			entry.Attrs = redact_attrs(entry.Attrs)
-			diagnostics.Journal = append(diagnostics.Journal, entry)
+	cutoff := now.Add(-diagnostics_journal_window)
+	for _, entry := range entries {
+		if entry.At.Before(cutoff) || !entry.At.After(sent) {
+			continue
 		}
+		entry.Message = redact_log_line(entry.Message)
+		entry.Attrs = redact_attrs(entry.Attrs)
+		diagnostics.Journal = append(diagnostics.Journal, entry)
 	}
 
 	diagnostics.Connection = problem_connection{
@@ -216,7 +220,12 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 	// A connection that never came up has no session, but the journal still
 	// names the node and protocol it was trying.
 	if diagnostics.Connection.Node_id == "" {
-		diagnostics.Connection.Node_id, diagnostics.Connection.Protocol = latest_target(diagnostics.Journal)
+		diagnostics.Connection.Node_id, diagnostics.Connection.Protocol = latest_target(entries)
+	}
+	// A report about failures is about the connection they happened on,
+	// which is not the one held now when the service has restarted since.
+	if failures != nil {
+		diagnostics.Connection = failing_connection(diagnostics.Connection, last_failure)
 	}
 	// The mode is what an observation made now would carry, session or not.
 	if mode, err := a.manager.Observation_mode(); err == nil {
@@ -239,7 +248,7 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 	var log string
 	var log_from time.Time
 	if a.log_path != "" {
-		log, log_from, err = read_log_tail(a.log_path, now)
+		log, log_from, err = read_log_tail(a.log_path, now, sent)
 		if err != nil {
 			// The report is still worth sending without it.
 			a.logger.Warn("problem report: the log could not be read", "error", err.Error())
@@ -259,6 +268,18 @@ func (a *Application) Problem_draft(ctx context.Context, params ipc.Problem_draf
 		draft.Log_from = &log_from
 	}
 	return draft, nil
+}
+
+// failing_connection is connection with the session, node and protocol the
+// failure entry names in their place -- all three or none, so the report never
+// pairs one connection's session with another's node. The state stays the one
+// held now: it is what the person is looking at.
+func failing_connection(connection problem_connection, failure journal.Entry) problem_connection {
+	session, node, protocol := failure.Attrs["session_id"], failure.Attrs["node_id"], failure.Attrs["protocol"]
+	if session != "" && node != "" && protocol != "" {
+		connection.Session_id, connection.Node_id, connection.Protocol = session, node, protocol
+	}
+	return connection
 }
 
 // latest_target is the node and protocol named by the newest journal entry

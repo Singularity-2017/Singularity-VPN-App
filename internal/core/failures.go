@@ -82,6 +82,14 @@ func classify_failure(entry journal.Entry) failure_class {
 // entries is read oldest first, whole: whether the person had disconnected
 // before the window began decides whether its first failures count.
 func failure_signal(entries []journal.Entry, now time.Time) *ipc.Failure_signal {
+	signal, _ := failure_reading(entries, now)
+	return signal
+}
+
+// failure_reading is failure_signal and the newest failure it counted: the
+// entry that names the connection the failures happened on, which need not
+// be the one held now -- the service may have restarted since.
+func failure_reading(entries []journal.Entry, now time.Time) (*ipc.Failure_signal, journal.Entry) {
 	ordered := slices.Clone(entries)
 	slices.SortStableFunc(ordered, func(a, b journal.Entry) int { return a.At.Compare(b.At) })
 
@@ -102,6 +110,7 @@ func failure_signal(entries []journal.Entry, now time.Time) *ipc.Failure_signal 
 	cutoff := now.Add(-failure_window)
 	var (
 		signal       ipc.Failure_signal
+		last         journal.Entry
 		disconnected bool
 		score        int
 	)
@@ -139,9 +148,10 @@ func failure_signal(entries []journal.Entry, now time.Time) *ipc.Failure_signal 
 			signal.First = entry.At
 		}
 		signal.Last = entry.At
+		last = entry
 	}
 	if score < failure_threshold {
-		return nil
+		return nil, journal.Entry{}
 	}
-	return &signal
+	return &signal, last
 }

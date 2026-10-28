@@ -144,11 +144,13 @@ func log_line_time(line string) (time.Time, bool) {
 
 // read_log_tail returns the part of the log at path (and, when the window
 // reaches past it, of path+".1" that came before) whose lines are within
-// log_tail_window of now, redacted and at most log_tail_max bytes with the
-// newest kept, and the time of its first line. A log that is not there is an
-// empty tail, not an error: nothing in the report depends on it.
-func read_log_tail(path string, now time.Time) (string, time.Time, error) {
+// log_tail_window of now and later than after -- what an earlier report has
+// not sent -- redacted and at most log_tail_max bytes with the newest kept,
+// and the time of its first line. A log that is not there is an empty tail,
+// not an error: nothing in the report depends on it.
+func read_log_tail(path string, now, after time.Time) (string, time.Time, error) {
 	cutoff := now.Add(-log_tail_window)
+	wanted := func(at time.Time) bool { return !at.Before(cutoff) && at.After(after) }
 	current, truncated, err := read_file_tail(path, log_tail_max)
 	if err != nil {
 		return "", time.Time{}, err
@@ -156,8 +158,8 @@ func read_log_tail(path string, now time.Time) (string, time.Time, error) {
 	records := parse_log_records(current)
 	// service.log.1 is the log before the last rollover. It matters only if
 	// service.log is whole -- started after it -- and does not already
-	// reach back past the window by itself.
-	if !truncated && (len(records) == 0 || !records[0].at.Before(cutoff)) {
+	// reach back past what is wanted by itself.
+	if !truncated && (len(records) == 0 || wanted(records[0].at)) {
 		older, _, err := read_file_tail(path+".1", log_tail_max)
 		if err != nil {
 			return "", time.Time{}, err
@@ -167,7 +169,7 @@ func read_log_tail(path string, now time.Time) (string, time.Time, error) {
 
 	kept := records[:0:0]
 	for _, record := range records {
-		if !record.at.Before(cutoff) {
+		if wanted(record.at) {
 			record.text = redact_log_line(strings.ToValidUTF8(record.text, "�"))
 			kept = append(kept, record)
 		}

@@ -61,9 +61,12 @@ already written. A problem report can carry diagnostics the service gathers
 at that moment — the journal and the service log of the last two hours
 (secrets and IP addresses masked), adapter types, MTU and DNS classes without
 the machine's addresses, and optionally the programs that were in the
-foreground. All of it is shown before sending. The control plane counts a
-reported server and protocol as a failed session on that network, and the
-next automatic choice there prefers another usable offer.
+foreground. All of it is shown before sending. Journal and log lines an
+earlier accepted report already carried are not sent again, across restarts
+too. The report names the session the failures happened on, even when the
+service has restarted since. The control plane counts a reported server and
+protocol as a failed session on that network, and the next automatic choice
+there prefers another usable offer.
 
 ## Connection measurements
 

@@ -162,7 +162,7 @@ func Test_addresses_in_real_slog_output_are_masked_in_the_log_tail(t *testing.T)
 		slog_record(t, 2*time.Minute, slog.LevelInfo, "endpoint", slog.String("addr", "203.0.113.7:51820"), slog.String("v6", "2001:db8::1")),
 		slog_record(t, time.Minute, slog.LevelWarn, "dial failed", slog.Any("error", fmt.Errorf("dial tcp [2001:db8:85a3::8a2e:370:7334]:443: i/o timeout; fe80::1%%eth0; 198.51.100.9")), slog.Int("n", 3)),
 	)
-	text, from, err := read_log_tail(path, log_now)
+	text, from, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func Test_read_log_tail_keeps_the_last_two_hours_redacted(t *testing.T) {
 		log_line(time.Hour, "an hour ago token=abc"),
 		log_line(time.Minute, "recent"),
 	)
-	text, from, err := read_log_tail(path, log_now)
+	text, from, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func Test_read_log_tail_reads_the_rolled_log_only_when_the_window_reaches_it(t *
 
 	// service.log started a minute ago: the window reaches back past it.
 	write_log(t, path, log_line(time.Minute, "after the roll"))
-	text, from, err := read_log_tail(path, log_now)
+	text, from, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func Test_read_log_tail_reads_the_rolled_log_only_when_the_window_reaches_it(t *
 
 	// service.log already reaches back past the window: .1 is older still.
 	write_log(t, path, log_line(3*time.Hour, "old start"), log_line(time.Minute, "recent"))
-	text, _, err = read_log_tail(path, log_now)
+	text, _, err = read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,14 +248,14 @@ func Test_read_log_tail_reads_the_rolled_log_only_when_the_window_reaches_it(t *
 }
 
 func Test_read_log_tail_without_a_log_is_empty_not_an_error(t *testing.T) {
-	text, from, err := read_log_tail(filepath.Join(t.TempDir(), "service.log"), log_now)
+	text, from, err := read_log_tail(filepath.Join(t.TempDir(), "service.log"), log_now, time.Time{})
 	if err != nil || text != "" || !from.IsZero() {
 		t.Fatalf("tail = %q, %v, %v", text, from, err)
 	}
 	// Only the rolled one is there.
 	dir := t.TempDir()
 	write_log(t, filepath.Join(dir, "service.log.1"), log_line(time.Minute, "rolled"))
-	text, _, err = read_log_tail(filepath.Join(dir, "service.log"), log_now)
+	text, _, err = read_log_tail(filepath.Join(dir, "service.log"), log_now, time.Time{})
 	if err != nil || !strings.Contains(text, "rolled") {
 		t.Fatalf("tail = %q, %v", text, err)
 	}
@@ -268,7 +268,7 @@ func Test_read_log_tail_is_capped_and_keeps_the_newest(t *testing.T) {
 		lines = append(lines, log_line(time.Hour-time.Duration(i)*time.Millisecond*500, fmt.Sprintf("line %04d %s", i, strings.Repeat("x", 60))))
 	}
 	write_log(t, path, lines...)
-	text, from, err := read_log_tail(path, log_now)
+	text, from, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func Test_read_log_tail_is_capped_after_redaction_lengthens_it(t *testing.T) {
 		lines = append(lines, log_line(time.Minute, fmt.Sprintf("n%04d token=1", i)))
 	}
 	write_log(t, path, lines...)
-	text, _, err := read_log_tail(path, log_now)
+	text, _, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func Test_the_log_can_be_read_while_the_service_appends_to_it(t *testing.T) {
 	if _, err := writer.WriteString(log_line(time.Minute, "first")); err != nil {
 		t.Fatal(err)
 	}
-	text, _, err := read_log_tail(path, log_now)
+	text, _, err := read_log_tail(path, log_now, time.Time{})
 	if err != nil || !strings.Contains(text, "first") {
 		t.Fatalf("tail = %q, %v", text, err)
 	}

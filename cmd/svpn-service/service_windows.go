@@ -573,6 +573,8 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 			return winplatform.Network_summary()
 		},
 		Os_version: os_version(),
+		// Beside state.json: how far the last problem report reached.
+		Report_sent_path: filepath.Join(p.root, "report-sent.json"),
 	})
 }
 

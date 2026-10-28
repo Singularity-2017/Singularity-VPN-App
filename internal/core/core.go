@@ -105,6 +105,10 @@ type Dependencies struct {
 	// Os_version is the operating system's version, for a problem report;
 	// empty leaves it out rather than guessing.
 	Os_version string
+	// Report_sent_path is where the time up to which a problem report has
+	// already carried the journal and the log is kept, so the next report
+	// does not send them again, across restarts too. Empty keeps nothing.
+	Report_sent_path string
 }
 
 // Application is the running program: the connection state machine, wired
@@ -167,6 +171,9 @@ type Application struct {
 	// drafts holds the problem reports the person has been shown and not
 	// yet sent; see problem_drafts.
 	drafts problem_drafts
+	// report_sent_path and report_sent_mu: see report_sent.go.
+	report_sent_path string
+	report_sent_mu   sync.Mutex
 }
 
 // New_application builds an Application, refusing a Dependencies missing
@@ -257,10 +264,11 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		game_pinger: dependencies.Game_pinger,
 		matches:     matchserver.New_detector(matches),
 
-		evidence:        dependencies.Evidence,
-		log_path:        dependencies.Log_path,
-		network_summary: dependencies.Network_summary,
-		os_version:      dependencies.Os_version,
+		evidence:         dependencies.Evidence,
+		log_path:         dependencies.Log_path,
+		network_summary:  dependencies.Network_summary,
+		os_version:       dependencies.Os_version,
+		report_sent_path: dependencies.Report_sent_path,
 
 		resolve_ip4: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip4", host)

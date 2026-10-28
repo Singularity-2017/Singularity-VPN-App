@@ -76,7 +76,7 @@
     if (request !== generation) return;
     draft_loading = false;
     if (answer && !answer.error && answer.draft && answer.draft.id) {
-      problem_draft = { id: answer.draft.id, diagnostics: answer.draft.diagnostics || {}, log: answer.draft.log || '', log_bytes: answer.draft.log_bytes || 0, at: Date.now() };
+      problem_draft = { id: answer.draft.id, diagnostics: answer.draft.diagnostics || {}, log: answer.draft.log || '', log_bytes: answer.draft.log_bytes || 0, log_from: answer.draft.log_from || '', at: Date.now() };
     } else {
       problem_draft = null; draft_failed = true;
     }
@@ -105,7 +105,7 @@
     if (attach && draft_loading) parts.push(make('div', 'Собираем сведения…', 'feedback-note'));
     else if (attach && draft_failed) parts.push(make('div', 'Сведения собрать не удалось — сообщение уйдёт без них.', 'feedback-note'));
     else if (attach && problem_draft) {
-      const rows = root.report_ui.attached(problem_draft.diagnostics, problem_draft.log_bytes);
+      const rows = root.report_ui.attached(problem_draft.diagnostics, problem_draft.log_bytes, problem_draft.log_from);
       const what = make('details', undefined, 'feedback-attached');
       what.append(make('summary', 'Что уйдёт · ' + rows.length));
       const list = make('ul');

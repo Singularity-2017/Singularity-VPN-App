@@ -44,23 +44,35 @@
     return bytes < 1024 ? bytes + ' Б' : Math.max(1, Math.round(bytes / 1024)) + ' КБ';
   }
 
+  // over is ' за <span>' from from to to, rounded to minutes under an hour and
+  // to hours past it, or '' when either end is not known: what goes is said
+  // over the time it really covers. After an earlier report that is only
+  // what came since, not the whole window.
+  function over(from, to) {
+    const ms = Date.parse(to) - Date.parse(from);
+    if (!(ms >= 0)) return '';
+    const minutes = Math.max(1, Math.round(ms / 60000));
+    if (minutes < 60) return ' за ' + count(minutes, 'минуту', 'минуты', 'минут');
+    return ' за ' + count(Math.round(minutes / 60), 'час', 'часа', 'часов');
+  }
+
   // attached is what goes with the message, one [title, detail] per part,
   // read from the diagnostics the service built -- the same object that is
   // sent, so the list cannot promise less than goes.
-  function attached(diagnostics, log_bytes) {
+  function attached(diagnostics, log_bytes, log_from) {
     const d = diagnostics || {};
     const rows = [];
     const c = d.connection || {};
     if (c.node_id || c.protocol) rows.push(['Соединение', 'сервер, протокол, режим и последние замеры']);
     if (d.failures && d.failures.count) rows.push(['Сбои', count(d.failures.count, 'сбой', 'сбоя', 'сбоев') + ' за полчаса']);
-    if (Array.isArray(d.journal) && d.journal.length) rows.push(['Журнал', count(d.journal.length, 'запись', 'записи', 'записей') + ' за 2 часа']);
+    if (Array.isArray(d.journal) && d.journal.length) rows.push(['Журнал', count(d.journal.length, 'запись', 'записи', 'записей') + over(d.journal[0].at, d.created_at)]);
     if (Array.isArray(d.network) && d.network.length) {
       rows.push(['Сеть', d.network.map((a) => a.name).filter(Boolean).join(', ') + ' — тип, MTU, DNS, без адресов компьютера']);
     }
     if (Array.isArray(d.apps) && d.apps.length) {
       rows.push(['Программы на экране', [...new Set(d.apps.map((a) => a.exe).filter(Boolean))].join(', ')]);
     }
-    if (log_bytes > 0) rows.push(['Лог службы', kb(log_bytes) + ' за 2 часа']);
+    if (log_bytes > 0) rows.push(['Лог службы', kb(log_bytes) + over(log_from, d.created_at)]);
     const build = [d.app_version, windows_name(d.os)].filter(Boolean).join(' · ');
     if (build) rows.push(['Версия', build]);
     return rows;
