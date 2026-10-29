@@ -1550,27 +1550,10 @@ func (m *Manager) switch_to(ctx context.Context, now time.Time, target recovery.
 	}
 
 	for {
-		if m.protocol_handle != nil {
-			// Leaving this target regardless of what stopping it reports:
-			// a failure to stop cleanly does not cancel the switch.
-			_ = m.protocol_handle.Disconnect(ctx)
-			m.protocol_handle = nil
+		connected, err, fault := m.attempt(ctx, now, token, target)
+		if connected {
+			return err
 		}
-
-		config, cerr := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, target.Protocol, target.Node_id, profile_for(effective_mode(m.local_state)))
-		var fault *Fault
-		var protocol protocols.Protocol
-		if cerr != nil {
-			fault = classify_control_plane_error("switch", cerr)
-		} else {
-			protocol, fault = m.establish(ctx, target, config)
-			if fault == nil {
-				return m.settle_connected(ctx, now, target, protocol, config, "switch", events.Kind_switch_completed, target)
-			}
-		}
-
-		m.publish(events.Kind_switch_failed, fault)
-		m.policy.Record_failure(now, target)
 
 		next, nerr := m.policy.Next_target(now, recovery.Reason_hard_fail, target, m.holding_first(m.alternatives))
 		if nerr != nil {
@@ -1949,6 +1932,32 @@ func prefer_obfuscated(targets []recovery.Target) []recovery.Target {
 		}
 	}
 	return targets
+}
+
+// attempt is one try at target during a switch: the target left behind,
+// its config fetched, its tunnel brought up. connected says it came up, and
+// err is then what settling it returned; otherwise fault is why not, already
+// published and recorded against target.
+func (m *Manager) attempt(ctx context.Context, now time.Time, token string, target recovery.Target) (connected bool, err error, fault *Fault) {
+	if m.protocol_handle != nil {
+		// Leaving this target regardless of what stopping it reports:
+		// a failure to stop cleanly does not cancel the switch.
+		_ = m.protocol_handle.Disconnect(ctx)
+		m.protocol_handle = nil
+	}
+	config, cerr := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, target.Protocol, target.Node_id, profile_for(effective_mode(m.local_state)))
+	if cerr != nil {
+		fault = classify_control_plane_error("switch", cerr)
+	} else {
+		var protocol protocols.Protocol
+		protocol, fault = m.establish(ctx, target, config)
+		if fault == nil {
+			return true, m.settle_connected(ctx, now, target, protocol, config, "switch", events.Kind_switch_completed, target), nil
+		}
+	}
+	m.publish(events.Kind_switch_failed, fault)
+	m.policy.Record_failure(now, target)
+	return false, nil, fault
 }
 
 // The recommended primary remains an offered fallback when automatic policy

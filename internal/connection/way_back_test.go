@@ -12,13 +12,14 @@ import (
 )
 
 // moved_for_drops connects on wireguard, which then drops five times in
-// fifteen minutes and is moved to amneziawg; openvpn is the other offer.
-func moved_for_drops(t *testing.T) (*test_env, *Manager) {
+// fifteen minutes and is moved to amneziawg; openvpn is the other offer on
+// the same server, and others are offered after both.
+func moved_for_drops(t *testing.T, others ...api.Alternative) (*test_env, *Manager) {
 	t.Helper()
 	env := new_test_env(t)
 	env.protocols.by_name["openvpn"] = &fake_protocol{name: "openvpn"}
 	env.protocols.by_name["amneziawg"] = &fake_protocol{name: "amneziawg"}
-	env.control_plane.recommend_result.Alternatives = []api.Alternative{{Node: "de-01", Protocol: "openvpn"}, {Node: "de-01", Protocol: "amneziawg"}}
+	env.control_plane.recommend_result.Alternatives = append([]api.Alternative{{Node: "de-01", Protocol: "openvpn"}, {Node: "de-01", Protocol: "amneziawg"}}, others...)
 	manager := env.build()
 	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
 		t.Fatalf("Connect() error = %v", err)
@@ -57,6 +58,43 @@ func Test_a_move_that_did_not_hold_goes_back_to_what_held(t *testing.T) {
 	}
 	if calls := env.protocols.by_name["openvpn"].connect_calls; calls != 0 {
 		t.Errorf("openvpn was tried %d times before going back; want the way back first", calls)
+	}
+}
+
+// Two protocols of one server failing in turn say the server is the trouble,
+// not the protocol: a move that did not hold goes to another server when one
+// is offered, before back to the connection that was dropping. R-7XPN,
+// 2026-10-29: AmneziaWG, WireGuard and OpenVPN on one server, round and
+// round, and the server never changed.
+func Test_a_move_that_did_not_hold_goes_to_another_server_first(t *testing.T) {
+	env, manager := moved_for_drops(t, api.Alternative{Node: "nl-02", Protocol: "wireguard"})
+	env.protocols.by_name["openvpn"].connect_err = errors.New("no handshake")
+	lose_moved_to(env, manager, 10*time.Second)
+	session, ok := manager.Session()
+	if !ok || session.Node_id != "nl-02" || session.Protocol != "wireguard" {
+		t.Fatalf("session %+v (ok %v, state %v); want wireguard on nl-02, another server", session, ok, manager.State())
+	}
+	if calls := env.protocols.by_name["openvpn"].connect_calls; calls != 0 {
+		t.Errorf("openvpn on the same server was tried %d times; want another server first", calls)
+	}
+}
+
+// Another server that does not come up does not cost the way back: the
+// connection still ends on what held, not without one.
+func Test_another_server_that_does_not_come_up_still_leaves_the_way_back(t *testing.T) {
+	env, manager := moved_for_drops(t, api.Alternative{Node: "nl-02", Protocol: "amneziawg"})
+	env.protocols.by_name["openvpn"].connect_err = errors.New("no handshake")
+	before := env.protocols.by_name["amneziawg"].connect_calls
+	lose_moved_to(env, manager, 10*time.Second)
+	if env.protocols.by_name["amneziawg"].connect_calls == before {
+		t.Errorf("amneziawg on nl-02 was never tried")
+	}
+	session, ok := manager.Session()
+	if !ok || session.Node_id != "de-01" || session.Protocol != "wireguard" {
+		t.Fatalf("session %+v (ok %v, state %v); want back on wireguard on de-01", session, ok, manager.State())
+	}
+	if calls := env.protocols.by_name["openvpn"].connect_calls; calls != 0 {
+		t.Errorf("openvpn on the lost server was tried %d times between the other server and the way back", calls)
 	}
 }
 

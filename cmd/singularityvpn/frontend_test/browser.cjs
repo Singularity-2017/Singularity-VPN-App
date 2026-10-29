@@ -243,8 +243,10 @@ const root = path.resolve(__dirname, '../frontend');
     assert.match(await page.locator('#feedback-status').textContent(),/Не удалось/);
     assert.equal(await page.locator('#feedback-message').inputValue(),'Synthetic bug report');
     await page.locator('#help [type="submit"]').click();
-    assert.match(await page.locator('#feedback-status').textContent(),/Сообщение отправлено/);
-    assert.equal(await page.locator('#feedback-message').inputValue(),'');
+    // Sent, only the receipt stays: no field to type into, no button.
+    assert.match(await page.locator('#help .feedback-status').textContent(),/Сообщение отправлено.*SYN-123/);
+    assert.equal(await page.locator('#feedback-message').count(),0);
+    assert.equal(await page.locator('#help [type="submit"]').count(),0);
     assert.deepEqual(await page.evaluate(()=>window.feedback_calls),[{kind:'problem',message:'Synthetic bug report'},{kind:'problem',message:'Synthetic bug report'}]);
     await page.keyboard.press('Escape');
     if (process.env.VPN_UI_SCREENSHOT) await page.screenshot({path:process.env.VPN_UI_SCREENSHOT});

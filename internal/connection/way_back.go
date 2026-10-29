@@ -53,7 +53,13 @@ func (m *Manager) way_back(now time.Time, failing recovery.Target) (recovery.Tar
 // bet than anything new (R-ZWP9, 2026-10-28: AmneziaWG, dropping but working,
 // was left for WireGuard, cut eighteen seconds later; OpenVPN did not come up
 // after it, and the machine stayed without a connection for 55 minutes). It
-// reports whether it went back. The caller holds op_mu.
+// reports whether it went back.
+//
+// When what held and what did not are on one server, two of its protocols
+// have failed in turn and the server is the likelier trouble: another server
+// offered comes first, and the way back stays for when it does not come up
+// (R-7XPN, 2026-10-29: AmneziaWG, WireGuard and OpenVPN on one server, round
+// and round, and the server never changed). The caller holds op_mu.
 func (m *Manager) go_back(ctx context.Context, now time.Time, reason recovery.Reason) bool {
 	if reason != recovery.Reason_hard_fail || slices.Contains(m.held, m.current) {
 		return false
@@ -66,12 +72,45 @@ func (m *Manager) go_back(ctx context.Context, now time.Time, reason recovery.Re
 	if !slices.Contains(m.did_not_hold, left) {
 		m.did_not_hold = append(m.did_not_hold, left)
 	}
+	if back.Node_id == left.Node_id {
+		if other, ok := m.other_server(now, left.Node_id); ok && m.try_other_server(ctx, now, left, other) {
+			return true
+		}
+	}
 	m.logger.Info("the connection moved to did not hold; going back", "node_id", left.Node_id, "protocol", left.Protocol,
 		"back_node_id", back.Node_id, "back_protocol", back.Protocol)
 	m.set_state(State_switching)
 	m.publish(events.Kind_switch_started, back)
 	_ = m.switch_to(ctx, now, back, true)
 	return true
+}
+
+// try_other_server makes one try at other, and reports whether it came up.
+// One: the rest of the lost server's protocols are not walked before the way
+// back, which carried traffic minutes ago.
+func (m *Manager) try_other_server(ctx context.Context, now time.Time, left, other recovery.Target) bool {
+	m.logger.Info("the connection moved to did not hold; trying another server", "node_id", left.Node_id, "protocol", left.Protocol,
+		"next_node_id", other.Node_id, "next_protocol", other.Protocol)
+	m.set_state(State_switching)
+	m.publish(events.Kind_switch_started, other)
+	m.end_observation(ctx, "replaced", false)
+	token, err := m.token.Token(ctx)
+	if err != nil {
+		return false
+	}
+	connected, _, _ := m.attempt(ctx, now, token, other)
+	return connected
+}
+
+// other_server is the first offer on a server other than node that has not
+// failed here and may be tried now.
+func (m *Manager) other_server(now time.Time, node string) (recovery.Target, bool) {
+	for _, t := range m.holding(m.alternatives) {
+		if t.Node_id != node && m.policy.Eligible(now, t) {
+			return t, true
+		}
+	}
+	return recovery.Target{}, false
 }
 
 // holding is the offers less what did not hold on this network: a working

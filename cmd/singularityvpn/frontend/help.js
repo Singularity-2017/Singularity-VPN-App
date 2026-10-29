@@ -167,6 +167,7 @@
       const request = generation;
       const app = root.go && root.go.main && root.go.main.App;
       const params = { kind, message: draft };
+      let sent = false;
       if (kind === 'problem' && attach && problem_draft) params.draft = problem_draft.id;
       sending = true; submit.disabled = true; select.disabled = true; message.disabled = true;
       submit.textContent = 'Отправляем…'; status.textContent = ''; last_status = '';
@@ -179,6 +180,7 @@
         draft = ''; message.value = ''; prefill = ''; problem_draft = null;
         last_status = 'Сообщение отправлено. Спасибо!' + (result.feedback.code ? ' Код сообщения: ' + result.feedback.code : '');
         status.textContent = last_status;
+        sent = true;
         if (params.draft && root.problem_reported) root.problem_reported();
         if (root.account_ui) root.account_ui.refresh();
       } catch (_) {
@@ -201,6 +203,15 @@
             if (visible_submit) { visible_submit.disabled = false; visible_submit.textContent = 'Отправить'; }
           }
           render_attach();
+          // Sent, the form has done its work: what stays is that it went
+          // and its code. Opened again, the form starts empty.
+          const shown = $('help').querySelector('.feedback-form');
+          if (sent && shown) {
+            const done = make('div', last_status, 'feedback-status');
+            done.setAttribute('role', 'status');
+            shown.replaceWith(done);
+            last_status = '';
+          }
         }
       }
     });
