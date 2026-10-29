@@ -32,10 +32,8 @@ import (
 // its own; a machine in a domain like that keeps the leak.
 const dns_policy_key = `SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig\{B1E296B6-B632-414F-B8BD-A173E2E55205}`
 
-// dns_policy_owner is the adapter whose resolvers the rule names. A switch
-// brings the new tunnel up before the old one is cleared, and they can be
-// different adapters (WireGuard and AmneziaWG are), so the old one's Clear
-// must not take away the rule the new one just set.
+// dns_policy_owner is the adapter whose resolvers the rule names, so that
+// clearing another adapter never takes away a rule it did not set.
 var (
 	dns_policy_mu    sync.Mutex
 	dns_policy_owner winipcfg.LUID

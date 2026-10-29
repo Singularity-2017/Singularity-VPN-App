@@ -11,5 +11,10 @@ import (
 // wireguard-go device, a DNS resolver or platform.Network -- only that
 // Adapter needs the three.
 func New_windows_adapter(name string) (*Adapter, error) {
-	return New_adapter(name, New_windows_tunnel, Default_resolver{}, platform_windows.New_network())
+	a, err := New_adapter(name, New_windows_tunnel, Default_resolver{}, platform_windows.New_network())
+	if err != nil {
+		return nil, err
+	}
+	a.end_session = kept.end
+	return a, nil
 }

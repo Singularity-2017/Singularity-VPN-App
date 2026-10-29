@@ -15,6 +15,11 @@ type Tunnel_handle uint64
 // Network applies a routing plan to a tunnel adapter and takes it back off.
 // Both are privileged operations.
 type Network interface {
+	// Apply moves the adapter to plan from the plan the last Apply on this
+	// handle left there -- nothing, on a handle never applied or cleared
+	// since -- changing only what differs. Two tunnels in a row on one
+	// adapter with no Clear between them keep whatever their plans share,
+	// and Windows sees no change for it.
 	Apply(ctx context.Context, handle Tunnel_handle, plan routing.Plan) error
 
 	// Clear must be safe to call on a handle that was never configured, and

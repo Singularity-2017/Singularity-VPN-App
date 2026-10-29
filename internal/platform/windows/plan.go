@@ -166,3 +166,70 @@ func pick_repin_route(rows []route_row, destination netip.Addr, exclude winipcfg
 	}
 	return pick_route(kept, destination, exclude)
 }
+
+// plan_change is what moving the tunnel adapter from the plan it carries to
+// the next one changes on the machine; what the two share is left alone.
+// Each change is a notification every program on the machine reacts to by
+// reading its adapters again, and on Windows 11 26H2 the DNS Client answers
+// those one at a time: a server switch that took everything off and put it
+// back kept it on most cores for a minute or two (2026-10-29). From the
+// empty plan -- a tunnel's first Apply -- everything is new.
+type plan_change struct {
+	// interfaces are the families whose interface row (MTU, address
+	// detection) is set: one new to the adapter, or every one when the MTU
+	// changed.
+	interfaces       []winipcfg.AddressFamily
+	add_addresses    []netip.Prefix
+	remove_addresses []netip.Prefix
+	// add_routes and remove_routes go through the tunnel.
+	add_routes    []routing.Route
+	remove_routes []routing.Route
+	// pin and unpin are host routes kept outside the tunnel: the endpoint
+	// moved to is pinned, the one left is let go.
+	pin   []netip.Prefix
+	unpin []netip.Prefix
+	// dns is true when the resolvers differ: they, and the policy pointing
+	// every name at them, are set again.
+	dns bool
+}
+
+// change_between is what Apply changes to move the adapter from from to to.
+func change_between(from, to routing.Plan) plan_change {
+	var change plan_change
+	carried := families_of_prefixes(from.Addresses)
+	for _, family := range families_of_prefixes(to.Addresses) {
+		if to.Mtu != from.Mtu || !slices.Contains(carried, family) {
+			change.interfaces = append(change.interfaces, family)
+		}
+	}
+	change.add_addresses = missing_from(from.Addresses, to.Addresses)
+	change.remove_addresses = missing_from(to.Addresses, from.Addresses)
+	change.add_routes = missing_from(tunnel_routes(from), tunnel_routes(to))
+	change.remove_routes = missing_from(tunnel_routes(to), tunnel_routes(from))
+	change.pin = missing_from(host_routes_to_pin(from), host_routes_to_pin(to))
+	change.unpin = missing_from(host_routes_to_pin(to), host_routes_to_pin(from))
+	change.dns = !slices.Equal(from.Dns, to.Dns)
+	return change
+}
+
+// tunnel_routes is the plan's routes through the tunnel adapter.
+func tunnel_routes(plan routing.Plan) []routing.Route {
+	var out []routing.Route
+	for _, route := range plan.Routes {
+		if route.Through_tunnel {
+			out = append(out, route)
+		}
+	}
+	return out
+}
+
+// missing_from returns what want has and have does not, in want's order.
+func missing_from[T comparable](have, want []T) []T {
+	var out []T
+	for _, item := range want {
+		if !slices.Contains(have, item) {
+			out = append(out, item)
+		}
+	}
+	return out
+}

@@ -102,3 +102,18 @@ func Test_repin_remembers_an_old_pin_that_would_not_go_away(t *testing.T) {
 		t.Fatalf("pins = %+v, want only the moved pin", out)
 	}
 }
+
+// A host route to the node left is no reason to fail the tunnel that
+// replaced it: one that will not come off stays recorded, for Clear.
+func Test_unpin_lets_the_endpoint_left_go_and_keeps_one_that_would_not(t *testing.T) {
+	left := old_pin(t)
+	current := pinned_route{interface_luid: 2, destination: prefix(t, "198.51.100.7/32"), next_hop: addr(t, "192.168.1.1")}
+	ops := &fake_route_ops{delete_err: errors.New("access denied")}
+	if got := unpin([]pinned_route{left, current}, left.destination, ops); !reflect.DeepEqual(got, []pinned_route{left, current}) {
+		t.Fatalf("unpin() with a failing delete = %+v, want both pins kept", got)
+	}
+	ops.delete_err = nil
+	if got := unpin([]pinned_route{left, current}, left.destination, ops); !reflect.DeepEqual(got, []pinned_route{current}) {
+		t.Fatalf("unpin() = %+v, want only the current endpoint pinned", got)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"golang.org/x/sys/windows"
@@ -41,18 +42,26 @@ type network struct {
 	mu     sync.Mutex
 	pinned map[platform.Tunnel_handle][]pinned_route
 	dns    map[platform.Tunnel_handle]dns_state
+	// applied is the plan the last Apply on each handle left on its
+	// adapter, for the next Apply to change only what differs.
+	applied map[platform.Tunnel_handle]routing.Plan
 }
 
 // New_network builds the Windows implementation of platform.Network.
 func New_network() platform.Network {
 	return &network{
-		pinned: make(map[platform.Tunnel_handle][]pinned_route),
-		dns:    make(map[platform.Tunnel_handle]dns_state),
+		pinned:  make(map[platform.Tunnel_handle][]pinned_route),
+		dns:     make(map[platform.Tunnel_handle]dns_state),
+		applied: make(map[platform.Tunnel_handle]routing.Plan),
 	}
 }
 
-// Apply sets the tunnel adapter's addresses, MTU, routes and DNS, and pins
-// the peer endpoint's host route on whichever adapter already reached it,
+// Apply moves the tunnel adapter to plan from the plan the last Apply on
+// this handle left there -- nothing, on a handle never applied or cleared
+// since -- changing only what differs (see change_between): a tunnel handed
+// over to the next on the same adapter keeps every address, route and
+// resolver the two share, and Windows sees no change for them. A new peer
+// endpoint's host route is pinned on whichever adapter already reached it,
 // so the tunnel's own transport keeps leaving the machine the way it did
 // before the tunnel existed.
 func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan routing.Plan) error {
@@ -60,6 +69,11 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 		return ctx.Err()
 	}
 	luid := winipcfg.LUID(handle)
+	n.mu.Lock()
+	carried := n.applied[handle]
+	pinned := slices.Clone(n.pinned[handle])
+	n.mu.Unlock()
+	change := change_between(carried, plan)
 
 	// Duplicate address detection is off, and set before the address is:
 	// with it on (Windows' default is three probes) the new address stays
@@ -70,7 +84,7 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 	// the node's received count growing and its sent count flat. A
 	// point-to-point tunnel has no neighbour to collide with; the official
 	// WireGuard client turns it off the same way.
-	for _, family := range families_of_prefixes(plan.Addresses) {
+	for _, family := range change.interfaces {
 		row, err := luid.IPInterface(family)
 		if err != nil {
 			return fmt.Errorf("platform/windows: reading the interface to set it up: %w", err)
@@ -83,11 +97,13 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 		}
 	}
 
-	if err := add_addresses(luid, plan.Addresses); err != nil {
+	// What is new goes on before what is left comes off, so the adapter is
+	// never without an address or a route both plans want.
+	if err := add_addresses(luid, change.add_addresses); err != nil {
 		return fmt.Errorf("platform/windows: setting addresses: %w", err)
 	}
 
-	if err := add_routes(luid, to_route_data(plan.Routes)); err != nil {
+	if err := add_routes(luid, to_route_data(change.add_routes)); err != nil {
 		return fmt.Errorf("platform/windows: setting routes: %w", err)
 	}
 
@@ -100,15 +116,16 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 	// Recorded on every way out, not only on success: a pin added before a
 	// later step failed is still in the table, and Clear can only take off
 	// what it was told about.
-	var pinned []pinned_route
 	defer func() {
+		n.mu.Lock()
 		if len(pinned) > 0 {
-			n.mu.Lock()
 			n.pinned[handle] = pinned
-			n.mu.Unlock()
+		} else {
+			delete(n.pinned, handle)
 		}
+		n.mu.Unlock()
 	}()
-	for _, destination := range host_routes_to_pin(plan) {
+	for _, destination := range change.pin {
 		row, ok, err := find_best_route(destination.Addr(), luid, nil)
 		if err != nil {
 			return err
@@ -126,29 +143,65 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 		})
 	}
 
-	dns_families := families_of_addrs(plan.Dns)
-	if len(dns_families) > 0 {
-		state := dns_state{families: dns_families}
-		if guid, err := luid.GUID(); err == nil && guid != nil {
-			state.guid = *guid
-			state.has_guid = true
-		}
-		n.mu.Lock()
-		n.dns[handle] = state
-		n.mu.Unlock()
-		for _, family := range dns_families {
-			if err := luid.SetDNS(family, plan.Dns, nil); err != nil {
-				return fmt.Errorf("platform/windows: setting DNS: %w", err)
-			}
-		}
+	if err := remove_routes(luid, change.remove_routes); err != nil {
+		return fmt.Errorf("platform/windows: removing routes: %w", err)
 	}
-	if len(plan.Dns) > 0 {
-		if err := set_dns_policy(luid, plan.Dns); err != nil {
-			return err
-		}
+	if err := remove_addresses(luid, change.remove_addresses); err != nil {
+		return fmt.Errorf("platform/windows: removing addresses: %w", err)
+	}
+	for _, destination := range change.unpin {
+		pinned = unpin(pinned, destination, system_route_ops{})
 	}
 
+	switch {
+	case change.dns:
+		if err := n.set_dns(luid, handle, carried.Dns, plan.Dns); err != nil {
+			return err
+		}
+	case len(change.pin) > 0 && len(plan.Dns) > 0:
+		// Another node behind the same resolver address: what the last
+		// node's resolver answered stays with it. AntiZapret answers a
+		// blocked name with an address only the node that gave it maps.
+		flush_resolver_cache()
+	}
+
+	n.mu.Lock()
+	n.applied[handle] = plan
+	n.mu.Unlock()
 	return nil
+}
+
+// set_dns moves the adapter's resolvers from from to to: a family to no
+// longer has is flushed, the others set, and the policy pointing every
+// name at them written again -- or taken off with the last resolver.
+func (n *network) set_dns(luid winipcfg.LUID, handle platform.Tunnel_handle, from, to []netip.Addr) error {
+	families := families_of_addrs(to)
+	state := dns_state{families: families}
+	if guid, err := luid.GUID(); err == nil && guid != nil {
+		state.guid = *guid
+		state.has_guid = true
+	}
+	for _, family := range missing_from(families, families_of_addrs(from)) {
+		if err := flush_interface_dns(luid, state, family); err != nil {
+			return fmt.Errorf("platform/windows: flushing DNS: %w", err)
+		}
+	}
+	n.mu.Lock()
+	if len(families) > 0 {
+		n.dns[handle] = state
+	} else {
+		delete(n.dns, handle)
+	}
+	n.mu.Unlock()
+	for _, family := range families {
+		if err := luid.SetDNS(family, to, nil); err != nil {
+			return fmt.Errorf("platform/windows: setting DNS: %w", err)
+		}
+	}
+	if len(to) == 0 {
+		return clear_dns_policy(luid)
+	}
+	return set_dns_policy(luid, to)
 }
 
 // Clear removes everything Apply may have added: the tunnel adapter's
@@ -171,6 +224,7 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	delete(n.dns, handle)
 	pinned := n.pinned[handle]
 	delete(n.pinned, handle)
+	delete(n.applied, handle)
 	n.mu.Unlock()
 
 	if had_dns {
@@ -225,6 +279,42 @@ func add_routes(luid winipcfg.LUID, routes []*winipcfg.RouteData) error {
 		}
 	}
 	return nil
+}
+
+// remove_addresses takes addresses off the adapter; one already gone
+// counts as removed.
+func remove_addresses(luid winipcfg.LUID, addresses []netip.Prefix) error {
+	for _, address := range addresses {
+		if err := luid.DeleteIPAddress(address); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
+			return err
+		}
+	}
+	return nil
+}
+
+// remove_routes takes routes through the tunnel off the adapter; one
+// already gone counts as removed.
+func remove_routes(luid winipcfg.LUID, routes []routing.Route) error {
+	for _, route := range to_route_data(routes) {
+		if err := luid.DeleteRoute(route.Destination, route.NextHop); err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) {
+			return err
+		}
+	}
+	return nil
+}
+
+// unpin takes the host route pinned for destination off, and out of pins.
+// One that would not come off stays in pins for Clear to try again: a host
+// route to the node left is no reason to fail the tunnel that replaced it.
+func unpin(pins []pinned_route, destination netip.Prefix, ops route_ops) []pinned_route {
+	kept := make([]pinned_route, 0, len(pins))
+	for _, pin := range pins {
+		if pin.destination == destination && ops.delete_route(pin.interface_luid, pin.destination, pin.next_hop) == nil {
+			continue
+		}
+		kept = append(kept, pin)
+	}
+	return kept
 }
 
 func interface_exists(luid winipcfg.LUID) bool {

@@ -31,7 +31,7 @@ func fake_kept(created *[]*fake_wintun) *kept_adapters {
 		adapter := &fake_wintun{}
 		*created = append(*created, adapter)
 		return adapter, nil
-	}, clear: func(wintun_adapter) {}}
+	}, clear: func(wintun_adapter) {}, end_session: func(wintun.Session) {}}
 }
 
 func Test_an_adapter_that_could_not_be_created_is_tried_again_next_time(t *testing.T) {
@@ -61,6 +61,7 @@ func Test_a_reconnect_reuses_the_adapter_instead_of_installing_another(t *testin
 		t.Fatal("a second session was started on an adapter already carrying a tunnel")
 	}
 	k.release(held)
+	k.end("Singularity")
 	if _, _, err := k.session("Singularity"); err != nil {
 		t.Fatal(err)
 	}
@@ -77,11 +78,74 @@ func Test_an_adapter_that_no_longer_starts_sessions_is_replaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	k.release(held)
+	k.end("Singularity")
 	created[0].start_err = errors.New("the adapter was removed in Device Manager")
 	if _, _, err := k.session("Singularity"); err != nil {
 		t.Fatalf("session() error = %v, want a new adapter in place of the broken one", err)
 	}
 	if len(created) != 2 || created[0].closes != 1 || created[1].starts != 1 {
 		t.Fatalf("created %d adapters, the broken one closed %d times; want it closed once and a second one carrying the session", len(created), created[0].closes)
+	}
+}
+
+// A tunnel handed over to the next on the same adapter leaves its session
+// running, so the adapter never goes down and Windows sees nothing change.
+// Nothing is cleared off it either: what is on it is the next tunnel's to
+// change.
+func Test_a_session_left_running_is_carried_to_the_next_tunnel(t *testing.T) {
+	var created []*fake_wintun
+	k := fake_kept(&created)
+	cleared, ended := 0, 0
+	k.clear = func(wintun_adapter) { cleared++ }
+	k.end_session = func(wintun.Session) { ended++ }
+	held, _, err := k.session("Singularity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.release(held)
+	if _, _, err := k.session("Singularity"); err != nil {
+		t.Fatal(err)
+	}
+	if created[0].starts != 1 || ended != 0 || cleared != 1 {
+		t.Fatalf("%d sessions started, %d ended, the adapter cleared %d times; want the first session carried on, cleared once when it was new", created[0].starts, ended, cleared)
+	}
+}
+
+func Test_a_session_is_ended_only_when_no_tunnel_reads_it(t *testing.T) {
+	var created []*fake_wintun
+	k := fake_kept(&created)
+	ended := 0
+	k.end_session = func(wintun.Session) { ended++ }
+	held, _, err := k.session("Singularity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.end("Singularity")
+	if ended != 0 {
+		t.Fatal("ended the session a tunnel is still reading")
+	}
+	k.release(held)
+	k.end("Singularity")
+	k.end("Singularity")
+	if ended != 1 {
+		t.Fatalf("session ended %d times, want once", ended)
+	}
+}
+
+// The service stopping takes the adapters off the machine, a session left
+// running with them.
+func Test_releasing_the_adapters_ends_a_session_left_running(t *testing.T) {
+	var created []*fake_wintun
+	k := fake_kept(&created)
+	ended := 0
+	k.end_session = func(wintun.Session) { ended++ }
+	held, _, err := k.session("Singularity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.release(held)
+	k.release_all()
+	if ended != 1 || created[0].closes != 1 || len(k.adapters) != 0 {
+		t.Fatalf("ended %d sessions, closed the adapter %d times, %d adapters left; want the session ended and the adapter removed", ended, created[0].closes, len(k.adapters))
 	}
 }

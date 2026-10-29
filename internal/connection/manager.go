@@ -1331,7 +1331,7 @@ func (m *Manager) Apply_games(ctx context.Context) error {
 	m.state_mu.Lock()
 	m.session.Tunnel = want
 	m.state_mu.Unlock()
-	if m.retry_current(ctx) {
+	if m.retry_current(ctx, true) {
 		return nil
 	}
 	// handle_lost tries the same node once more before recovery moves
@@ -1403,8 +1403,9 @@ func (m *Manager) Apply_strategy(ctx context.Context) error {
 		return err
 	}
 
-	// The switch tears the old tunnel down before building the new one, so
-	// a new target that never came up has left the person with nothing --
+	// The switch takes the old tunnel down, or hands it to the new one and
+	// takes it down when that does not come up, so a new target that never
+	// came up has left the person with nothing --
 	// for having touched a goal. Go back to where they were, and report
 	// why the move failed.
 	config, cerr := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, previous.Protocol, previous.Node_id, profile_for(effective_mode(m.local_state)))
@@ -1553,7 +1554,7 @@ func (m *Manager) switch_to(ctx context.Context, now time.Time, target recovery.
 	}
 
 	for {
-		connected, err, fault := m.attempt(ctx, now, token, target)
+		connected, err, fault := m.attempt(ctx, now, token, target, !ways_back)
 		if connected {
 			return err
 		}
@@ -1578,8 +1579,10 @@ func (m *Manager) switch_to(ctx context.Context, now time.Time, target recovery.
 // retry_current re-establishes the current target once, reusing the config
 // already fetched for it: a retry is not a new choice of node, so nothing
 // about it needs the control plane again. It reports true only if the
-// tunnel comes back up and verifies.
-func (m *Manager) retry_current(ctx context.Context) bool {
+// tunnel comes back up and verifies. in_place is for a rebuild a person
+// asked for -- a boost, another profile -- of a tunnel that works: it is
+// handed over (see leave) rather than taken down, as one lost must be.
+func (m *Manager) retry_current(ctx context.Context, in_place bool) bool {
 	m.end_observation(ctx, "replaced", false)
 	// While the tunnel is being rebuilt it is not connected, and the
 	// window must not say it is: every rebuild -- a new split, another
@@ -1589,12 +1592,9 @@ func (m *Manager) retry_current(ctx context.Context) bool {
 	if state := m.get_state(); state == State_connected || state == State_degraded {
 		m.set_state(State_switching)
 	}
-	if m.protocol_handle != nil {
-		_ = m.protocol_handle.Disconnect(ctx)
-		m.protocol_handle = nil
-	}
-
 	protocol, err := m.protocols.Get(m.current.Protocol)
+	release := m.leave(ctx, in_place && m.can_hand_over(protocol))
+	defer release(ctx)
 	if err != nil {
 		return false
 	}
@@ -1795,7 +1795,7 @@ func (m *Manager) handle_lost(ctx context.Context, now time.Time) {
 			_ = m.protocol_handle.Disconnect(ctx)
 			m.protocol_handle = nil
 		}
-	} else if m.retry_current(ctx) {
+	} else if m.retry_current(ctx, false) {
 		m.retried_at, m.retried_target = now, m.current
 		return // the retry established and verified; carry on
 	}
@@ -1925,6 +1925,71 @@ func obfuscated_first(protocol string) int {
 	return 1
 }
 
+// fetch_through_tunnel is how long a config may take through a tunnel about
+// to be handed over before the tunnel is taken for what failed.
+const fetch_through_tunnel = 5 * time.Second
+
+// leave_for takes the current tunnel out of the way and fetches the config
+// of what comes next. Handed over (in_place), the tunnel stays up while the
+// config comes through it, as every request does while connected. One that
+// does not come may mean the tunnel is what failed, not the target: the
+// tunnel comes down and the config is asked for again over the network
+// left, and only that answer counts. Otherwise the tunnel comes down first,
+// as one that failed must.
+func (m *Manager) leave_for(ctx context.Context, in_place bool, fetch func(context.Context) (api.Vpn_config, error)) (api.Vpn_config, error, func(context.Context)) {
+	if in_place {
+		through, cancel := context.WithTimeout(ctx, fetch_through_tunnel)
+		config, err := fetch(through)
+		cancel()
+		var answered *api.Error
+		switch {
+		case err == nil:
+			return config, nil, m.leave(ctx, true)
+		case errors.As(err, &answered):
+			// The control plane answered through the tunnel: the tunnel
+			// works, and the answer stands.
+			return config, err, m.leave(ctx, false)
+		}
+		m.logger.Info("the config did not come through the tunnel; taking it down and asking again")
+	}
+	release := m.leave(ctx, false)
+	config, err := fetch(ctx)
+	return config, err, release
+}
+
+// leave takes the current tunnel out of the way of the next connection.
+// Handed over (hand_over; see protocols.Hand_over), it stays up for the
+// next Connect to take up, and the release returned takes down whatever
+// that Connect did not. Otherwise it is disconnected -- regardless of what
+// stopping it reports: a failure to stop cleanly does not cancel what comes
+// next -- and the release has nothing to do.
+func (m *Manager) leave(ctx context.Context, hand_over bool) (release func(context.Context)) {
+	current := m.protocol_handle
+	m.protocol_handle = nil
+	release = func(context.Context) {}
+	if current == nil {
+		return release
+	}
+	if handing, ok := current.(protocols.Hand_over); ok && hand_over {
+		m.logger.Info("switching in place: the tunnel stays up for the next connection on its adapter", "from", current.Name())
+		handed := handing.Hand_over(ctx)
+		return func(ctx context.Context) {
+			if err := handed(ctx); err != nil {
+				m.logger.Warn("taking down the tunnel handed over and not taken up", "err", err)
+			}
+		}
+	}
+	_ = current.Disconnect(ctx)
+	return release
+}
+
+// can_hand_over reports whether next runs on the current tunnel's adapter,
+// so the tunnel can be handed over to it.
+func (m *Manager) can_hand_over(next protocols.Protocol) bool {
+	handing, ok := m.protocol_handle.(protocols.Hand_over)
+	return ok && next != nil && handing.Carries(next)
+}
+
 // Reorder protocols within each node's existing offer slots, preserving node priority.
 func prefer_obfuscated(targets []recovery.Target) []recovery.Target {
 	for i := range targets {
@@ -1941,14 +2006,18 @@ func prefer_obfuscated(targets []recovery.Target) []recovery.Target {
 // its config fetched, its tunnel brought up. connected says it came up, and
 // err is then what settling it returned; otherwise fault is why not, already
 // published and recorded against target.
-func (m *Manager) attempt(ctx context.Context, now time.Time, token string, target recovery.Target) (connected bool, err error, fault *Fault) {
-	if m.protocol_handle != nil {
-		// Leaving this target regardless of what stopping it reports:
-		// a failure to stop cleanly does not cancel the switch.
-		_ = m.protocol_handle.Disconnect(ctx)
-		m.protocol_handle = nil
-	}
-	config, cerr := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, target.Protocol, target.Node_id, profile_for(effective_mode(m.local_state)))
+//
+// in_place is for a move a person asked for, from a tunnel that works: when
+// target runs on the same adapter, its config is fetched through the tunnel
+// still up and the tunnel is handed over (see leave_for). Otherwise the tunnel
+// comes down first, as one that failed must, and the config comes over
+// whatever network is left.
+func (m *Manager) attempt(ctx context.Context, now time.Time, token string, target recovery.Target, in_place bool) (connected bool, err error, fault *Fault) {
+	next, _ := m.protocols.Get(target.Protocol)
+	config, cerr, release := m.leave_for(ctx, in_place && m.can_hand_over(next), func(ctx context.Context) (api.Vpn_config, error) {
+		return m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, target.Protocol, target.Node_id, profile_for(effective_mode(m.local_state)))
+	})
+	defer release(ctx)
 	if cerr != nil {
 		fault = classify_control_plane_error("switch", cerr)
 	} else {

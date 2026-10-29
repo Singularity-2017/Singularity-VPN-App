@@ -194,7 +194,7 @@ func (m *Manager) Set_profile(ctx context.Context, client_id string) (result err
 		return classify_control_plane_error("set_profile", err)
 	}
 	m.current_config = m.connection_config(m.current, config)
-	if m.retry_current(ctx) {
+	if m.retry_current(ctx, true) {
 		rebuilt = true
 		return nil
 	}

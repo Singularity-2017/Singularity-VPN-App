@@ -63,6 +63,27 @@ type Repinner interface {
 	Repin(ctx context.Context) error
 }
 
+// Hand_over is optional: a protocol whose tunnel can carry straight on into
+// the next connection when that one runs on the same adapter, instead of
+// going down and coming back up. Every network change is something each
+// program on the machine reacts to by reading its adapters again; on
+// Windows 11 26H2 the DNS Client answers those one at a time, and after a
+// server switch a dozen browsers doing so kept it on most cores for a
+// minute or two (2026-10-29). A tunnel handed over keeps its adapter up,
+// and the next Connect changes on the machine only what differs: the
+// endpoint's host route, an address when the node gives another.
+type Hand_over interface {
+	// Carries reports whether next runs on this protocol's adapter.
+	Carries(next Protocol) bool
+	// Hand_over ends the connection and leaves its adapter, addresses,
+	// routes and resolvers in place for the next Connect of a protocol it
+	// Carries to take up. The release it returns takes down whatever that
+	// Connect did not take up: nothing when it did, everything when it
+	// failed or never came. Release is safe to call more than once; with
+	// nothing connected, there is nothing to hand over or release.
+	Hand_over(ctx context.Context) (release func(context.Context) error)
+}
+
 // Transport_reporter is implemented by a protocol that can say whether its
 // transport reached the far end at all -- a handshake, bytes each way --
 // so a failed verification can tell "nothing reaches the node" from "the

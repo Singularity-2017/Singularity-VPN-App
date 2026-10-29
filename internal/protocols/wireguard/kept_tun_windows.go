@@ -18,7 +18,8 @@ import (
 )
 
 // The tunnel's adapter is created once and kept for the life of the
-// service; a tunnel only starts a session on it and ends that session.
+// service; a tunnel only takes a session on it, started for it or left
+// running by the tunnel handed over to it.
 // Creating or removing a network adapter is a device installation: the
 // Network Setup Service rebinds every protocol and filter, and every
 // program on the machine reads its adapters again through the DNS Client
@@ -26,8 +27,16 @@ import (
 // dozen a second, every caller left waiting spinning a core. A server
 // switch, a boost and its companion's retries each removed one adapter and
 // created another, and kept that service on most cores for minutes, the
-// whole machine stuttering with it (2026-10-29). Wintun removes the adapter
-// itself when this process exits.
+// whole machine stuttering with it (2026-10-29). The service removes them
+// when it stops (Release_kept_adapters); one left by a process killed before
+// it could is taken over by the next CreateAdapter of the same name and
+// GUID, with no installation (seen 2026-10-29).
+//
+// A session outlives the tunnel that started it when that tunnel is handed
+// over to the next one on the adapter (Adapter.Hand_over): the adapter
+// never goes down, and the next tunnel changes on the machine only what
+// differs. It ends when the adapter's tunnel is taken down for good
+// (kept_adapters.end) or with the adapters.
 
 // ring_capacity is the session's ring size, wireguard-go's: 8 MiB.
 const ring_capacity = 0x800000
@@ -43,6 +52,10 @@ type wintun_adapter interface {
 type kept_adapter struct {
 	adapter wintun_adapter
 	in_use  bool
+	// session is the one running on the adapter while live, whether a
+	// tunnel reads it or it waits for the next one.
+	session wintun.Session
+	live    bool
 }
 
 // kept_adapters holds this process's adapters by name.
@@ -54,15 +67,17 @@ type kept_adapters struct {
 	// left on it. With the adapter removed at every disconnect, a Clear that
 	// failed half way could leave nothing behind; kept, it could leave a
 	// whole-machine route under a games-only session.
-	clear func(adapter wintun_adapter)
+	clear       func(adapter wintun_adapter)
+	end_session func(session wintun.Session)
 }
 
-var kept = &kept_adapters{adapters: map[string]*kept_adapter{}, create: create_adapter, clear: clear_adapter}
+var kept = &kept_adapters{adapters: map[string]*kept_adapter{}, create: create_adapter, clear: clear_adapter, end_session: wintun.Session.End}
 
-// session starts a session on the adapter called name. The adapter is
-// created only when this process has none by that name, or when the one it
-// kept no longer starts sessions -- removed in Device Manager, or the
-// driver updated under it.
+// session gives the adapter called name to a tunnel: the session a tunnel
+// handed over left running, or a new one. The adapter is created only when
+// this process has none by that name, or when the one it kept no longer
+// starts sessions -- removed in Device Manager, or the driver updated under
+// it.
 func (k *kept_adapters) session(name string) (*kept_adapter, wintun.Session, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -70,12 +85,13 @@ func (k *kept_adapters) session(name string) (*kept_adapter, wintun.Session, err
 	if held != nil && held.in_use {
 		return nil, wintun.Session{}, fmt.Errorf("wireguard: adapter %q already carries a tunnel", name)
 	}
+	if held != nil && held.live {
+		held.in_use = true
+		return held, held.session, nil
+	}
 	if held != nil {
-		k.clear(held.adapter)
-		session, err := held.adapter.StartSession(ring_capacity)
-		if err == nil {
-			held.in_use = true
-			return held, session, nil
+		if err := k.start(held); err == nil {
+			return held, held.session, nil
 		}
 		held.adapter.Close()
 		delete(k.adapters, name)
@@ -84,21 +100,46 @@ func (k *kept_adapters) session(name string) (*kept_adapter, wintun.Session, err
 	if err != nil {
 		return nil, wintun.Session{}, err
 	}
-	session, err := adapter.StartSession(ring_capacity)
-	if err != nil {
+	held = &kept_adapter{adapter: adapter}
+	if err := k.start(held); err != nil {
 		adapter.Close()
 		return nil, wintun.Session{}, fmt.Errorf("wireguard: starting a session on the adapter: %w", err)
 	}
-	held = &kept_adapter{adapter: adapter, in_use: true}
 	k.adapters[name] = held
-	return held, session, nil
+	return held, held.session, nil
 }
 
-// release leaves the adapter free for the next session.
+// start starts a session on an adapter that has none, cleared first of
+// whatever the last tunnel's teardown left on it.
+func (k *kept_adapters) start(held *kept_adapter) error {
+	k.clear(held.adapter)
+	session, err := held.adapter.StartSession(ring_capacity)
+	if err != nil {
+		return err
+	}
+	held.session, held.live, held.in_use = session, true, true
+	return nil
+}
+
+// release leaves the adapter, its session still running, for the next
+// tunnel.
 func (k *kept_adapters) release(held *kept_adapter) {
 	k.mu.Lock()
 	held.in_use = false
 	k.mu.Unlock()
+}
+
+// end ends the session on the adapter called name once no tunnel reads
+// it: the adapter goes down.
+func (k *kept_adapters) end(name string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	held := k.adapters[name]
+	if held == nil || held.in_use || !held.live {
+		return
+	}
+	k.end_session(held.session)
+	held.live = false
 }
 
 // Release_kept_adapters removes the adapters no tunnel is using. The
@@ -106,14 +147,21 @@ func (k *kept_adapters) release(held *kept_adapter) {
 // straight after does not find one of the same identity still being
 // removed.
 func Release_kept_adapters() {
-	kept.mu.Lock()
-	defer kept.mu.Unlock()
-	for name, held := range kept.adapters {
+	kept.release_all()
+}
+
+func (k *kept_adapters) release_all() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for name, held := range k.adapters {
 		if held.in_use {
 			continue
 		}
+		if held.live {
+			k.end_session(held.session)
+		}
 		held.adapter.Close()
-		delete(kept.adapters, name)
+		delete(k.adapters, name)
 	}
 }
 
@@ -153,8 +201,9 @@ func create_adapter(name string) (wintun_adapter, error) {
 //	SPDX-License-Identifier: MIT
 //	Copyright (C) 2017-2023 WireGuard LLC. All Rights Reserved.
 //
-// -- except that Close ends the session and leaves the adapter, and that it
-// does not spin waiting for packets above 800 Mbit/s.
+// -- except that Close leaves the session running for the next tunnel on
+// the adapter (kept_adapters.end ends it), and that it does not spin
+// waiting for packets above 800 Mbit/s.
 type kept_tun struct {
 	held       *kept_adapter
 	name       string
@@ -195,7 +244,7 @@ func (t *kept_tun) Events() <-chan tun.Event { return t.events }
 
 func (t *kept_tun) BatchSize() int { return 1 }
 
-// LUID is the adapter's, or 0 once the session has ended.
+// LUID is the adapter's, or 0 once closed.
 func (t *kept_tun) LUID() uint64 {
 	t.running.Add(1)
 	defer t.running.Done()
@@ -205,13 +254,13 @@ func (t *kept_tun) LUID() uint64 {
 	return t.held.adapter.LUID()
 }
 
-// Close ends the session and leaves the adapter for the next one.
+// Close stops reading and writing the session and leaves it, running, to
+// the next tunnel on the adapter.
 func (t *kept_tun) Close() error {
 	t.close_once.Do(func() {
 		t.closed.Store(true)
 		windows.SetEvent(t.read_wait)
 		t.running.Wait()
-		t.session.End()
 		kept.release(t.held)
 		close(t.events)
 	})

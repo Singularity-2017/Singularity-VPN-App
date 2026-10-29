@@ -660,9 +660,9 @@ func (r *running_service) stop() error {
 	}
 
 	err := r.application.Stop(context.Background())
-	// The tunnel is down: its kept adapters go now rather than as this
-	// process exits, so a start straight after finds none still being
-	// removed.
+	// The tunnel is down: its kept adapters go now. Nothing else removes
+	// them -- an adapter outlives the process that created it -- and a
+	// start straight after must find none still being removed.
 	wireguard.Release_kept_adapters()
 	openvpn.Release_kept_device()
 	if err != nil {

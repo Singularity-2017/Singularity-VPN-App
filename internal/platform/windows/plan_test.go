@@ -294,3 +294,86 @@ func Test_pick_repin_route_cases(t *testing.T) {
 		})
 	}
 }
+
+// --- change_between ------------------------------------------------------
+
+func antizapret_plan(t *testing.T, address, endpoint string) routing.Plan {
+	t.Helper()
+	return routing.Plan{
+		Addresses: []netip.Prefix{prefix(t, address)},
+		Routes: []routing.Route{
+			{Destination: prefix(t, "10.224.0.0/15"), Through_tunnel: true},
+			{Destination: prefix(t, "104.16.0.0/13"), Through_tunnel: true},
+			{Destination: prefix(t, endpoint), Through_tunnel: false},
+		},
+		Dns: []netip.Addr{addr(t, "172.29.8.1")},
+		Mtu: 1420,
+	}
+}
+
+func Test_a_first_apply_sets_everything_the_plan_asks_for(t *testing.T) {
+	plan := antizapret_plan(t, "172.29.8.2/32", "203.0.113.5/32")
+	want := plan_change{
+		interfaces:    []winipcfg.AddressFamily{windows.AF_INET},
+		add_addresses: plan.Addresses,
+		add_routes:    plan.Routes[:2],
+		pin:           []netip.Prefix{prefix(t, "203.0.113.5/32")},
+		dns:           true,
+	}
+	if got := change_between(routing.Plan{}, plan); !reflect.DeepEqual(got, want) {
+		t.Fatalf("change_between(nothing, plan) = %+v, want %+v", got, want)
+	}
+}
+
+// Nodes that hand out the same address and resolver differ only in where
+// the tunnel's own transport goes. Anything more would be a network change
+// every program on the machine reacts to.
+func Test_moving_to_another_node_changes_only_the_endpoint_route(t *testing.T) {
+	from := antizapret_plan(t, "172.29.8.2/32", "203.0.113.5/32")
+	to := antizapret_plan(t, "172.29.8.2/32", "198.51.100.7/32")
+	want := plan_change{
+		pin:   []netip.Prefix{prefix(t, "198.51.100.7/32")},
+		unpin: []netip.Prefix{prefix(t, "203.0.113.5/32")},
+	}
+	if got := change_between(from, to); !reflect.DeepEqual(got, want) {
+		t.Fatalf("change_between() = %+v, want %+v", got, want)
+	}
+}
+
+func Test_the_same_plan_again_changes_nothing(t *testing.T) {
+	plan := antizapret_plan(t, "172.29.8.2/32", "203.0.113.5/32")
+	if got := change_between(plan, plan); !reflect.DeepEqual(got, plan_change{}) {
+		t.Fatalf("change_between(plan, plan) = %+v, want no change", got)
+	}
+}
+
+func Test_only_the_address_routes_and_resolver_that_differ_change(t *testing.T) {
+	from := antizapret_plan(t, "172.29.8.2/32", "203.0.113.5/32")
+	to := antizapret_plan(t, "172.29.8.9/32", "203.0.113.5/32")
+	telegram := routing.Route{Destination: prefix(t, "149.154.160.0/20"), Through_tunnel: true}
+	to.Routes = append([]routing.Route{telegram}, to.Routes[1:]...)
+	to.Dns = []netip.Addr{addr(t, "172.29.8.53")}
+	want := plan_change{
+		add_addresses:    []netip.Prefix{prefix(t, "172.29.8.9/32")},
+		remove_addresses: []netip.Prefix{prefix(t, "172.29.8.2/32")},
+		add_routes:       []routing.Route{telegram},
+		remove_routes:    []routing.Route{from.Routes[0]},
+		dns:              true,
+	}
+	if got := change_between(from, to); !reflect.DeepEqual(got, want) {
+		t.Fatalf("change_between() = %+v, want %+v", got, want)
+	}
+}
+
+func Test_a_new_mtu_sets_every_family_and_a_new_family_only_itself(t *testing.T) {
+	from := antizapret_plan(t, "172.29.8.2/32", "203.0.113.5/32")
+	to := antizapret_plan(t, "172.29.8.2/32", "203.0.113.5/32")
+	to.Addresses = append(to.Addresses, prefix(t, "fd00::2/128"))
+	if got := change_between(from, to).interfaces; !reflect.DeepEqual(got, []winipcfg.AddressFamily{windows.AF_INET6}) {
+		t.Fatalf("interfaces set for a new family = %v, want IPv6 alone", got)
+	}
+	to.Mtu = 1280
+	if got := change_between(from, to).interfaces; !reflect.DeepEqual(got, []winipcfg.AddressFamily{windows.AF_INET, windows.AF_INET6}) {
+		t.Fatalf("interfaces set for a new MTU = %v, want both families", got)
+	}
+}

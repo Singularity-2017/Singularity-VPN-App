@@ -98,7 +98,7 @@ func (m *Manager) try_other_server(ctx context.Context, now time.Time, left, oth
 	if err != nil {
 		return false
 	}
-	connected, _, _ := m.attempt(ctx, now, token, other)
+	connected, _, _ := m.attempt(ctx, now, token, other, false)
 	return connected
 }
 

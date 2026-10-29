@@ -43,8 +43,9 @@ func New_windows_adapter(exe, device_name, profile_path string, logger *slog.Log
 // kept for the life of the service: creating or removing an adapter is a
 // device installation the whole machine pays for (see
 // wireguard/kept_tun_windows.go), and the AntiZapret tunnel beside a boost
-// used to retry on a new one every minute. Wintun removes it itself when
-// this process exits.
+// used to retry on a new one every minute. The service removes it when it
+// stops; one left by a process killed before it could is taken over by the
+// next CreateAdapter of the same name and GUID.
 var kept_device struct {
 	mu      sync.Mutex
 	adapter *wintun.Adapter
