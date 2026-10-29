@@ -5,7 +5,6 @@ package wireguard
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,12 +37,12 @@ type real_tunnel struct {
 // must never print regardless of how tempting that is to turn on while
 // debugging a tunnel that will not come up.
 func New_windows_tunnel(name string, mtu int, wrap device_wrapper) (tunnel, error) {
-	tun_device, err := create_tun(name, mtu)
+	tun_device, err := open_kept_tun(name, mtu)
 	if err != nil {
 		return nil, wrap_missing_wintun(err)
 	}
 	logger := device.NewLogger(device.LogLevelError, fmt.Sprintf("(%s) ", name))
-	carried := tun_device
+	var carried tun.Device = tun_device
 	if wrap != nil {
 		carried = wrap(tun_device)
 	}
@@ -96,15 +95,15 @@ func (t *real_tunnel) Close() error {
 }
 
 func (t *real_tunnel) Handle() platform.Tunnel_handle {
-	native, ok := t.tun_device.(*tun.NativeTun)
+	native, ok := t.tun_device.(interface{ LUID() uint64 })
 	if !ok {
 		return 0
 	}
 	return platform.Tunnel_handle(native.LUID())
 }
 
-// adapter_gone_wait is how long create_tun keeps trying while the adapter
-// of the tunnel just closed is still being removed, and adapter_gone_step
+// adapter_gone_wait is how long create_adapter keeps trying while an
+// adapter of the same name is still being removed, and adapter_gone_step
 // how often it tries within that.
 const (
 	adapter_gone_wait = 6 * time.Second
@@ -125,25 +124,6 @@ func adapter_guid(name string) windows.GUID {
 			(sum[8] & 0x3f) | 0x80,
 			sum[9], sum[10], sum[11], sum[12], sum[13], sum[14], sum[15],
 		},
-	}
-}
-
-// create_tun creates the adapter, waiting out the one just closed. A
-// rebuild on the same node closes the old adapter and creates one of the
-// same name straight away, and wintun answers "file not found" until the
-// old one is fully gone -- seen on the owner's machine 2026-10-21, where
-// the first rebuild failed and the second, a moment later, came up.
-func create_tun(name string, mtu int) (tun.Device, error) {
-	guid := adapter_guid(name)
-	deadline := time.Now().Add(adapter_gone_wait)
-	for {
-		tun_device, err := tun.CreateTUNWithRequestedGUID(name, &guid, mtu)
-		// A missing wintun.dll can carry the same code; it does not go
-		// away by waiting.
-		if err == nil || !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || strings.Contains(err.Error(), "wintun.dll") || time.Now().After(deadline) {
-			return tun_device, err
-		}
-		time.Sleep(adapter_gone_step)
 	}
 }
 

@@ -209,6 +209,23 @@ func Test_pick_route_ignores_the_excluded_luid_and_picks_longest_prefix(t *testi
 	}
 }
 
+// Both tunnel adapters are kept for the life of the service, so an idle
+// WireGuard one sits beside an OpenVPN tunnel carrying the whole machine on
+// /1 routes: an echo to a server must leave by neither.
+func Test_pick_route_ignores_every_tunnel_adapter_kept_beside_the_active_one(t *testing.T) {
+	const idle_wireguard, physical, openvpn winipcfg.LUID = 1, 2, 3
+	rows := []route_row{
+		{interface_luid: physical, destination: prefix(t, "0.0.0.0/0"), next_hop: addr(t, "192.168.1.1")},
+		{interface_luid: openvpn, destination: prefix(t, "0.0.0.0/1"), next_hop: netip.IPv4Unspecified()},
+		{interface_luid: openvpn, destination: prefix(t, "128.0.0.0/1"), next_hop: netip.IPv4Unspecified()},
+	}
+	tunnels := pick_tunnel_luids([]interface_row{{luid: idle_wireguard, alias: "Singularity"}, {luid: physical, alias: "Ethernet"}, {luid: openvpn, alias: "Singularity OpenVPN"}}, []string{"Singularity", "Singularity OpenVPN"})
+	got, ok := pick_route(rows, addr(t, "203.0.113.5"), tunnels...)
+	if !ok || got.interface_luid != physical {
+		t.Fatalf("pick_route() = %+v, %v with tunnels %v excluded; want the physical default route", got, ok, tunnels)
+	}
+}
+
 func Test_pick_route_prefers_the_more_specific_of_two_eligible_rows(t *testing.T) {
 	const other_luid winipcfg.LUID = 2
 	const more_specific_luid winipcfg.LUID = 3

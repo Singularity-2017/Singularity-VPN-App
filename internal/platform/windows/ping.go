@@ -116,11 +116,13 @@ func snapshot_current(taken time.Time, taken_generation uint64, now time.Time, g
 }
 
 type ping_snapshot struct {
-	at          time.Time
-	generation  uint64
-	tunnel_luid winipcfg.LUID
-	routes      []route_row
-	addresses   []address_row
+	at         time.Time
+	generation uint64
+	// tunnel_luids are every tunnel adapter that exists: they are kept for
+	// the life of the service, so an idle one sits beside the one in use.
+	tunnel_luids []winipcfg.LUID
+	routes       []route_row
+	addresses    []address_row
 }
 
 // pinger is platform.Pinger over the ICMP helper API.
@@ -131,8 +133,9 @@ type pinger struct {
 }
 
 // New_pinger returns a platform.Pinger that sends its echoes outside the
-// tunnel adapters named tunnel_aliases -- one per protocol, at most one of
-// them up -- whether or not any of them exists at the moment.
+// tunnel adapters named tunnel_aliases -- one per protocol, each kept once
+// created, so several may exist at once -- whichever of them exist at the
+// moment.
 func New_pinger(tunnel_aliases ...string) platform.Pinger {
 	return &pinger{tunnel_aliases: tunnel_aliases}
 }
@@ -193,7 +196,7 @@ func (p *pinger) source_address(destination netip.Addr) (netip.Addr, error) {
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	route, found := pick_route(snap.routes, destination, snap.tunnel_luid)
+	route, found := pick_route(snap.routes, destination, snap.tunnel_luids...)
 	if !found {
 		p.forget_snapshot()
 		return netip.Addr{}, fmt.Errorf("platform/windows: ping %s: no route to it outside the tunnel", destination)
@@ -226,7 +229,7 @@ func (p *pinger) current_snapshot() (ping_snapshot, error) {
 		return p.snapshot, nil
 	}
 
-	tunnel_luid, err := p.tunnel_luid()
+	tunnel_luids, err := p.tunnel_luids()
 	if err != nil {
 		return ping_snapshot{}, err
 	}
@@ -256,34 +259,39 @@ func (p *pinger) current_snapshot() (ping_snapshot, error) {
 		}
 	}
 	p.snapshot = ping_snapshot{
-		at:          now,
-		generation:  generation,
-		tunnel_luid: tunnel_luid,
-		routes:      routes,
-		addresses:   addresses,
+		at:           now,
+		generation:   generation,
+		tunnel_luids: tunnel_luids,
+		routes:       routes,
+		addresses:    addresses,
 	}
 	return p.snapshot, nil
 }
 
-// tunnel_luid reads the LUID of whichever tunnel adapter exists, by name,
-// the way the service recognises it elsewhere. No adapter by any of the
-// names -- no tunnel is up, or has ever been created -- is not an error: the zero LUID that comes
-// back belongs to no interface, so excluding it excludes nothing.
-func (p *pinger) tunnel_luid() (winipcfg.LUID, error) {
+// tunnel_luids reads the LUIDs of every tunnel adapter that exists, by
+// name, the way the service recognises them elsewhere. None -- no tunnel
+// has been created yet -- is not an error: excluding nothing is right then.
+func (p *pinger) tunnel_luids() ([]winipcfg.LUID, error) {
 	table, err := winipcfg.GetIfTable2Ex(winipcfg.MibIfEntryNormalWithoutStatistics)
 	if err != nil {
-		return 0, fmt.Errorf("platform/windows: reading the interface table: %w", err)
+		return nil, fmt.Errorf("platform/windows: reading the interface table: %w", err)
 	}
 	rows := make([]interface_row, len(table))
 	for i := range table {
 		rows[i] = interface_row{luid: table[i].InterfaceLUID, alias: table[i].Alias()}
 	}
-	for _, alias := range p.tunnel_aliases {
+	return pick_tunnel_luids(rows, p.tunnel_aliases), nil
+}
+
+// pick_tunnel_luids is every interface among rows called one of aliases.
+func pick_tunnel_luids(rows []interface_row, aliases []string) []winipcfg.LUID {
+	var luids []winipcfg.LUID
+	for _, alias := range aliases {
 		if luid, ok := pick_interface_by_alias(rows, alias); ok {
-			return luid, nil
+			luids = append(luids, luid)
 		}
 	}
-	return 0, nil
+	return luids
 }
 
 // pick_interface_by_alias finds the interface called alias. An empty alias

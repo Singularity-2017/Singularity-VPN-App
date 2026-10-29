@@ -6,18 +6,22 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.zx2c4.com/wintun"
+	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
 // device_guid is the adapter's fixed identity. Windows keeps a network
@@ -31,8 +35,94 @@ var device_guid = windows.GUID{Data1: 0x5d1b7a3e, Data2: 0x8c41, Data3: 0x4f0e, 
 // administrators can read: the profile holds the client's private key.
 func New_windows_adapter(exe, device_name, profile_path string, logger *slog.Logger) *Adapter {
 	return New_adapter(windows_starter(exe), func() (device, error) {
-		return wintun.CreateAdapter(device_name, "Singularity", &device_guid)
+		return keep_device(device_name)
 	}, device_name, profile_path, logger)
+}
+
+// kept_device is the wintun adapter openvpn.exe runs on, created once and
+// kept for the life of the service: creating or removing an adapter is a
+// device installation the whole machine pays for (see
+// wireguard/kept_tun_windows.go), and the AntiZapret tunnel beside a boost
+// used to retry on a new one every minute. Wintun removes it itself when
+// this process exits.
+var kept_device struct {
+	mu      sync.Mutex
+	adapter *wintun.Adapter
+}
+
+// keep_device hands out the kept adapter, creating it when there is none
+// yet or the kept one is gone from the system -- removed in Device Manager,
+// or the driver updated under it.
+func keep_device(name string) (device, error) {
+	kept_device.mu.Lock()
+	defer kept_device.mu.Unlock()
+	if adapter := kept_device.adapter; adapter != nil {
+		// openvpn.exe finds it by name: one renamed in Network Connections
+		// is as good as gone.
+		if row, err := winipcfg.LUID(adapter.LUID()).Interface(); err == nil && row.Alias() == name {
+			return kept_openvpn_device{adapter}, nil
+		}
+		adapter.Close()
+		kept_device.adapter = nil
+	}
+	adapter, err := wintun.CreateAdapter(name, "Singularity", &device_guid)
+	if err != nil {
+		return nil, err
+	}
+	kept_device.adapter = adapter
+	return kept_openvpn_device{adapter}, nil
+}
+
+// kept_openvpn_device is the kept adapter as one connect's device. Close
+// leaves the adapter and clears what openvpn.exe put on it: one killed for
+// not stopping in time leaves its routes, addresses and resolvers behind.
+type kept_openvpn_device struct{ adapter *wintun.Adapter }
+
+func (d kept_openvpn_device) Close() error {
+	luid := winipcfg.LUID(d.adapter.LUID())
+	steps := []error{luid.FlushRoutes(windows.AF_UNSPEC), luid.FlushIPAddresses(windows.AF_UNSPEC)}
+	// Clearing resolvers is a change every program on the machine reacts
+	// to: only when openvpn.exe left some.
+	if has_resolvers(device_guid) {
+		steps = append(steps, luid.FlushDNS(windows.AF_INET), luid.FlushDNS(windows.AF_INET6))
+	}
+	var errs []error
+	for _, err := range steps {
+		if err != nil && !errors.Is(err, windows.ERROR_NOT_FOUND) && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// has_resolvers reads whether the adapter has resolvers set from its
+// registry keys. LUID.DNS would ask through GetAdaptersAddresses, a call
+// into the DNS Client service -- the load this adapter is kept to spare.
+func has_resolvers(guid windows.GUID) bool {
+	for _, stack := range []string{"Tcpip", "Tcpip6"} {
+		key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+stack+`\Parameters\Interfaces\`+guid.String(), registry.QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		servers, _, err := key.GetStringValue("NameServer")
+		key.Close()
+		if err == nil && strings.TrimSpace(servers) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// Release_kept_device removes the kept adapter. The service calls it on its
+// way out, once the tunnel is down, so a start straight after does not find
+// one of the same identity still being removed.
+func Release_kept_device() {
+	kept_device.mu.Lock()
+	defer kept_device.mu.Unlock()
+	if kept_device.adapter != nil {
+		kept_device.adapter.Close()
+		kept_device.adapter = nil
+	}
 }
 
 // windows_starter starts openvpn.exe with no window, inside a job object

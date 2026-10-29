@@ -408,9 +408,9 @@ func first_ipv4(prefixes []netip.Prefix) (netip.Addr, bool) {
 
 // unwind tears down what Connect built from step 3 onward: the tunnel device
 // and platform.Network state, both attempted even though at most one of
-// them may actually have anything to undo. Closing the device first lets
-// Wintun remove the adapter and its routes in one kernel teardown instead of
-// Clear deleting dozens of routes one by one while the adapter is still up.
+// them may actually have anything to undo. Closing the device first ends
+// its session on the kept adapter, so nothing is read from or written to it
+// while Clear takes its routes and addresses off.
 // cause is the failure that triggered the unwind; it and any error from the
 // two teardown calls are joined, so a person sees not just what failed but
 // whether cleaning up after it failed too.

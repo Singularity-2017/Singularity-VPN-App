@@ -19,14 +19,41 @@ import (
 
 const companion_protocol = "openvpn"
 
-// companion_retry is how long a companion that could not be brought up is
-// left before it is tried again.
-const companion_retry = time.Minute
+// A companion that could not be brought up is left companion_retry_first
+// before it is tried again, and each failure in a row doubles that, up to
+// companion_retry_most. Every try brings an adapter up and takes it down,
+// and on Windows each of those sets every program on the machine re-reading
+// its adapters through the DNS Client service: tried every minute, one that
+// would never come up kept that service spinning on most cores for as long
+// as the boost lasted (2026-10-29).
+const (
+	companion_retry_first = time.Minute
+	companion_retry_most  = 30 * time.Minute
+)
 
 type companion struct {
 	handle    protocols.Protocol
 	node      string
 	failed_at time.Time
+	// failures counts the tries in a row that did not come up, on
+	// failed_node; a boost ended or another node starts the count afresh.
+	failures    int
+	failed_node string
+}
+
+// forget_failures starts the count afresh: a boost ended, or another node.
+// A main tunnel only passing through a reconnect does not count as either.
+func (c *companion) forget_failures() {
+	c.failures, c.failed_at, c.failed_node = 0, time.Time{}, ""
+}
+
+// retry_wait is how long after the last failure the next try waits.
+func (c *companion) retry_wait() time.Duration {
+	wait := companion_retry_first
+	for i := 1; i < c.failures && wait < companion_retry_most; i++ {
+		wait *= 2
+	}
+	return min(wait, companion_retry_most)
 }
 
 // companion_wanted: games alone in the tunnel, and AntiZapret chosen for
@@ -39,8 +66,8 @@ func (m *Manager) companion_wanted() bool {
 
 // keep_companion brings the companion up, moves it with the node, or takes
 // it down, to match what is wanted now. The caller holds op_mu. A failure
-// is logged and tried again after companion_retry: the games tunnel is the
-// one the person pressed for, and it does not wait on this one.
+// is logged and tried again after retry_wait: the games tunnel is the one
+// the person pressed for, and it does not wait on this one.
 func (m *Manager) keep_companion(ctx context.Context, now time.Time) {
 	state := m.get_state()
 	want := (state == State_connected || state == State_degraded) && m.companion_wanted()
@@ -51,15 +78,19 @@ func (m *Manager) keep_companion(ctx context.Context, now time.Time) {
 		}
 		m.stop_companion(ctx)
 	}
+	if !m.companion_wanted() || c.failed_node != m.current.Node_id {
+		c.forget_failures()
+	}
 	if !want || c.handle != nil {
 		return
 	}
-	if !c.failed_at.IsZero() && now.Sub(c.failed_at) < companion_retry {
+	if c.failures > 0 && now.Sub(c.failed_at) < c.retry_wait() {
 		return
 	}
 	fail := func(what string, err error) {
-		c.failed_at = now
-		m.logger.Warn("AntiZapret beside the games: "+what, "node_id", m.current.Node_id, "err", err)
+		c.failed_at, c.failed_node = now, m.current.Node_id
+		c.failures++
+		m.logger.Warn("AntiZapret beside the games: "+what, "node_id", m.current.Node_id, "err", err, "next_try_in", c.retry_wait())
 	}
 	protocol, err := m.protocols.Get(companion_protocol)
 	if err != nil {
@@ -88,7 +119,8 @@ func (m *Manager) keep_companion(ctx context.Context, now time.Time) {
 		fail("it did not come up", err)
 		return
 	}
-	c.handle, c.node, c.failed_at = protocol, m.current.Node_id, time.Time{}
+	c.handle, c.node = protocol, m.current.Node_id
+	c.forget_failures()
 	m.logger.Info("AntiZapret runs beside the games", "node_id", c.node, "protocol", companion_protocol)
 }
 
@@ -111,6 +143,9 @@ func (m *Manager) drop_unwanted_companion(ctx context.Context) {
 	state := m.get_state()
 	if m.companion.handle != nil && !((state == State_connected || state == State_degraded) && m.companion_wanted()) {
 		m.stop_companion(ctx)
+	}
+	if !m.companion_wanted() {
+		m.companion.forget_failures()
 	}
 }
 

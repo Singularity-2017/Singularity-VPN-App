@@ -129,15 +129,15 @@ type route_row struct {
 }
 
 // pick_route finds the most specific route to destination among rows,
-// ignoring exclude. exclude is the tunnel adapter's own LUID: this is called
-// after the tunnel's own routes are already in the table, and the tunnel's
-// route to destination is exactly the one the endpoint host route exists to
-// beat, so it must not be the answer.
-func pick_route(rows []route_row, destination netip.Addr, exclude winipcfg.LUID) (route_row, bool) {
+// ignoring the interfaces in exclude: the tunnel adapters' own LUIDs. This
+// is called after a tunnel's own routes are already in the table, and a
+// tunnel's route to destination is exactly the one the endpoint host route
+// exists to beat, so it must not be the answer.
+func pick_route(rows []route_row, destination netip.Addr, exclude ...winipcfg.LUID) (route_row, bool) {
 	best := route_row{}
 	found := false
 	for _, row := range rows {
-		if row.interface_luid == exclude {
+		if slices.Contains(exclude, row.interface_luid) {
 			continue
 		}
 		if !row.destination.IsValid() || !row.destination.Contains(destination) {

@@ -48,8 +48,9 @@ type process interface {
 // starter starts openvpn.exe with these arguments.
 type starter func(args []string) (process, error)
 
-// device is the network adapter openvpn.exe runs its tunnel on. It exists
-// only while this adapter is connected.
+// device is the network adapter openvpn.exe runs its tunnel on, for one
+// connect. Close ends that; on Windows the adapter itself stays, cleared,
+// for the next connect.
 type device interface {
 	Close() error
 }
@@ -149,8 +150,8 @@ func (a *Adapter) read(line string) (fatal string, up bool) {
 
 // Connect brings the tunnel up and returns once openvpn.exe reports it
 // set up, or once it cannot be: a fatal line, openvpn.exe exiting, or ctx
-// ending. Every failure leaves nothing behind -- no process, no adapter,
-// no profile on disk.
+// ending. Every failure leaves nothing behind -- no process, nothing
+// configured on the adapter, no profile on disk.
 func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_config) error {
 	a.op.Lock()
 	defer a.op.Unlock()
@@ -308,8 +309,8 @@ func (a *Adapter) watch(s *session, lines <-chan string) {
 }
 
 // release stops openvpn.exe -- asking first, so it removes its routes and
-// addresses -- and then removes the adapter and the profile. The caller
-// holds op.
+// addresses -- and then closes the device and removes the profile. The
+// caller holds op.
 func (a *Adapter) release(s *session) {
 	s.process.Stop()
 	select {

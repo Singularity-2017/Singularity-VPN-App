@@ -181,10 +181,10 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 		}
 	}
 
-	// When the tunnel device was closed first (the normal Wintun teardown),
-	// the kernel has already removed the adapter along with all its routes
-	// and addresses; walking and deleting 80+ routes one by one only stays
-	// for an adapter that is still present.
+	// The tunnel adapters are kept for the life of the service (see
+	// wireguard/kept_tun_windows.go), so the adapter is normally still here
+	// and its routes and addresses come off one by one; one already gone
+	// took them with it.
 	if interface_exists(luid) {
 		if err := flush_routes(luid); err != nil {
 			errs = append(errs, fmt.Errorf("platform/windows: flushing routes: %w", err))

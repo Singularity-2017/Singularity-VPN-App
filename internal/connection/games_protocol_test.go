@@ -2,6 +2,7 @@ package connection
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -116,6 +117,88 @@ func Test_antizapret_runs_beside_a_boosted_game_and_goes_with_it(t *testing.T) {
 	}
 	if openvpn.disconnect_calls == 0 {
 		t.Fatal("the AntiZapret tunnel was left up after disconnecting")
+	}
+}
+
+// Every try brings a network adapter up and down, and on Windows each of
+// those sets the whole machine re-reading its adapters: tried every minute
+// for as long as the boost lasted, a companion that would not come up kept
+// the DNS Client service spinning on most cores (2026-10-29).
+func Test_an_antizapret_companion_that_will_not_come_up_is_tried_less_and_less_often(t *testing.T) {
+	env := games_env(t, []api.Alternative{{Node: "de-01", Protocol: "amneziawg"}, {Node: "de-01", Protocol: "openvpn"}})
+	env.store.state.Tunnel_mode = Tunnel_antizapret
+	env.store.state.Client_id = "client-1"
+	openvpn := env.protocols.by_name["openvpn"]
+	openvpn.connect_err = errors.New("openvpn: the tunnel was not set up")
+	manager := env.build()
+	if err := manager.Set_games([]string{"pubg"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	// Ticks every 30 s for 16 minutes: tries at 0, 1, 3, 7 and 15 minutes.
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
+	for i := 0; i < 32; i++ {
+		manager.Tick(context.Background(), env.clock.advance(30*time.Second))
+	}
+	if openvpn.connect_calls != 5 {
+		t.Fatalf("the companion was tried %d times in 16 minutes, want 5: each failure should double the wait", openvpn.connect_calls)
+	}
+
+	// Boosting again is a fresh start: it is tried on the next tick.
+	if err := manager.Set_games(nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Apply_games(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Set_games([]string{"pubg"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Apply_games(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := openvpn.connect_calls
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
+	if openvpn.connect_calls != before+1 {
+		t.Fatalf("after boosting again the companion was tried %d times on the first tick, want once", openvpn.connect_calls-before)
+	}
+}
+
+// The wait belongs to one stretch of trying; a person who disconnects and
+// connects again starts afresh even on the same node.
+func Test_reconnecting_by_hand_tries_the_companion_again_at_once(t *testing.T) {
+	env := games_env(t, []api.Alternative{{Node: "de-01", Protocol: "amneziawg"}, {Node: "de-01", Protocol: "openvpn"}})
+	env.store.state.Tunnel_mode = Tunnel_antizapret
+	env.store.state.Client_id = "client-1"
+	openvpn := env.protocols.by_name["openvpn"]
+	openvpn.connect_err = errors.New("openvpn: the tunnel was not set up")
+	manager := env.build()
+	if err := manager.Set_games([]string{"pubg"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 2; round++ {
+		if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+			t.Fatalf("Connect() error = %v", err)
+		}
+		manager.Tick(context.Background(), env.clock.advance(5*time.Second))
+		if openvpn.connect_calls != round+1 {
+			t.Fatalf("after connect %d the companion was tried %d times, want %d", round+1, openvpn.connect_calls, round+1)
+		}
+		if err := manager.Disconnect(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func Test_the_companion_wait_doubles_up_to_half_an_hour(t *testing.T) {
+	want := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute}
+	for i, wait := range want {
+		c := companion{failures: i + 1}
+		if got := c.retry_wait(); got != wait {
+			t.Errorf("after %d failures the wait is %v, want %v", i+1, got, wait)
+		}
 	}
 }
 

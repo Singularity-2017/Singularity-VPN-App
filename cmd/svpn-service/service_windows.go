@@ -46,8 +46,8 @@ const (
 	service_name = "SingularityVPN"
 	adapter_name = "Singularity"
 	// openvpn_adapter_name is the wintun adapter openvpn.exe runs on. It is
-	// not the WireGuard one: each protocol owns its adapter, and only one of
-	// them exists while a tunnel is up.
+	// not the WireGuard one: each protocol owns its adapter, and both are
+	// kept once created, so the idle one exists beside the one in use.
 	openvpn_adapter_name = "Singularity OpenVPN"
 )
 
@@ -660,6 +660,11 @@ func (r *running_service) stop() error {
 	}
 
 	err := r.application.Stop(context.Background())
+	// The tunnel is down: its kept adapters go now rather than as this
+	// process exits, so a start straight after finds none still being
+	// removed.
+	wireguard.Release_kept_adapters()
+	openvpn.Release_kept_device()
 	if err != nil {
 		r.logger.Error("service stopped with an error", "error", err.Error())
 	} else {

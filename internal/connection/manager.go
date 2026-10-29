@@ -1465,6 +1465,9 @@ func (m *Manager) Disconnect(ctx context.Context) error {
 		m.protocol_handle = nil
 	}
 	m.clear_session()
+	// A companion that would not come up is tried at once on the next
+	// connect: the wait belongs to one stretch of trying.
+	m.companion.forget_failures()
 	m.set_state(State_disconnected)
 
 	if fault != nil {
