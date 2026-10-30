@@ -204,6 +204,16 @@ func (p *Network_prober) Tunnel_up() bool {
 	return p.tunnel_up()
 }
 
+// Settle_window is how long a tunnel that has just come up gets to start
+// carrying traffic before diagnostics.Verify calls it dead: long enough for
+// Windows to finish duplicate address detection (about a second) and the
+// routes, well inside the connect's own 30 s.
+func (p *Network_prober) Settle_window() time.Duration {
+	return 10 * time.Second
+}
+
+var _ diagnostics.Settling = (*Network_prober)(nil)
+
 func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) {
 	if !p.tunnel_up() {
 		// Nothing below this can be measured through a tunnel that is not

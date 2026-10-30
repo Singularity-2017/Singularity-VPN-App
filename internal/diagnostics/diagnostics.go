@@ -55,7 +55,42 @@ var Err_no_internet = errors.New("diagnostics: the tunnel is up but nothing is r
 // failed. DNS is reported but never required here -- a person with a broken
 // resolver still has a working tunnel, and refusing to call that connected
 // would turn a usable connection into a refusal.
+//
+// A prober that is Settling is probed again, every settle_spacing, until
+// the tunnel carries traffic, its window is spent or ctx ends; the last
+// failure is what comes back.
 func Verify(ctx context.Context, prober Prober) error {
+	err := verify_once(ctx, prober)
+	settling, ok := prober.(Settling)
+	if err == nil || !ok {
+		return err
+	}
+	deadline := time.Now().Add(settling.Settle_window())
+	for err != nil && time.Now().Before(deadline) {
+		timer := time.NewTimer(settle_spacing)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+		err = verify_once(ctx, prober)
+	}
+	return err
+}
+
+// Settling is a Prober of a real network, where a tunnel the protocol has
+// just reported up may not carry traffic yet: Windows is still checking
+// the new address for duplicates and putting routes in place. OpenVPN
+// reports itself up a second after it starts, and a single probe then got
+// four refused connections and failed a tunnel that would have worked.
+type Settling interface {
+	Settle_window() time.Duration
+}
+
+const settle_spacing = 250 * time.Millisecond
+
+func verify_once(ctx context.Context, prober Prober) error {
 	sample, err := prober.Probe(ctx)
 	if err != nil {
 		return err
