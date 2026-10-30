@@ -118,8 +118,9 @@ type Adapter struct {
 	clock      func() time.Time
 	// end_session ends the session on the adapter called name, which
 	// takes the adapter down: kept_adapters.end on Windows. A tunnel's
-	// Close leaves the session running, for a tunnel handed over to the
-	// next (see Hand_over).
+	// Close leaves the session running for the next tunnel on the adapter
+	// (see rest and Hand_over); it ends only for an adapter that could not
+	// be left at rest (bring_down).
 	end_session func(name string)
 
 	// router and probe_routes are set by Enable_games; without a router
@@ -141,6 +142,10 @@ type Adapter struct {
 	game_path *game_path
 	// handed is a tunnel handed over and not yet taken up by a Connect.
 	handed *handed_tunnel
+	// resting is what the adapter carries between tunnels: its steady
+	// addresses and its MTU, nothing else (see rest). Its addresses only
+	// grow, a family once on the adapter staying.
+	resting routing.Plan
 }
 
 // handed_tunnel is a tunnel Hand_over gave to the next Connect. It carries
@@ -227,13 +232,16 @@ func (Amnezia) Name() string {
 //  5. Compute the routing.Plan and Apply it.
 //  6. Up.
 //
-// Any failure from step 3 onwards unwinds through unwind: both the network
-// state Apply may have set and the tunnel device Close, attempted
-// regardless of whether either was actually reached, because platform.Network
-// Clear and this package's Close wrapper are both defined to be safe on
-// something that was never configured. A half-built tunnel -- a device with
-// no routing behind it, or routes with no device answering them -- is worse
-// than none, so nothing here is left half done.
+// Any failure from step 3 onwards unwinds through unwind: the tunnel device
+// closes and the adapter comes to rest (rest), what the tunnel added taken
+// off and the steady addresses left -- or, after an Apply that failed half
+// way and so left the adapter in a state nobody knows, is taken down
+// (bring_down). A half-built tunnel -- a device with no routing behind it,
+// or routes with no device answering them -- is worse than none, so nothing
+// here is left half done.
+//
+// The adapter carries steady addresses, not the ones the config gives; the
+// device puts those on the packets (steady.go).
 //
 // A tunnel handed over (Hand_over) carries traffic through steps 1 and 2 --
 // the endpoint resolves through it -- and is then taken up: it stops, the
@@ -256,6 +264,10 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 		return fmt.Errorf("%w: got %d", Err_multiple_peers_unsupported, len(parsed.Peers))
 	}
 	peer := parsed.Peers[0]
+	translation, err := translation_for(parsed.Addresses)
+	if err != nil {
+		return fmt.Errorf("wireguard: %w", err)
+	}
 
 	endpoint, err := a.resolve.Resolve(ctx, peer.Endpoint)
 	if err != nil {
@@ -281,11 +293,20 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 		}
 	}
 
+	steady := steady_addresses(parsed.Addresses, a.resting.Addresses)
+	if len(a.resting.Addresses) == 0 {
+		// Nothing has rested on the adapter yet: a failure from here on
+		// leaves it as this tunnel would have.
+		a.resting = routing.Plan{Addresses: steady, Mtu: parsed.Mtu}
+	}
+
 	games_only := len(config.Split.Games) > 0
 	var splitter *split.Splitter
 	var path *game_path
 	var wrapped *split_tun
-	var wrap device_wrapper
+	var wrap device_wrapper = func(inner tun.Device) tun.Device {
+		return &translating_tun{Device: inner, translation: translation}
+	}
 	if games_only {
 		if a.router == nil {
 			return fmt.Errorf("wireguard: games-only mode needs the packet driver, and this build has none")
@@ -303,8 +324,11 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 			}
 		}
 		router := a.router
+		translate := wrap
 		wrap = func(inner tun.Device) tun.Device {
-			wrapped = new_split_tun(inner, func(packet []byte) bool {
+			// A game's packets carry the node's address already, so the
+			// splitter sits over the translation.
+			wrapped = new_split_tun(translate(inner), func(packet []byte) bool {
 				if path.take_reply(packet) {
 					return true
 				}
@@ -347,10 +371,14 @@ func (a *Adapter) Connect(ctx context.Context, config protocols.Connection_confi
 	if err != nil {
 		return a.unwind(ctx, device, handle, err)
 	}
+	plan.Addresses = steady
 
 	if err := a.network.Apply(ctx, handle, plan); err != nil {
-		return a.unwind(ctx, device, handle, fmt.Errorf("applying routing plan: %w", err))
+		close_err := device.Close()
+		a.handed = nil
+		return errors.Join(fmt.Errorf("wireguard: applying routing plan: %w", err), a.bring_down(ctx, handle), close_err)
 	}
+	a.resting = routing.Plan{Addresses: plan.Addresses, Mtu: plan.Mtu}
 
 	if err := device.Up(); err != nil {
 		return a.unwind(ctx, device, handle, fmt.Errorf("bringing tunnel up: %w", err))
@@ -440,20 +468,42 @@ func first_ipv4(prefixes []netip.Prefix) (netip.Addr, bool) {
 }
 
 // unwind tears down what Connect built from step 3 onward: the tunnel device
-// and platform.Network state, both attempted even though at most one of
-// them may actually have anything to undo -- and a tunnel handed over that
-// Connect took up with them. The device closes first and the session ends,
-// taking the adapter down, so nothing is read from or written to it while
-// Clear takes its routes and addresses off.
-// cause is the failure that triggered the unwind; it and any error from the
-// two teardown calls are joined, so a person sees not just what failed but
-// whether cleaning up after it failed too.
+// closes -- with a tunnel handed over that Connect took up -- and the
+// adapter comes to rest. cause is the failure that triggered the unwind; it
+// and any error from the teardown are joined, so a person sees not just
+// what failed but whether cleaning up after it failed too.
 func (a *Adapter) unwind(ctx context.Context, device tunnel, handle platform.Tunnel_handle, cause error) error {
 	close_err := device.Close()
-	a.end_session(a.name)
 	a.handed = nil
-	clear_err := a.network.Clear(ctx, handle)
-	return errors.Join(fmt.Errorf("wireguard: %w", cause), clear_err, close_err)
+	return errors.Join(fmt.Errorf("wireguard: %w", cause), a.rest(ctx, handle), close_err)
+}
+
+// rest leaves the adapter up for the next tunnel, as a disconnect or a
+// failed connect does: its session runs on, its steady addresses stay, and
+// what a tunnel added -- routes, the endpoint's host route, resolvers --
+// comes off. Windows sees routes and resolvers go, which costs it next to
+// nothing, and no address or link change, which costs it a minute of most
+// cores (steady.go). It runs to the end however ctx ends, being a teardown.
+// An adapter that cannot be brought to rest is taken down rather than left
+// with a route of a tunnel no longer there.
+func (a *Adapter) rest(ctx context.Context, handle platform.Tunnel_handle) error {
+	ctx = context.WithoutCancel(ctx)
+	err := a.network.Apply(ctx, handle, a.resting)
+	if err == nil {
+		return nil
+	}
+	return errors.Join(fmt.Errorf("wireguard: leaving the adapter at rest: %w", err), a.bring_down(ctx, handle))
+}
+
+// bring_down takes the adapter down: its session ends, once no device reads
+// it, and Clear takes everything off. It is for an adapter in a state
+// nobody knows; Windows sees its addresses and link go.
+func (a *Adapter) bring_down(ctx context.Context, handle platform.Tunnel_handle) error {
+	a.end_session(a.name)
+	if err := a.network.Clear(ctx, handle); err != nil {
+		return fmt.Errorf("wireguard: clearing the adapter: %w", err)
+	}
+	return nil
 }
 
 // Carries implements protocols.Hand_over: WireGuard and AmneziaWG run on
@@ -509,18 +559,16 @@ func (a *Adapter) stop_handed() error {
 }
 
 // take_down_handed takes down the tunnel handed over and not taken up: it
-// stops, its session ends, which takes the adapter down, and its
-// routing.Plan comes off.
+// stops, and the adapter comes to rest.
 func (a *Adapter) take_down_handed(ctx context.Context) error {
 	stop_err := a.stop_handed()
 	handle := a.handed.handle
 	a.handed = nil
-	a.end_session(a.name)
-	clear_err := a.network.Clear(ctx, handle)
-	if clear_err != nil {
-		clear_err = fmt.Errorf("wireguard: clearing the routing plan of a tunnel handed over and not taken up: %w", clear_err)
+	rest_err := a.rest(ctx, handle)
+	if rest_err != nil {
+		rest_err = fmt.Errorf("wireguard: a tunnel handed over and not taken up: %w", rest_err)
 	}
-	return errors.Join(stop_err, clear_err)
+	return errors.Join(stop_err, rest_err)
 }
 
 // stop_routing stops the game router's capture, when routing, before the
@@ -553,12 +601,12 @@ func (a *Adapter) forget() {
 	a.since = time.Time{}
 }
 
-// Disconnect closes the tunnel device, ends its session and clears the
-// routing.Plan, all attempted even if one fails, errors joined -- the same
-// reasoning as platform.Network.Clear: this is the teardown path, and
-// stopping half way through leaves a machine in a state nobody chose.
-// Disconnecting an adapter that is not connected is not an error and
-// touches nothing but a tunnel handed over and not taken up, which goes.
+// Disconnect closes the tunnel device and leaves the adapter at rest (rest),
+// both attempted even if one fails, errors joined -- the same reasoning as
+// platform.Network.Clear: this is the teardown path, and stopping half way
+// through leaves a machine in a state nobody chose. Disconnecting an
+// adapter that is not connected is not an error and touches nothing but a
+// tunnel handed over and not taken up, which goes.
 func (a *Adapter) Disconnect(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -572,17 +620,13 @@ func (a *Adapter) Disconnect(ctx context.Context) error {
 
 	stop_err := a.stop_routing(a.routing)
 	close_err := a.device.Close()
-	a.end_session(a.name)
-	clear_err := a.network.Clear(ctx, a.handle)
+	rest_err := a.rest(ctx, a.handle)
 	a.forget()
 
-	if clear_err != nil {
-		clear_err = fmt.Errorf("wireguard: clearing routing plan: %w", clear_err)
-	}
 	if close_err != nil {
 		close_err = fmt.Errorf("wireguard: closing tunnel device: %w", close_err)
 	}
-	return errors.Join(stop_err, clear_err, close_err)
+	return errors.Join(stop_err, rest_err, close_err)
 }
 
 // Status reports whether the tunnel is running, when it came up, and a

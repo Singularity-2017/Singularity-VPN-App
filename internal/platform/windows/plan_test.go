@@ -326,17 +326,29 @@ func Test_a_first_apply_sets_everything_the_plan_asks_for(t *testing.T) {
 }
 
 // Nodes that hand out the same address and resolver differ only in where
-// the tunnel's own transport goes. Anything more would be a network change
-// every program on the machine reacts to.
+// the tunnel's own transport goes -- the endpoint left is let go in Apply
+// (unpin). Anything more would be a network change every program on the
+// machine reacts to.
 func Test_moving_to_another_node_changes_only_the_endpoint_route(t *testing.T) {
 	from := antizapret_plan(t, "172.29.8.2/32", "203.0.113.5/32")
 	to := antizapret_plan(t, "172.29.8.2/32", "198.51.100.7/32")
 	want := plan_change{
-		pin:   []netip.Prefix{prefix(t, "198.51.100.7/32")},
-		unpin: []netip.Prefix{prefix(t, "203.0.113.5/32")},
+		pin: []netip.Prefix{prefix(t, "198.51.100.7/32")},
 	}
 	if got := change_between(from, to); !reflect.DeepEqual(got, want) {
 		t.Fatalf("change_between() = %+v, want %+v", got, want)
+	}
+}
+
+// A tunnel going leaves the adapter at rest: its routes and resolver come
+// off, and its address and interface stay as they are -- no change Windows
+// would send every program to read the adapters again for.
+func Test_coming_to_rest_takes_off_routes_and_the_resolver_only(t *testing.T) {
+	connected := antizapret_plan(t, "100.88.0.2/32", "203.0.113.5/32")
+	resting := routing.Plan{Addresses: connected.Addresses, Mtu: connected.Mtu}
+	want := plan_change{remove_routes: connected.Routes[:2], dns: true}
+	if got := change_between(connected, resting); !reflect.DeepEqual(got, want) {
+		t.Fatalf("change_between(connected, at rest) = %+v, want %+v", got, want)
 	}
 }
 

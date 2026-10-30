@@ -111,6 +111,30 @@ func Test_a_session_left_running_is_carried_to_the_next_tunnel(t *testing.T) {
 	}
 }
 
+// A session that ended under its tunnel -- the adapter disabled, the driver
+// restarted -- is not handed to the next tunnel: its handle is freed, and a
+// new session starts on the adapter, cleared of whatever the old one left.
+func Test_a_session_lost_under_its_tunnel_is_replaced_by_a_new_one(t *testing.T) {
+	var created []*fake_wintun
+	k := fake_kept(&created)
+	cleared, ended := 0, 0
+	k.clear = func(wintun_adapter) { cleared++ }
+	k.end_session = func(wintun.Session) { ended++ }
+	held, _, err := k.session("Singularity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.lose(held)
+	k.release(held)
+	if _, _, err := k.session("Singularity"); err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 || created[0].starts != 2 || ended != 1 || cleared != 2 {
+		t.Fatalf("%d adapters, %d sessions started, %d ended, cleared %d times; want the lost session ended and a new one on the cleared adapter",
+			len(created), created[0].starts, ended, cleared)
+	}
+}
+
 func Test_a_session_is_ended_only_when_no_tunnel_reads_it(t *testing.T) {
 	var created []*fake_wintun
 	k := fake_kept(&created)

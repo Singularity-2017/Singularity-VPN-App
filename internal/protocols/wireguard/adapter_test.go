@@ -74,12 +74,18 @@ type fake_network struct {
 	repin_calls int
 	last_handle platform.Tunnel_handle
 	last_plan   routing.Plan
+	plans       []routing.Plan
 }
 
+// Apply, as the real one, applies nothing for a cancelled request.
 func (f *fake_network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan routing.Plan) error {
 	f.apply_calls++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.last_handle = handle
 	f.last_plan = plan
+	f.plans = append(f.plans, plan)
 	return f.apply_err
 }
 
@@ -253,6 +259,9 @@ func Test_connect_refuses_a_config_with_more_than_one_peer(t *testing.T) {
 
 // --- Connect: the unwind table, the most valuable test in this package --
 
+// A failure once the device exists closes it and leaves the adapter at rest,
+// its routes off; one in Apply, which leaves the adapter in a state nobody
+// knows, clears it.
 func Test_connect_failure_from_step_3_onward_unwinds(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -264,9 +273,9 @@ func Test_connect_failure_from_step_3_onward_unwinds(t *testing.T) {
 		want_clear_calls int
 	}{
 		{name: "tunnel creation fails", new_tunnel_err: errors.New("boom"), want_close_calls: 0, want_clear_calls: 0},
-		{name: "set_config fails", set_config_err: errors.New("boom"), want_close_calls: 1, want_clear_calls: 1},
+		{name: "set_config fails", set_config_err: errors.New("boom"), want_close_calls: 1, want_clear_calls: 0},
 		{name: "apply fails", apply_err: errors.New("boom"), want_close_calls: 1, want_clear_calls: 1},
-		{name: "up fails", up_err: errors.New("boom"), want_close_calls: 1, want_clear_calls: 1},
+		{name: "up fails", up_err: errors.New("boom"), want_close_calls: 1, want_clear_calls: 0},
 	}
 
 	for _, c := range cases {
@@ -294,6 +303,9 @@ func Test_connect_failure_from_step_3_onward_unwinds(t *testing.T) {
 			}
 			if fn.clear_calls != c.want_clear_calls {
 				t.Fatalf("clear_calls = %d, want %d", fn.clear_calls, c.want_clear_calls)
+			}
+			if fn.apply_calls > 0 && fn.clear_calls == 0 && (len(fn.last_plan.Routes) != 0 || len(fn.last_plan.Dns) != 0) {
+				t.Fatalf("the adapter is left with %+v; want it at rest", fn.last_plan)
 			}
 			if a.Status().Running {
 				t.Fatalf("Status().Running = true after a failed Connect")
@@ -338,33 +350,6 @@ func Test_disconnect_when_not_connected_is_not_an_error_and_touches_nothing(t *t
 	}
 	if fn.clear_calls != 0 {
 		t.Fatalf("Disconnect on an unconnected adapter called Clear")
-	}
-}
-
-func Test_disconnect_clears_and_closes_even_when_clear_fails_and_joins_the_errors(t *testing.T) {
-	ft := &fake_tunnel{handle: 42}
-	fr := &fake_resolver{addr: netip.MustParseAddrPort("203.0.113.5:51080")}
-	fn := &fake_network{clear_err: errors.New("clear boom")}
-	a := new_test_adapter(t, ft, fr, fn)
-
-	if err := a.Connect(context.Background(), protocols.Connection_config{Data: []byte(full_tunnel_config())}); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-
-	err := a.Disconnect(context.Background())
-	if err == nil {
-		t.Fatalf("Disconnect: want an error when Clear fails")
-	}
-	if ft.close_calls != 1 {
-		t.Fatalf("close_calls = %d, want 1 (Close attempted even though Clear failed)", ft.close_calls)
-	}
-	if a.Status().Running {
-		t.Fatalf("Status().Running = true after Disconnect")
-	}
-
-	// A second Disconnect is idempotent regardless of the first's outcome.
-	if err := a.Disconnect(context.Background()); err != nil {
-		t.Fatalf("second Disconnect: %v, want nil", err)
 	}
 }
 

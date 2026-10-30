@@ -32,11 +32,12 @@ import (
 // it could is taken over by the next CreateAdapter of the same name and
 // GUID, with no installation (seen 2026-10-29).
 //
-// A session outlives the tunnel that started it when that tunnel is handed
-// over to the next one on the adapter (Adapter.Hand_over): the adapter
-// never goes down, and the next tunnel changes on the machine only what
-// differs. It ends when the adapter's tunnel is taken down for good
-// (kept_adapters.end) or with the adapters.
+// A session outlives the tunnel that started it: handed over to the next
+// tunnel on the adapter (Adapter.Hand_over), or left at rest when the
+// tunnel goes (Adapter.rest), the adapter staying up with its steady
+// addresses (steady.go). It ends with the adapters when the service stops,
+// or when an adapter in a state nobody knows is taken down
+// (kept_adapters.end).
 
 // ring_capacity is the session's ring size, wireguard-go's: 8 MiB.
 const ring_capacity = 0x800000
@@ -56,6 +57,11 @@ type kept_adapter struct {
 	// tunnel reads it or it waits for the next one.
 	session wintun.Session
 	live    bool
+	// lost is set when the session ended under the tunnel reading it -- the
+	// adapter disabled, the driver restarted. The adapter is kept up between
+	// tunnels, so without it every later tunnel would be handed a session
+	// that no longer carries anything.
+	lost bool
 }
 
 // kept_adapters holds this process's adapters by name.
@@ -63,10 +69,11 @@ type kept_adapters struct {
 	mu       sync.Mutex
 	adapters map[string]*kept_adapter
 	create   func(name string) (wintun_adapter, error)
-	// clear takes off a reused adapter whatever the last tunnel's teardown
-	// left on it. With the adapter removed at every disconnect, a Clear that
-	// failed half way could leave nothing behind; kept, it could leave a
-	// whole-machine route under a games-only session.
+	// clear takes off an adapter whatever is on it before a session starts
+	// there -- the first in this process, or one after the last was lost:
+	// a whole-machine route left under a games-only session, resolvers a
+	// killed process left. New_windows_adapter makes it the network's Clear,
+	// so the next Apply starts from nothing too.
 	clear       func(adapter wintun_adapter)
 	end_session func(session wintun.Session)
 }
@@ -85,11 +92,17 @@ func (k *kept_adapters) session(name string) (*kept_adapter, wintun.Session, err
 	if held != nil && held.in_use {
 		return nil, wintun.Session{}, fmt.Errorf("wireguard: adapter %q already carries a tunnel", name)
 	}
-	if held != nil && held.live {
+	if held != nil && held.live && !held.lost {
 		held.in_use = true
 		return held, held.session, nil
 	}
 	if held != nil {
+		if held.live {
+			// Lost under its tunnel: its handle is freed before another
+			// session starts.
+			k.end_session(held.session)
+			held.live, held.lost = false, false
+		}
 		if err := k.start(held); err == nil {
 			return held, held.session, nil
 		}
@@ -129,6 +142,13 @@ func (k *kept_adapters) release(held *kept_adapter) {
 	k.mu.Unlock()
 }
 
+// lose marks the session on held as ended under the tunnel reading it.
+func (k *kept_adapters) lose(held *kept_adapter) {
+	k.mu.Lock()
+	held.lost = true
+	k.mu.Unlock()
+}
+
 // end ends the session on the adapter called name once no tunnel reads
 // it: the adapter goes down.
 func (k *kept_adapters) end(name string) {
@@ -139,7 +159,7 @@ func (k *kept_adapters) end(name string) {
 		return
 	}
 	k.end_session(held.session)
-	held.live = false
+	held.live, held.lost = false, false
 }
 
 // Release_kept_adapters removes the adapters no tunnel is using. The
@@ -285,8 +305,12 @@ func (t *kept_tun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 			windows.WaitForSingleObject(t.read_wait, windows.INFINITE)
 			continue
 		case windows.ERROR_HANDLE_EOF:
+			// The session ended under the tunnel: never by this process,
+			// which ends one only when no tunnel reads it.
+			kept.lose(t.held)
 			return 0, os.ErrClosed
 		case windows.ERROR_INVALID_DATA:
+			kept.lose(t.held)
 			return 0, errors.New("wireguard: the adapter's send ring is corrupt")
 		}
 		return 0, fmt.Errorf("wireguard: reading from the adapter: %w", err)
@@ -306,6 +330,7 @@ func (t *kept_tun) Write(bufs [][]byte, offset int) (int, error) {
 			copy(packet, buf[offset:])
 			t.session.SendPacket(packet)
 		case windows.ERROR_HANDLE_EOF:
+			kept.lose(t.held)
 			return i, os.ErrClosed
 		case windows.ERROR_BUFFER_OVERFLOW:
 			// The ring is full: the packet is dropped, as NativeTun drops it.

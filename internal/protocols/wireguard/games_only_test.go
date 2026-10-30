@@ -127,8 +127,8 @@ func Test_a_router_that_cannot_start_leaves_nothing_up(t *testing.T) {
 	if err := a.Connect(context.Background(), games_config()); err == nil {
 		t.Fatal("Connect hid the router failure")
 	}
-	if a.Status().Running || fn.clear_calls != 1 {
-		t.Fatalf("running %v, clears %d; want the tunnel unwound", a.Status().Running, fn.clear_calls)
+	if a.Status().Running || len(fn.last_plan.Routes) != 0 {
+		t.Fatalf("running %v, the adapter left with %+v; want the tunnel unwound and the adapter at rest", a.Status().Running, fn.last_plan)
 	}
 }
 

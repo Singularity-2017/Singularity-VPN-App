@@ -64,9 +64,23 @@ func Test_a_tunnel_handed_over_carries_on_until_the_next_connect_takes_it_up(t *
 	}
 }
 
+// at_rest checks that the given number of devices closed and the adapter
+// was left up with only its steady address: no session ended, nothing
+// cleared.
+func at_rest(t *testing.T, ft *fake_tunnel, fn *fake_network, closes_at_end *[]int, devices int) {
+	t.Helper()
+	if ft.close_calls != devices || len(*closes_at_end) != 0 || fn.clear_calls != 0 {
+		t.Fatalf("closed %d devices, ended %d sessions, cleared %d times; want %d closed and the adapter left up",
+			ft.close_calls, len(*closes_at_end), fn.clear_calls, devices)
+	}
+	if want := resting(fn.plans[0].Mtu, steady_ipv4); !reflect.DeepEqual(fn.last_plan, want) {
+		t.Fatalf("the adapter is left with %+v; want %+v", fn.last_plan, want)
+	}
+}
+
 // A connect that fails before it takes the tunnel up -- here, its endpoint
 // does not resolve -- leaves it carrying traffic; the release takes it
-// down: device first, then the session, then the plan.
+// down: its device closes, and the adapter comes to rest.
 func Test_a_tunnel_handed_over_and_not_taken_up_goes_down_with_its_release(t *testing.T) {
 	a, ft, fr, fn, closes_at_end := handing_adapter(t)
 	release := a.Hand_over(context.Background())
@@ -83,9 +97,7 @@ func Test_a_tunnel_handed_over_and_not_taken_up_goes_down_with_its_release(t *te
 	if err := release(context.Background()); err != nil {
 		t.Fatalf("second release() error = %v", err)
 	}
-	if !reflect.DeepEqual(*closes_at_end, []int{1}) || fn.clear_calls != 1 {
-		t.Fatalf("devices closed when each session ended = %v, cleared %d times; want [1] and one clear", *closes_at_end, fn.clear_calls)
-	}
+	at_rest(t, ft, fn, closes_at_end, 1)
 }
 
 func Test_a_connect_that_fails_over_a_tunnel_handed_over_takes_it_all_down(t *testing.T) {
@@ -99,15 +111,13 @@ func Test_a_connect_that_fails_over_a_tunnel_handed_over_takes_it_all_down(t *te
 		t.Fatalf("release() error = %v", err)
 	}
 	// The old device closed when taken up, the new one in the unwind.
-	if !reflect.DeepEqual(*closes_at_end, []int{2}) || fn.clear_calls != 1 {
-		t.Fatalf("devices closed when each session ended = %v, cleared %d times; want [2] and one clear", *closes_at_end, fn.clear_calls)
-	}
+	at_rest(t, ft, fn, closes_at_end, 2)
 }
 
 // A disconnect while a tunnel waits to be taken up takes it down: nothing
 // of it outlives the connection the person ended.
 func Test_disconnect_takes_down_a_tunnel_handed_over_and_not_taken_up(t *testing.T) {
-	a, _, _, fn, closes_at_end := handing_adapter(t)
+	a, ft, _, fn, closes_at_end := handing_adapter(t)
 	release := a.Hand_over(context.Background())
 	if err := a.Disconnect(context.Background()); err != nil {
 		t.Fatalf("Disconnect() error = %v", err)
@@ -115,19 +125,7 @@ func Test_disconnect_takes_down_a_tunnel_handed_over_and_not_taken_up(t *testing
 	if err := release(context.Background()); err != nil {
 		t.Fatalf("release() error = %v", err)
 	}
-	if !reflect.DeepEqual(*closes_at_end, []int{1}) || fn.clear_calls != 1 {
-		t.Fatalf("devices closed when each session ended = %v, cleared %d times; want [1] and one clear", *closes_at_end, fn.clear_calls)
-	}
-}
-
-func Test_disconnect_closes_the_device_then_ends_the_adapter_session(t *testing.T) {
-	a, _, _, fn, closes_at_end := handing_adapter(t)
-	if err := a.Disconnect(context.Background()); err != nil {
-		t.Fatalf("Disconnect() error = %v", err)
-	}
-	if !reflect.DeepEqual(*closes_at_end, []int{1}) || fn.clear_calls != 1 {
-		t.Fatalf("devices closed when each session ended = %v, cleared %d times; want [1] and one clear", *closes_at_end, fn.clear_calls)
-	}
+	at_rest(t, ft, fn, closes_at_end, 1)
 }
 
 func Test_hand_over_with_nothing_connected_hands_over_nothing(t *testing.T) {
@@ -167,7 +165,7 @@ func Test_a_games_tunnel_handed_over_stops_capture_only_when_taken_up(t *testing
 	if err := a.Disconnect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"start", "stop", "close", "start", "stop", "close", "end"}
+	want := []string{"start", "stop", "close", "start", "stop", "close"}
 	if !reflect.DeepEqual(router.events, want) {
 		t.Fatalf("events = %v; want %v", router.events, want)
 	}

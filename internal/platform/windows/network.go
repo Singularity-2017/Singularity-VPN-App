@@ -75,6 +75,16 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 	n.mu.Unlock()
 	change := change_between(carried, plan)
 
+	// Resolvers a plan does without come off first, so names stop going to
+	// the tunnel before the routes to it change; resolvers a plan brings are
+	// set last, once the routes to them are in place.
+	dns_first := change.dns && len(plan.Dns) == 0
+	if dns_first {
+		if err := n.set_dns(luid, handle, carried.Dns, nil); err != nil {
+			return err
+		}
+	}
+
 	// Duplicate address detection is off, and set before the address is:
 	// with it on (Windows' default is three probes) the new address stays
 	// tentative for about three seconds, packets routed into the tunnel
@@ -90,6 +100,12 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 			return fmt.Errorf("platform/windows: reading the interface to set it up: %w", err)
 		}
 		row.NLMTU = uint32(plan.Mtu)
+		if family == windows.AF_INET6 && row.NLMTU < ipv6_minimum_mtu {
+			// IPv6 refuses a link below 1280. A tunnel that small carries
+			// no IPv6: the family is on the adapter only because an earlier
+			// tunnel had it (wireguard/steady.go).
+			row.NLMTU = ipv6_minimum_mtu
+		}
 		row.DadTransmits = 0
 		row.RouterDiscoveryBehavior = winipcfg.RouterDiscoveryDisabled
 		if err := row.Set(); err != nil {
@@ -149,11 +165,10 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 	if err := remove_addresses(luid, change.remove_addresses); err != nil {
 		return fmt.Errorf("platform/windows: removing addresses: %w", err)
 	}
-	for _, destination := range change.unpin {
-		pinned = unpin(pinned, destination, system_route_ops{})
-	}
+	pinned = unpin(pinned, host_routes_to_pin(plan), system_route_ops{})
 
 	switch {
+	case dns_first:
 	case change.dns:
 		if err := n.set_dns(luid, handle, carried.Dns, plan.Dns); err != nil {
 			return err
@@ -176,11 +191,7 @@ func (n *network) Apply(ctx context.Context, handle platform.Tunnel_handle, plan
 // name at them written again -- or taken off with the last resolver.
 func (n *network) set_dns(luid winipcfg.LUID, handle platform.Tunnel_handle, from, to []netip.Addr) error {
 	families := families_of_addrs(to)
-	state := dns_state{families: families}
-	if guid, err := luid.GUID(); err == nil && guid != nil {
-		state.guid = *guid
-		state.has_guid = true
-	}
+	state := dns_state_for(luid, families)
 	for _, family := range missing_from(families, families_of_addrs(from)) {
 		if err := flush_interface_dns(luid, state, family); err != nil {
 			return fmt.Errorf("platform/windows: flushing DNS: %w", err)
@@ -227,6 +238,12 @@ func (n *network) Clear(ctx context.Context, handle platform.Tunnel_handle) erro
 	delete(n.applied, handle)
 	n.mu.Unlock()
 
+	if !had_dns && interface_exists(luid) {
+		// Resolvers no Apply of this process set can be there too: ones a
+		// process killed mid-tunnel left. The adapter is kept up between
+		// tunnels, so they would go on answering for the machine.
+		dns_cfg, had_dns = dns_state_for(luid, []winipcfg.AddressFamily{windows.AF_INET, windows.AF_INET6}), true
+	}
 	if had_dns {
 		for _, family := range dns_cfg.families {
 			if err := flush_interface_dns(luid, dns_cfg, family); err != nil {
@@ -303,19 +320,35 @@ func remove_routes(luid winipcfg.LUID, routes []routing.Route) error {
 	return nil
 }
 
-// unpin takes the host route pinned for destination off, and out of pins.
-// One that would not come off stays in pins for Clear to try again: a host
-// route to the node left is no reason to fail the tunnel that replaced it.
-func unpin(pins []pinned_route, destination netip.Prefix, ops route_ops) []pinned_route {
+// unpin takes off every host route pinned for a destination wanted does not
+// hold -- the endpoint left, and one an earlier Apply could not take off --
+// and out of pins. One that would not come off stays in pins for the next
+// Apply or Clear to try again: a host route to the node left is no reason
+// to fail the tunnel that replaced it.
+func unpin(pins []pinned_route, wanted []netip.Prefix, ops route_ops) []pinned_route {
 	kept := make([]pinned_route, 0, len(pins))
 	for _, pin := range pins {
-		if pin.destination == destination && ops.delete_route(pin.interface_luid, pin.destination, pin.next_hop) == nil {
+		if !slices.Contains(wanted, pin.destination) && ops.delete_route(pin.interface_luid, pin.destination, pin.next_hop) == nil {
 			continue
 		}
 		kept = append(kept, pin)
 	}
 	return kept
 }
+
+// dns_state_for is the adapter's identity for setting its resolvers in
+// families: its GUID, when the adapter still has one.
+func dns_state_for(luid winipcfg.LUID, families []winipcfg.AddressFamily) dns_state {
+	state := dns_state{families: families}
+	if guid, err := luid.GUID(); err == nil && guid != nil {
+		state.guid = *guid
+		state.has_guid = true
+	}
+	return state
+}
+
+// ipv6_minimum_mtu is the smallest link MTU IPv6 accepts (RFC 8200).
+const ipv6_minimum_mtu = 1280
 
 func interface_exists(luid winipcfg.LUID) bool {
 	if luid == 0 {

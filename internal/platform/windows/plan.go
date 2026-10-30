@@ -184,10 +184,10 @@ type plan_change struct {
 	// add_routes and remove_routes go through the tunnel.
 	add_routes    []routing.Route
 	remove_routes []routing.Route
-	// pin and unpin are host routes kept outside the tunnel: the endpoint
-	// moved to is pinned, the one left is let go.
-	pin   []netip.Prefix
-	unpin []netip.Prefix
+	// pin are host routes kept outside the tunnel: the endpoint moved to.
+	// Every pin the next plan does not want comes off in Apply (unpin) --
+	// the endpoint left, and one an earlier Apply could not take off.
+	pin []netip.Prefix
 	// dns is true when the resolvers differ: they, and the policy pointing
 	// every name at them, are set again.
 	dns bool
@@ -207,7 +207,6 @@ func change_between(from, to routing.Plan) plan_change {
 	change.add_routes = missing_from(tunnel_routes(from), tunnel_routes(to))
 	change.remove_routes = missing_from(tunnel_routes(to), tunnel_routes(from))
 	change.pin = missing_from(host_routes_to_pin(from), host_routes_to_pin(to))
-	change.unpin = missing_from(host_routes_to_pin(to), host_routes_to_pin(from))
 	change.dns = !slices.Equal(from.Dns, to.Dns)
 	return change
 }
