@@ -377,16 +377,27 @@ func (a *Adapter) log_event(line string) {
 			return
 		}
 	}
-	for _, marker := range append([]string{"Inactivity timeout", "ping-restart", "Connection reset", "Connection timed out", "SIGUSR1", "SIGTERM", "TLS handshake failed"}, fatal_markers...) {
+	// A restart is the signal "SIGUSR1[soft,ping-restart]"; the bare words
+	// also name the setting OpenVPN prints at every start.
+	if strings.Contains(line, "[soft,ping-restart]") {
+		a.warn("ping-restart")
+		return
+	}
+	for _, marker := range append([]string{"Inactivity timeout", "Connection reset", "Connection timed out", "SIGUSR1", "SIGTERM", "TLS handshake failed"}, fatal_markers...) {
 		if strings.Contains(line, marker) {
-			a.mu.Lock()
-			duplicate := a.last_warn == marker
-			a.last_warn = marker
-			a.mu.Unlock()
-			if !duplicate {
-				a.logger.Warn("openvpn event", "event", marker)
-			}
+			a.warn(marker)
 			return
 		}
+	}
+}
+
+// warn logs event once for a run of the same event.
+func (a *Adapter) warn(event string) {
+	a.mu.Lock()
+	duplicate := a.last_warn == event
+	a.last_warn = event
+	a.mu.Unlock()
+	if !duplicate {
+		a.logger.Warn("openvpn event", "event", event)
 	}
 }

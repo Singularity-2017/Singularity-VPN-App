@@ -36,3 +36,20 @@ func Test_event_logging_keeps_labels_and_discards_payloads(t *testing.T) {
 		t.Fatalf("TLS handshake failed logged %d times, want 1 (deduplicated): %s", count, got)
 	}
 }
+
+func Test_a_ping_restart_setting_is_not_a_restart(t *testing.T) {
+	var output bytes.Buffer
+	a := New_adapter(nil, nil, "", "", slog.New(slog.NewTextHandler(&output, nil)))
+	a.log_event("Initialization Sequence Completed")
+	// OpenVPN prints its timers at every start; the words are the same as
+	// the signal's, the event is not.
+	a.log_event("ping 10, ping-restart 60")
+	if strings.Contains(output.String(), "openvpn event") {
+		t.Fatalf("a setting was logged as an event: %s", output.String())
+	}
+
+	a.log_event("Inactivity timeout (--ping-restart), restarting")
+	if !strings.Contains(output.String(), "event=\"Inactivity timeout\"") {
+		t.Fatalf("a real inactivity restart was not logged: %s", output.String())
+	}
+}
