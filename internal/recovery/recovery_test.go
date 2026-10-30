@@ -17,12 +17,13 @@ var epoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 func Test_the_first_call_with_no_history_returns_the_first_alternative(t *testing.T) {
 	policy := New_policy(Default_config())
 
-	got, err := policy.Next_target(epoch, Reason_hard_fail, target_de_01, []Target{target_nl_02, target_fr_03})
+	target_se_04 := Target{Node_id: "se-04", Protocol: "amneziawg"}
+	got, err := policy.Next_target(epoch, Reason_hard_fail, target_de_01, []Target{target_fr_03, target_se_04})
 	if err != nil {
 		t.Fatalf("Next_target() error = %v", err)
 	}
-	if got != target_nl_02 {
-		t.Fatalf("Next_target() = %v, want %v", got, target_nl_02)
+	if got != target_fr_03 {
+		t.Fatalf("Next_target() = %v, want %v", got, target_fr_03)
 	}
 }
 

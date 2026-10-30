@@ -87,9 +87,20 @@ func (p *Policy) Next_target(now time.Time, reason Reason, current Target, alter
 	return Target{}, Err_no_target
 }
 
-// first_survivor walks alternatives in order and returns the first one that
-// is not current, not in the fail history and not in cooldown at now.
+// first_survivor returns the alternative that is not current, not in the
+// fail history and not in cooldown at now, and shares the fewest servers
+// and protocols with current and the fail history; the given order breaks
+// ties. A failure does not say whether the server or the protocol was at
+// fault -- a blocked protocol fails on every server, a blocked server with
+// every protocol -- so the next try changes both whenever it can.
 func (p *Policy) first_survivor(now time.Time, current Target, alternatives []Target) (Target, bool) {
+	nodes := map[string]bool{current.Node_id: true}
+	protocols := map[string]bool{current.Protocol: true}
+	for target := range p.failed {
+		nodes[target.Node_id] = true
+		protocols[target.Protocol] = true
+	}
+	best, best_shared := Target{}, -1
 	for _, candidate := range alternatives {
 		if candidate == current {
 			continue
@@ -100,9 +111,18 @@ func (p *Policy) first_survivor(now time.Time, current Target, alternatives []Ta
 		if until, cooling := p.cooldown_until[candidate]; cooling && now.Before(until) {
 			continue
 		}
-		return candidate, true
+		shared := 0
+		if nodes[candidate.Node_id] {
+			shared++
+		}
+		if protocols[candidate.Protocol] {
+			shared++
+		}
+		if best_shared < 0 || shared < best_shared {
+			best, best_shared = candidate, shared
+		}
 	}
-	return Target{}, false
+	return best, best_shared >= 0
 }
 
 // Record_failure puts target in the fail history of the current attempt,
