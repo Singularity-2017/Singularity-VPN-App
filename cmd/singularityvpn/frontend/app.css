@@ -246,8 +246,17 @@ button { cursor: pointer; }
 /* --- server: country and server in one chip, one menu -------------------- */
 
 .server { position: relative; display: flex; flex-direction: column; gap: 8px; }
-.server-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.server-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .server-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; }
+.server-gear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.server-gear:hover { color: var(--hot); background: var(--hover); }
+.server-gear[aria-expanded="true"] { color: var(--accent); }
+.pop.server-policy-pop { top: 28px; left: 0; width: 260px; }
 .switch {
   display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 8px 0 4px;
   border: 1px solid var(--line); border-radius: 15px; background: var(--inset); font-size: 12px; color: var(--muted);

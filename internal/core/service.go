@@ -304,6 +304,7 @@ func (a *Application) Sign_out(ctx context.Context) error {
 	// connect. The goals themselves are this machine's and stay.
 	if strategy, err := a.manager.Strategy(); err == nil && strategy.Node_id != "" {
 		strategy.Node_id = ""
+		strategy.Pinned = false
 		if err := a.manager.Set_strategy(strategy); err != nil {
 			a.logger.Warn("could not forget the server picked by hand", "err", err)
 		}
@@ -361,7 +362,7 @@ func (a *Application) Strategy(ctx context.Context) (ipc.Strategy, error) {
 	if err != nil {
 		return ipc.Strategy{}, map_error(err)
 	}
-	return ipc.Strategy{Anonymity: s.Anonymity, Bypass: s.Bypass, Country: s.Country, Route: s.Route, Node_id: s.Node_id, Protocol: s.Protocol}, nil
+	return ipc.Strategy{Anonymity: s.Anonymity, Bypass: s.Bypass, Country: s.Country, Route: s.Route, Node_id: s.Node_id, Pinned: s.Pinned, Protocol: s.Protocol}, nil
 }
 
 // Set_strategy answers Command_set_strategy: it records the strategy and,
@@ -373,13 +374,14 @@ func (a *Application) Set_strategy(ctx context.Context, strategy ipc.Strategy) e
 		return err
 	}
 	a.logger.Info("strategy set", "anonymity", strategy.Anonymity, "bypass", strategy.Bypass,
-		"country", strategy.Country, "route", strategy.Route, "node_id", strategy.Node_id, "protocol", strategy.Protocol)
+		"country", strategy.Country, "route", strategy.Route, "node_id", strategy.Node_id, "pinned", strategy.Pinned, "protocol", strategy.Protocol)
 	if err := a.manager.Set_strategy(state.Strategy{
 		Anonymity: strategy.Anonymity,
 		Bypass:    strategy.Bypass,
 		Country:   strategy.Country,
 		Route:     strategy.Route,
 		Node_id:   strategy.Node_id,
+		Pinned:    strategy.Pinned,
 		Protocol:  strategy.Protocol,
 	}); err != nil {
 		return map_error(err)

@@ -191,6 +191,7 @@ func Test_automatic_protocol_policy_respects_offers_and_local_failures(t *testin
 			env.store.state.Last_protocol = "wireguard"
 			if test.pinned {
 				env.store.state.Strategy.Node_id = "de-01"
+				env.store.state.Strategy.Pinned = true
 			}
 			m := env.build()
 			if test.cooling {

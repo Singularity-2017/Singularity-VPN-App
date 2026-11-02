@@ -207,9 +207,9 @@ func Syso(icon bool, manifest string, version *Version_info) ([]byte, error) {
 	}
 
 	out.WriteString(".rsrc\x00\x00\x00")
-	w(uint32(0)) // value
-	w(uint16(1)) // section number
-	w(uint16(0)) // type
+	w(uint32(0))     // value
+	w(uint16(1))     // section number
+	w(uint16(0))     // type
 	out.WriteByte(3) // storage class: static
 	out.WriteByte(0) // no auxiliary records
 	w(uint32(4))     // string table: only its own size

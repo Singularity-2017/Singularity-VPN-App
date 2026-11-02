@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/recovery"
 )
@@ -27,9 +28,24 @@ const (
 	unstable_gap = time.Hour
 )
 
+// is_connection_drop reports whether a degraded blip represents an actual
+// transport disruption (TCP attempt loss, SYN resends, high latency, or
+// severe UDP loss >= 50%) rather than isolated single-packet UDP jitter.
+func is_connection_drop(detail diagnostics.Degradation) bool {
+	if detail.Failed_probes || detail.Resent_probes || detail.High_latency {
+		return true
+	}
+	// UDP loss alone counts as a drop only when severe (half or more of
+	// datagrams lost), avoiding unnecessary protocol churn on minor jitter.
+	return detail.Udp_lost && detail.Udp_loss >= 0.50
+}
+
 // note_drop records one short drop of the current connection and moves it
 // when they come too often. The caller holds op_mu.
-func (m *Manager) note_drop(ctx context.Context, now time.Time) {
+func (m *Manager) note_drop(ctx context.Context, now time.Time, detail diagnostics.Degradation) {
+	if !is_connection_drop(detail) {
+		return
+	}
 	cutoff := now.Add(-unstable_window)
 	m.drops = append(slices.DeleteFunc(m.drops, func(at time.Time) bool { return at.Before(cutoff) }), now)
 	if len(m.drops) < unstable_drops || m.mode != Mode_auto || m.in_match.Load() {

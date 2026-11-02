@@ -126,7 +126,8 @@ type Strategy struct {
 	Bypass    bool   `json:"bypass,omitempty"`
 	Country   string `json:"country,omitempty"` // ISO 3166-1 alpha-2, "" for anywhere
 	Route     bool   `json:"route,omitempty"`
-	Node_id   string `json:"node_id,omitempty"`  // a server picked by hand, "" for automatic
+	Node_id   string `json:"node_id,omitempty"`  // the selected server, "" for automatic choice
+	Pinned    bool   `json:"pinned,omitempty"`   // true for a hard pin, false for a failover-capable preference
 	Protocol  string `json:"protocol,omitempty"` // a protocol picked by hand, "" for automatic
 }
 
@@ -146,6 +147,9 @@ func (s Strategy) Validate() error {
 		if len(s.Country) != 2 || s.Country[0] < 'A' || s.Country[0] > 'Z' || s.Country[1] < 'A' || s.Country[1] > 'Z' {
 			return fmt.Errorf("ipc: strategy: country %q is not a two-letter code", s.Country)
 		}
+	}
+	if s.Pinned && s.Node_id == "" {
+		return errors.New("ipc: strategy: pinned requires node_id")
 	}
 	if len(s.Node_id) > 64 {
 		return errors.New("ipc: strategy: node_id is too long")

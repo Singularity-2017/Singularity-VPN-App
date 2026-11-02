@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"reflect"
-	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,7 +13,6 @@ import (
 	"singularity-vpn-app/internal/diagnostics"
 	"singularity-vpn-app/internal/events"
 	"singularity-vpn-app/internal/evidence"
-	"singularity-vpn-app/internal/games"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/recovery"
 	"singularity-vpn-app/internal/state"
@@ -224,16 +220,6 @@ type Manager struct {
 	// leaving the node would end the match (owner, 2026-10-17). A dead
 	// node is still left: the match is lost either way.
 	in_match atomic.Bool
-}
-
-// Set_in_match records whether a game is in a match.
-func (m *Manager) Set_in_match(on bool) {
-	m.in_match.Store(on)
-}
-
-// In_match is whether a game is in a match, as last recorded.
-func (m *Manager) In_match() bool {
-	return m.in_match.Load()
 }
 
 // New_manager builds a Manager, refusing a Dependencies missing anything it
@@ -598,268 +584,6 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 	return target, nil
 }
 
-// spoken_target keeps a usable offered connection during reevaluation. Fresh
-// automatic choices prefer offered AmneziaWG on the selected node, respecting
-// protocol support, mode, frozen reports and local failure cooldowns.
-func (m *Manager) spoken_target(recommendation api.Recommendation) (recovery.Target, *Fault) {
-	states := make([]string, 0, len(recommendation.Alternatives))
-	for _, alt := range recommendation.Alternatives {
-		states = append(states, alt.Protocol+"@"+alt.Node+"="+alt.State)
-	}
-	m.logger.Info("control plane recommendation", "node_id", recommendation.Node_id,
-		"protocol", recommendation.Protocol, "reason", recommendation.Reason, "alternatives", strings.Join(states, " "))
-
-	// A control plane that ignores the server picked by hand answers for
-	// another one; none of its offers is on the picked server, and saying
-	// "speaks none of them" would blame the protocols for it.
-	if pinned := m.local_state.Strategy.Node_id; pinned != "" && recommendation.Node_id != pinned {
-		on_pinned := false
-		for _, alt := range recommendation.Alternatives {
-			on_pinned = on_pinned || alt.Node == pinned
-		}
-		if !on_pinned {
-			return recovery.Target{}, &Fault{Kind: Fault_recommendation, Op: "connect",
-				Err: fmt.Errorf("connection: the picked server %s was asked for, and the control plane answered with %s instead; a control plane that does not know node_id is older than this build", pinned, recommendation.Node_id)}
-		}
-	}
-
-	recommended := recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}
-	node := recommendation.Node_id
-	if pinned := m.local_state.Strategy.Node_id; pinned != "" {
-		node = pinned
-	}
-	offered := m.unfrozen(recommendation.Alternatives)
-	recommended_frozen := false
-	for _, alt := range recommendation.Alternatives {
-		if alt.Node == recommended.Node_id && alt.Protocol == recommended.Protocol && alt.State == state_frozen {
-			recommended_frozen = true
-		}
-	}
-	if !recommended_frozen {
-		offered = append([]recovery.Target{recommended}, offered...)
-	}
-	eligible := m.spoken(m.pinned_to_node(offered))
-	usable := func(target recovery.Target) bool {
-		return m.policy.Eligible(m.now(), target) && (effective_mode(m.local_state) != Tunnel_games || m.carries_alone(target.Protocol))
-	}
-	// A server and protocol this network sent a problem report about steps
-	// aside for any other usable offer; with none, it is still used -- a
-	// report says the connection was bad, not that it does not connect.
-	// Reevaluation -- a goal changed while connected -- keeps an offered
-	// working connection on the selected node, reported or not: a setting
-	// that has nothing to do with it is no reason to drop it.
-	all_eligible := eligible
-	if kept := without_troubled(eligible, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state))); slices.ContainsFunc(kept, usable) {
-		if len(kept) < len(eligible) {
-			m.logger.Info("leaving aside what this network reported or keeps losing", "kept", len(kept), "offered", len(eligible))
-		}
-		eligible = kept
-	}
-	if current := m.get_state(); current == State_connected || current == State_degraded {
-		for _, target := range all_eligible {
-			if target == m.current && target.Node_id == node && usable(target) {
-				return target, nil
-			}
-		}
-	}
-	// Fresh automatic choices prefer offered obfuscation on this same node.
-	for _, target := range eligible {
-		if target.Node_id == node && target.Protocol == "amneziawg" && usable(target) {
-			if target != recommended {
-				m.logger.Info("using an offered alternative this build speaks", "node_id", target.Node_id, "protocol", target.Protocol)
-			}
-			return target, nil
-		}
-	}
-	for _, target := range eligible {
-		if target == recommended && target.Node_id == node && usable(target) {
-			return target, nil
-		}
-	}
-	for _, target := range eligible {
-		if target.Node_id == node && target.Node_id == m.local_state.Last_node_id && target.Protocol == m.local_state.Last_protocol && usable(target) {
-			m.logger.Info("using the offered protocol that worked last on this node", "node_id", target.Node_id, "protocol", target.Protocol)
-			return target, nil
-		}
-	}
-	for _, target := range prefer_obfuscated(eligible) {
-		if usable(target) {
-			m.logger.Info("using an offered alternative this build speaks", "node_id", target.Node_id, "protocol", target.Protocol)
-			return target, nil
-		}
-	}
-	frozen := []string{}
-	for _, alt := range recommendation.Alternatives {
-		target := recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol}
-		if alt.State == state_frozen && len(m.spoken(m.pinned_to_node([]recovery.Target{target}))) > 0 {
-			frozen = append(frozen, alt.Protocol)
-		}
-	}
-	if len(eligible) > 0 {
-		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect", Err: fmt.Errorf("connection: offered protocols are unavailable under the current mode or local failure cooldown")}
-	}
-
-	// A protocol picked by hand that nothing usable offers is the person's
-	// own choice standing in the way, and the reason has to say so: blaming
-	// the build would send them looking in the wrong place.
-	if picked := m.local_state.Strategy.Protocol; picked != "" {
-		why := "is not offered on this server"
-		if len(frozen) > 0 {
-			why = "freezes on this network (it connects, then stops passing traffic)"
-		}
-		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
-			Err: fmt.Errorf("connection: the protocol picked by hand, %s, %s; pick another protocol or automatic choice", picked, why)}
-	}
-	if len(frozen) > 0 {
-		return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
-			Err: fmt.Errorf("connection: the control plane recommends %s for this network and has seen %s freeze on it (it connects, then stops passing traffic); this build speaks no protocol that gets through yet",
-				recommendation.Protocol, strings.Join(slices.Compact(frozen), ", "))}
-	}
-	names := []string{recommendation.Protocol}
-	for _, alt := range recommendation.Alternatives {
-		names = append(names, alt.Protocol)
-	}
-	return recovery.Target{}, &Fault{Kind: Fault_protocol_unavailable, Op: "connect",
-		Err: fmt.Errorf("connection: the control plane offered %s, and this build speaks none of them", strings.Join(slices.Compact(names), ", "))}
-}
-
-// troubled says whether a row of this network's evidence holds its target
-// against: the person sent a problem report about it, or most attempts on
-// it here ended in a failure -- WireGuard that a filter cuts seconds after
-// every connect. One failure is chance, not a pattern, so it takes two.
-func troubled(row api.Connection_evidence) bool {
-	return row.Reported > 0 || (row.Failures >= 2 && 2*row.Failures > row.Attempts)
-}
-
-// without_troubled drops the targets the evidence for this network holds
-// against, from the app's own observations in the same mode: a report made
-// while only games went through says nothing about the whole machine going
-// through.
-func without_troubled(targets []recovery.Target, evidence []api.Connection_evidence, mode string) []recovery.Target {
-	reported := map[recovery.Target]bool{}
-	for _, row := range evidence {
-		if row.Source == "app" && row.Mode == mode && troubled(row) {
-			reported[recovery.Target{Node_id: row.Node_id, Protocol: row.Protocol}] = true
-		}
-	}
-	if len(reported) == 0 {
-		return targets
-	}
-	kept := targets[:0:0]
-	for _, t := range targets {
-		if !reported[t] {
-			kept = append(kept, t)
-		}
-	}
-	return kept
-}
-
-// carries_alone reports whether protocol can put the games through the
-// tunnel alone, rather than the whole machine.
-func (m *Manager) carries_alone(protocol string) bool {
-	p, err := m.protocols.Get(protocol)
-	if err != nil {
-		return false
-	}
-	_, whole := p.(protocols.Whole_machine)
-	return !whole
-}
-
-// games_target is, among offered, a target on node whose protocol can
-// carry the games alone: the protocol that last carried traffic on the
-// node first, then the offers in order. False when there is none.
-// retry_flap_window is how soon after a retry a second loss of the same
-// target counts as that target not holding.
-const retry_flap_window = time.Minute
-
-func (m *Manager) games_target(node string, offered []recovery.Target) (recovery.Target, bool) {
-	var on_node []recovery.Target
-	for _, t := range m.spoken(m.pinned_to_node(offered)) {
-		if t.Node_id == node && m.carries_alone(t.Protocol) && m.policy.Eligible(m.now(), t) {
-			on_node = append(on_node, t)
-		}
-	}
-	if len(on_node) == 0 {
-		return recovery.Target{}, false
-	}
-	// Plain WireGuard's handshake is what DPI recognises, and where it
-	// does the tunnel comes up and dies seconds later; the obfuscated one
-	// carries games the same way and survives it, so it goes first.
-	slices.SortStableFunc(on_node, func(a, b recovery.Target) int {
-		return obfuscated_first(a.Protocol) - obfuscated_first(b.Protocol)
-	})
-	if node == m.local_state.Last_node_id {
-		for _, t := range on_node {
-			if t.Protocol == m.local_state.Last_protocol && obfuscated_first(t.Protocol) == obfuscated_first(on_node[0].Protocol) {
-				return t, true
-			}
-		}
-	}
-	return on_node[0], true
-}
-
-// unfrozen is the offers the control plane has not seen freeze on this
-// network, as targets.
-func (m *Manager) unfrozen(list []api.Alternative) []recovery.Target {
-	targets := make([]recovery.Target, 0, len(list))
-	for _, alt := range list {
-		if alt.State != state_frozen {
-			targets = append(targets, recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol})
-		}
-	}
-	return targets
-}
-
-// offered_now is what the last recommendation offered besides its choice,
-// or, without one, the alternatives recovery holds.
-func (m *Manager) offered_now() []recovery.Target {
-	if m.has_recommended {
-		return m.unfrozen(m.recommended.Alternatives)
-	}
-	return m.alternatives
-}
-
-// state_frozen is the control plane's reach verdict for a protocol that
-// connects from this network and then stops passing traffic.
-const state_frozen = "frozen"
-
-// spoken keeps the targets whose protocol this build has an adapter for.
-func (m *Manager) spoken(targets []recovery.Target) []recovery.Target {
-	kept := targets[:0:0]
-	for _, target := range targets {
-		if _, err := m.protocols.Get(target.Protocol); err == nil {
-			kept = append(kept, target)
-		}
-	}
-	return kept
-}
-
-// recommend_request is what the control plane is asked for: the stored
-// strategy, the connection a route goal measures, and the game when one
-// alone is chosen -- the control plane takes one, and picking one of
-// several would put the others on a node chosen for someone else.
-func (m *Manager) recommend_request() api.Recommend_request {
-	s := m.local_state.Strategy
-	request := api.Recommend_request{
-		Anonymity: s.Anonymity,
-		Bypass:    s.Bypass,
-		Country:   s.Country,
-		Route:     s.Route,
-		Client_id: m.local_state.Client_id,
-		Node_id:   s.Node_id,
-	}
-	if m.evidence != nil {
-		request.Network_context_id = m.evidence.Context_id(context.Background())
-	}
-	if len(m.local_state.Games) == 1 && !plays_direct(m.local_state) {
-		request.Game = m.local_state.Games[0]
-		if catalog, err := games.Load_catalog(); err == nil {
-			request.Game = catalog.Target(request.Game, m.local_state.Game_region)
-		}
-	}
-	return request
-}
-
 // create_profile provisions a new client_id. Manual mode passes the
 // person's chosen node and protocol through to Create_profile; auto mode
 // asks the recommendation first and provisions with its node and a
@@ -926,35 +650,6 @@ func (m *Manager) create_profile(ctx context.Context, token string, request Conn
 		}
 	}
 	return target, config, nil
-}
-
-// pinned_to_node keeps what the person picked by hand. A server picked by
-// hand keeps only the alternatives on that server: another protocol on it is
-// still the server they chose, another server is not. A protocol picked by
-// hand keeps only that protocol, on whichever server. Automatic choice is
-// what moves a connection to another node or protocol.
-func (m *Manager) pinned_to_node(list []recovery.Target) []recovery.Target {
-	node, protocol := m.local_state.Strategy.Node_id, m.local_state.Strategy.Protocol
-	if node == "" && protocol == "" {
-		return list
-	}
-	kept := list[:0:0]
-	for _, t := range list {
-		if (node == "" || t.Node_id == node) && (protocol == "" || t.Protocol == protocol) {
-			kept = append(kept, t)
-		}
-	}
-	return kept
-}
-
-func alternatives_from(list []api.Alternative) []recovery.Target {
-	targets := make([]recovery.Target, 0, len(list))
-	for _, alt := range list {
-		if alt.State != state_frozen {
-			targets = append(targets, recovery.Target{Node_id: alt.Node, Protocol: alt.Protocol})
-		}
-	}
-	return prefer_obfuscated(targets)
 }
 
 // protocol_timeout is how long protocol may take to connect: the
@@ -1154,195 +849,6 @@ func (m *Manager) connection_config(target recovery.Target, config api.Vpn_confi
 		Data:     []byte(config.Config),
 		Split:    split_for(m.local_state),
 	}
-}
-
-// split_for decides what the tunnel carries. Games chosen alone put only
-// those games through it. A goal that is about the whole machine --
-// anonymity, or getting past blocks -- keeps the whole machine in the
-// tunnel, games included: a browser left outside would defeat it. A game
-// whose anti-cheat reacts to the packet driver does the same and takes the
-// driver off the machine. A selection the catalog cannot read falls back
-// to the whole machine rather than to nothing.
-func split_for(local state.State) protocols.Split {
-	if len(local.Games) == 0 {
-		return protocols.Split{}
-	}
-	catalog, err := games.Load_catalog()
-	if err != nil {
-		return protocols.Split{}
-	}
-	plan, err := games.Plan_for(local.Games, catalog)
-	if err != nil {
-		return protocols.Split{}
-	}
-	if !plan.Driver {
-		return protocols.Split{Driver_forbidden: true}
-	}
-	if local.Strategy.Anonymity != "" || local.Strategy.Bypass {
-		return protocols.Split{}
-	}
-	if plays_direct(local) {
-		return protocols.Split{}
-	}
-	// Full VPN chosen: the whole machine is in the tunnel, and the game
-	// with it. Games go alone only beside AntiZapret, which runs next to
-	// them (see companion.go): everything the person chose works at once.
-	if local.Tunnel_mode != Tunnel_antizapret {
-		return protocols.Split{}
-	}
-	return protocols.Split{Games: plan.Per_process}
-}
-
-// plays_direct says whether the selected game is played in a region
-// reached only from home: then it is not put in the tunnel at all, and the
-// tunnel stays whatever the person chose for the rest.
-func plays_direct(local state.State) bool {
-	if len(local.Games) != 1 || local.Game_region == "" {
-		return false
-	}
-	catalog, err := games.Load_catalog()
-	if err != nil {
-		return false
-	}
-	game, ok := catalog.Find(local.Games[0])
-	if !ok {
-		return false
-	}
-	region, ok := game.Region(local.Game_region)
-	return ok && region.Direct
-}
-
-// Set_games records which games the person wants carried and the region
-// they boost toward. An id the catalog does not know, or a region that is
-// not one of the single selected game's, is refused before anything is
-// saved.
-func (m *Manager) Set_games(ids []string, region string) error {
-	m.cancel_monitor_probe()
-	m.op_mu.Lock()
-	defer m.op_mu.Unlock()
-
-	catalog, err := games.Load_catalog()
-	if err != nil {
-		return err
-	}
-	if _, err := games.Plan_for(ids, catalog); err != nil {
-		return &Fault{Kind: Fault_configuration, Op: "set_games", Err: err}
-	}
-	if region != "" {
-		game, _ := catalog.Find(first(ids))
-		if _, ok := game.Region(region); !ok || len(ids) != 1 {
-			return &Fault{Kind: Fault_configuration, Op: "set_games", Err: fmt.Errorf("connection: %q is not a region of the one selected game", region)}
-		}
-	}
-	local, err := m.store.Load()
-	if err != nil {
-		return err
-	}
-	local.Games = slices.Clone(ids)
-	local.Game_region = region
-	if err := m.store.Save(local); err != nil {
-		return err
-	}
-	m.local_state = local
-	return nil
-}
-
-// Games reports what Set_games last recorded: the games and the region.
-// Like Strategy, it does not wait behind a connect.
-func (m *Manager) Games() ([]string, string, error) {
-	local, err := m.store.Load()
-	if err != nil {
-		return nil, "", err
-	}
-	return local.Games, local.Game_region, nil
-}
-
-// first is the first id, or "" for none.
-func first(ids []string) string {
-	if len(ids) == 0 {
-		return ""
-	}
-	return ids[0]
-}
-
-// Apply_games rebuilds a tunnel that is up when what it carries has
-// changed -- the same node, a different split or a different profile of
-// it. The mode cannot change under a running tunnel: games-only has no
-// default route and a wrapped device, the whole machine has both. A change
-// that moves the tunnel between the AntiZapret profile and the full one
-// needs the other profile's config, so it is fetched first; if that fails
-// the tunnel is left as it was. A rebuild that does not come back is handed
-// to recovery like any other lost tunnel.
-func (m *Manager) Apply_games(ctx context.Context) error {
-	m.cancel_monitor_probe()
-	m.op_mu.Lock()
-	defer m.op_mu.Unlock()
-	// A companion no longer wanted goes before the rebuild, not after it:
-	// leaving the games for AntiZapret on the main tunnel would otherwise
-	// put two AntiZapret tunnels, with the same routes and resolver, up at
-	// once, and the new one fails its verification.
-	m.drop_unwanted_companion(ctx)
-	defer m.drop_unwanted_companion(ctx)
-
-	current := m.get_state()
-	if current != State_connected && current != State_degraded {
-		return nil
-	}
-	split := split_for(m.local_state)
-	session, _ := m.Session()
-	want := effective_mode(m.local_state)
-	// Games alone need a protocol that can carry them alone. One that
-	// carries the whole machine is left for another on the same node,
-	// when the node offers one; otherwise it stays, whole machine and all.
-	if want == Tunnel_games && !m.carries_alone(m.current.Protocol) {
-		if target, ok := m.games_target(m.current.Node_id, m.offered_now()); ok {
-			m.logger.Info("games go through the tunnel alone; moving to a protocol that can carry them so",
-				"node_id", target.Node_id, "from", m.current.Protocol, "protocol", target.Protocol)
-			m.state_mu.Lock()
-			m.session.Tunnel = want
-			m.state_mu.Unlock()
-			m.forget_way_back()
-			m.set_state(State_switching)
-			m.publish(events.Kind_switch_started, target)
-			_ = m.switch_loop(ctx, m.now(), target)
-			if state := m.get_state(); state == State_connected || state == State_degraded {
-				return nil
-			}
-			return &Fault{Kind: Fault_protocol_connection, Op: "apply_games", Err: errors.New("connection: the tunnel did not come back on a protocol that carries the games alone")}
-		}
-	}
-	if reflect.DeepEqual(split, m.current_config.Split) && want == session.Tunnel {
-		return nil
-	}
-	m.forget_way_back()
-	if profile_for(want) != profile_for(session.Tunnel) {
-		token, err := m.token.Token(ctx)
-		if err != nil {
-			return &Fault{Kind: Fault_authentication, Op: "apply_games", Err: err}
-		}
-		config, err := m.control_plane.Fetch_config(ctx, token, m.local_state.Client_id, m.current.Protocol, m.current.Node_id, profile_for(want))
-		if err != nil {
-			return classify_control_plane_error("apply_games", err)
-		}
-		m.current_config = m.connection_config(m.current, config)
-	} else {
-		m.current_config.Split = split
-	}
-	m.state_mu.Lock()
-	m.session.Tunnel = want
-	m.state_mu.Unlock()
-	if m.retry_current(ctx, true) {
-		return nil
-	}
-	// handle_lost tries the same node once more before recovery moves
-	// anywhere, and a first verification right after a rebuild fails often
-	// enough on a flaky path that the second one is what usually lands. A
-	// tunnel that came back is not a failure to report.
-	m.handle_lost(ctx, m.now())
-	if state := m.get_state(); state == State_connected || state == State_degraded {
-		return nil
-	}
-	return &Fault{Kind: Fault_protocol_connection, Op: "apply_games", Err: errors.New("connection: the tunnel did not come back after changing what it carries")}
 }
 
 // Strategy reports what Set_strategy last recorded.
@@ -1743,7 +1249,7 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		if current == State_connected && !pending {
 			m.degraded_pending = true
 			m.publish(events.Kind_connection_blip, detail)
-			m.note_drop(ctx, now)
+			m.note_drop(ctx, now, detail)
 			return
 		}
 		if current != State_degraded || !m.degraded_since_set {
@@ -1773,6 +1279,10 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		m.handle_lost(ctx, now)
 	}
 }
+
+// retry_flap_window is how soon after a retry a second loss of the same
+// target counts as that target not holding.
+const retry_flap_window = time.Minute
 
 // handle_lost implements CLIENT_CORE.md section 20: a lost verdict does not
 // immediately move a person off their current target. It is retried once;
@@ -1917,14 +1427,6 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-// obfuscated_first orders protocols for games: AmneziaWG before the rest.
-func obfuscated_first(protocol string) int {
-	if protocol == "amneziawg" {
-		return 0
-	}
-	return 1
-}
-
 // fetch_through_tunnel is how long a config may take through a tunnel about
 // to be handed over before the tunnel is taken for what failed.
 const fetch_through_tunnel = 5 * time.Second
@@ -1990,18 +1492,6 @@ func (m *Manager) can_hand_over(next protocols.Protocol) bool {
 	return ok && next != nil && handing.Carries(next)
 }
 
-// Reorder protocols within each node's existing offer slots, preserving node priority.
-func prefer_obfuscated(targets []recovery.Target) []recovery.Target {
-	for i := range targets {
-		for j := i + 1; j < len(targets); j++ {
-			if targets[i].Node_id == targets[j].Node_id && obfuscated_first(targets[j].Protocol) < obfuscated_first(targets[i].Protocol) {
-				targets[i], targets[j] = targets[j], targets[i]
-			}
-		}
-	}
-	return targets
-}
-
 // attempt is one try at target during a switch: the target left behind,
 // its config fetched, its tunnel brought up. connected says it came up, and
 // err is then what settling it returned; otherwise fault is why not, already
@@ -2030,41 +1520,4 @@ func (m *Manager) attempt(ctx context.Context, now time.Time, token string, targ
 	m.publish(events.Kind_switch_failed, fault)
 	m.policy.Record_failure(now, target)
 	return false, nil, fault
-}
-
-// The recommended primary remains an offered fallback when automatic policy
-// selects an alternative. Explicit frozen reports override the primary offer.
-func (m *Manager) recovery_offers(recommendation api.Recommendation, chosen recovery.Target) []recovery.Target {
-	primary := recovery.Target{Node_id: recommendation.Node_id, Protocol: recommendation.Protocol}
-	frozen_primary := false
-	for _, alt := range recommendation.Alternatives {
-		if alt.Node == primary.Node_id && alt.Protocol == primary.Protocol && alt.State == state_frozen {
-			frozen_primary = true
-		}
-	}
-	offers := alternatives_from(recommendation.Alternatives)
-	if !frozen_primary {
-		offers = append([]recovery.Target{primary}, offers...)
-	}
-	seen := map[recovery.Target]bool{chosen: true}
-	kept := []recovery.Target{}
-	for _, candidate := range m.spoken(m.pinned_to_node(offers)) {
-		if seen[candidate] || (effective_mode(m.local_state) == Tunnel_games && !m.carries_alone(candidate.Protocol)) {
-			continue
-		}
-		seen[candidate] = true
-		kept = append(kept, candidate)
-	}
-	// What this network reported or keeps losing is tried after the rest.
-	ordered := prefer_obfuscated(kept)
-	clean := without_troubled(ordered, recommendation.Evidence, Evidence_mode(effective_mode(m.local_state)))
-	if len(clean) == len(ordered) {
-		return ordered
-	}
-	for _, t := range ordered {
-		if !slices.Contains(clean, t) {
-			clean = append(clean, t)
-		}
-	}
-	return clean
 }

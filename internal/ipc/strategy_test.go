@@ -14,6 +14,7 @@ func Test_a_strategy_with_a_value_the_service_would_not_ask_for_is_refused(t *te
 		{Country: "DEU"},
 		{Node_id: "node 2"},
 		{Node_id: "../node"},
+		{Pinned: true},
 	} {
 		if bad.Validate() == nil {
 			t.Errorf("Validate(%+v) accepted", bad)
@@ -29,7 +30,7 @@ func Test_a_strategy_with_a_value_the_service_would_not_ask_for_is_refused(t *te
 func Test_a_strategy_round_trips_and_a_bad_one_never_reaches_the_service(t *testing.T) {
 	service := new_fake_service()
 	client, _ := serve_pair(t, service)
-	want := Strategy{Anonymity: "high", Country: "NL", Node_id: "node-2"}
+	want := Strategy{Anonymity: "high", Country: "NL", Node_id: "node-2", Pinned: true}
 	if err := client.Set_strategy(with_timeout(t), want); err != nil {
 		t.Fatalf("Set_strategy() error = %v", err)
 	}

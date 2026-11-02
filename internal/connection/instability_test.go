@@ -255,3 +255,34 @@ func Test_a_network_change_lifts_the_hour_between_moves(t *testing.T) {
 		t.Fatalf("five drops on a new network kept %s; want another protocol", got)
 	}
 }
+
+// Single-datagram UDP jitter (e.g. 1 of 8 queries lost) is a visible blip,
+// but must not accumulate as connection drops that force switching away from
+// a healthy connection.
+func Test_isolated_mild_udp_loss_does_not_count_as_connection_drops(t *testing.T) {
+	env, manager := dropping_env(t)
+	for range 6 {
+		env.prober.set([]prober_response{{sample: diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Udp_measured: true, Udp_loss: 1.0 / 8, Rtt: 50 * time.Millisecond}}})
+		manager.Tick(context.Background(), env.clock.advance(2*time.Minute))
+		env.prober.set([]prober_response{{sample: healthy_sample}})
+		manager.Tick(context.Background(), env.clock.advance(30*time.Second))
+	}
+	if got := protocol_now(t, manager); got != "wireguard" {
+		t.Fatalf("mild UDP jitter moved the connection to %s; want wireguard kept", got)
+	}
+}
+
+// Severe UDP loss (half or more datagrams lost) represents real path disruption
+// and must count towards moving the protocol.
+func Test_severe_udp_loss_counts_as_connection_drops(t *testing.T) {
+	env, manager := dropping_env(t)
+	for range 5 {
+		env.prober.set([]prober_response{{sample: diagnostics.Sample{Tunnel_up: true, Internet_ok: true, Udp_measured: true, Udp_loss: 0.5, Rtt: 50 * time.Millisecond}}})
+		manager.Tick(context.Background(), env.clock.advance(2*time.Minute))
+		env.prober.set([]prober_response{{sample: healthy_sample}})
+		manager.Tick(context.Background(), env.clock.advance(30*time.Second))
+	}
+	if got := protocol_now(t, manager); got != "openvpn" {
+		t.Fatalf("severe UDP loss left connection on %s; want openvpn", got)
+	}
+}

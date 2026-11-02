@@ -47,10 +47,12 @@ type Strategy struct {
 	// anywhere.
 	Country string
 	Route   bool
-	// Node_id is a server the person picked by hand, or "" for the control
-	// plane to pick -- which is automatic server selection, and what moves
-	// a connection off a node that dies.
+	// Node_id is the person's selected server, or "" for the control plane
+	// to choose. When Pinned is false it is a preference with failover; when
+	// true, only this server may be used.
 	Node_id string
+	// Pinned makes Node_id a hard constraint rather than a preference.
+	Pinned bool
 	// Protocol is a protocol the person picked by hand -- amneziawg,
 	// wireguard or openvpn -- or "" for the one that gets through, which is
 	// also what moves a connection to another protocol when one stops.

@@ -62,7 +62,8 @@ type Recommend_request struct {
 	Country            string // with a country, the geo goal
 	Route              bool
 	Client_id          string // the connection the route goal measures
-	Node_id            string // a server picked by hand
+	Node_id            string // a server pinned by hand
+	Preferred_node_id  string // a preferred server that may yield to goals or failover
 	// Game is the one game the tunnel is for, by catalog id: the control
 	// plane then picks the node nearest that game's servers.
 	Game string
@@ -92,6 +93,9 @@ func (r Recommend_request) query() url.Values {
 	}
 	if r.Node_id != "" {
 		q.Set("node_id", r.Node_id)
+	}
+	if r.Preferred_node_id != "" {
+		q.Set("preferred_node_id", r.Preferred_node_id)
 	}
 	if r.Game != "" {
 		q.Set("game", r.Game)

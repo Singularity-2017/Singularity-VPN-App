@@ -11,7 +11,7 @@ import (
 
 func Test_a_strategy_is_kept_and_reported_back(t *testing.T) {
 	f := new_fixture(t)
-	want := ipc.Strategy{Anonymity: "standard", Bypass: true, Country: "DE"}
+	want := ipc.Strategy{Anonymity: "standard", Bypass: true, Country: "DE", Node_id: "node-2", Pinned: true}
 	if err := f.app.Set_strategy(context.Background(), want); err != nil {
 		t.Fatalf("Set_strategy() error = %v", err)
 	}
@@ -71,13 +71,13 @@ func Test_the_server_list_needs_a_signed_in_device_and_passes_through(t *testing
 func Test_sign_out_forgets_the_server_picked_by_hand_and_keeps_the_goals(t *testing.T) {
 	f := new_fixture(t)
 	sign_in(t, f)
-	if err := f.app.Set_strategy(context.Background(), ipc.Strategy{Bypass: true, Node_id: "node-2"}); err != nil {
+	if err := f.app.Set_strategy(context.Background(), ipc.Strategy{Bypass: true, Node_id: "node-2", Pinned: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.app.Sign_out(context.Background()); err != nil {
 		t.Fatalf("Sign_out() error = %v", err)
 	}
-	if got, _ := f.app.Strategy(context.Background()); got.Node_id != "" || !got.Bypass {
-		t.Fatalf("strategy after sign-out = %+v; want the server forgotten and bypass kept", got)
+	if got, _ := f.app.Strategy(context.Background()); got.Node_id != "" || got.Pinned || !got.Bypass {
+		t.Fatalf("strategy after sign-out = %+v; want server and pin forgotten and bypass kept", got)
 	}
 }

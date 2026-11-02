@@ -176,6 +176,9 @@
       <div class="server">
         <div class="server-head">
           <span class="server-label">Сервер</span>
+          <button type="button" class="server-gear" id="server-settings-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="server-policy" data-tip="Выбор сервера" aria-label="Выбор сервера">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          </button>
         </div>
         <button class="chip" id="chip" aria-haspopup="listbox" aria-expanded="false">
           <span class="chip-flag" id="chip-flag"></span>
@@ -185,6 +188,11 @@
           </span>
           <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </button>
+        <div class="pop server-policy-pop" id="server-policy" role="listbox" aria-label="Выбранный сервер" hidden>
+          <div class="pop-title">Выбранный сервер</div>
+          <button type="button" class="opt line" role="option" aria-selected="false" data-server-policy="preferred" data-tip="Сервер предпочтителен. Если он недоступен или связь на нём пропадёт, приложение автоматически переключится на другой."><span class="opt-name">Предпочитаемый</span></button>
+          <button type="button" class="opt line" role="option" aria-selected="false" data-server-policy="pinned" data-tip="Сервер жёстко закреплён. Если он недоступен или связь на нём пропадёт, приложение не переключится на другой."><span class="opt-name">Закреплённый</span></button>
+        </div>
         <div class="pop list server-pop" id="servers" role="listbox" aria-label="Страна и сервер" hidden>
           <div id="server-list"></div>
           <div class="pop-note" id="servers-note" hidden></div>
@@ -277,6 +285,9 @@
 <script src="help.js"></script>
 <script src="statistics.js"></script>
 <script src="about.js"></script>
+<script src="tips.js"></script>
+<script src="servers.js"></script>
+<script src="journal.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

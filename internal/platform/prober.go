@@ -36,7 +36,7 @@ const Default_udp_queries = 8
 // to a game.
 const (
 	udp_query_spacing = 20 * time.Millisecond
-	udp_timeout       = time.Second
+	udp_timeout       = 2 * time.Second
 )
 
 // Network_prober is a diagnostics.Prober that measures a real connection: it

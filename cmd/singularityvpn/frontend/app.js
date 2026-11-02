@@ -17,8 +17,15 @@
 
   const screens = ["screen-wait", "screen-service", "screen-untrusted", "screen-signin", "screen-main"];
   // The anonymity levels' pop-up is out of the window with the goal tiles.
-  const pops = ["menu", "help", "settings", "servers", "protocol" /* , "levels" */];
-  const pop_owner = { help: "help-button", menu: "menu-button", settings: "settings-button", servers: "chip", protocol: "protocol-chip" /* , levels: "goal-anonymity" */ };
+  const pops = ["menu", "help", "settings", "servers", "protocol", "server-policy" /* , "levels" */];
+  const pop_owner = {
+    help: "help-button",
+    menu: "menu-button",
+    settings: "settings-button",
+    servers: "chip",
+    protocol: "protocol-chip",
+    "server-policy": "server-settings-button" /* , levels: "goal-anonymity" */
+  };
   // What the button says. Connected or not is the ring and this label;
   // nothing else on the screen repeats it.
   const power_text = {
@@ -60,19 +67,12 @@
 
   let view = null;
   let strategy = null; // as the service last reported it; null until read
-  let servers = null;  // the last server list; null until fetched
   let busy = false;
   let loading_strategy = false;
   let strategy_unsupported = false; // a service too old to know the command
   let tunnel = null;    // "vpn" or "antizapret" as the service last reported it; null until read
   let loading_tunnel = false;
   let tunnel_unsupported = false;
-  let journal_entries = null; // the service's operations, oldest first; null until read
-  let journal_unsupported = false;
-  let journal_error = false;
-  let compact_journal = false;
-  try { compact_journal = localStorage.getItem("compact.panel") === "journal"; } catch (e) {}
-  let loading_journal = false;
   let in_match = false; // a game is in a match: moving the tunnel now would end it
   let games = null;     // the game cards as the service last reported them; null until read
   let loading_games = false;
@@ -90,70 +90,23 @@
   let analysis_request = 0; // the newest analysis call; an older answer is dropped
   let main_active = false;  // the main screen is showing; set on the way in
   let expanded = wide_query.matches;
-  let pings = {};       // node_id -> { rtt, at }: answers to the service's echoes
-  let ping_timer = 0;
-  let ping_pending = false;
-  const open_groups = new Set(); // countries unfolded in the server menu
-  const region_names = make_region_names("ru");
-  const english_names = make_region_names("en");
 
-  function make_region_names(locale) {
-    try { return new Intl.DisplayNames([locale], { type: "region" }); } catch (e) { return null; }
-  }
-  function region_name(names, code) {
-    try { return (names && names.of(code)) || ""; } catch (e) { return ""; }
-  }
+  const servers_ui = window.servers_ui;
+  const country_of = (raw) => servers_ui.country_of(raw);
+  const short_name = (name, raw_country, city) => servers_ui.short_name(name, raw_country, city);
+  const flag_into = (el, code) => servers_ui.flag_into(el, code);
+  const server_by_id = (id) => servers_ui.server_by_id(id);
+  const node_label = (id) => servers_ui.node_label(id);
+  const load_servers = () => servers_ui.load_servers();
+  const render_server_menu = () => servers_ui.render_server_menu();
+  const render_server_policy = () => servers_ui.render_server_policy();
+  const open_servers = () => servers_ui.open_servers();
 
-  // country_of is a country field as the menu shows it: an ISO code when
-  // one can be made of it, and the Russian name -- or the field as typed
-  // when it names no country this page knows.
-  function country_of(raw) {
-    const code = flags.country_code(raw);
-    return { code, name: code ? (region_name(region_names, code) || code) : String(raw || "") };
-  }
-
-  // short_name drops the country off the front of a server's name: under
-  // Германия, "Germany X" is "X". A name that is nothing but its country
-  // falls back to the city, then to itself.
-  function short_name(name, raw_country, city) {
-    if (!name) return city || "";
-    const code = flags.country_code(raw_country);
-    const spellings = [raw_country, code, region_name(region_names, code), region_name(english_names, code)]
-      .concat(flags.names_for(code))
-      .filter(Boolean)
-      .map((w) => String(w).toLowerCase())
-      .sort((a, b) => b.length - a.length);
-    const lower = name.toLowerCase();
-    for (const w of spellings) {
-      if (lower === w) return city || name;
-      if (lower.startsWith(w) && /[\s\-_·.,:]/.test(name.charAt(w.length))) {
-        const rest = name.slice(w.length).replace(/^[\s\-_·.,:]+/, "");
-        if (rest) return rest;
-      }
-    }
-    return name;
-  }
-
-  function server_icon() {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", "server-icon");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("aria-hidden", "true");
-    svg.innerHTML = '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>';
-    return svg;
-  }
-
-  function flag_into(el, code) {
-    el.textContent = "";
-    const svg = flags.flag_svg(code);
-    if (svg) { el.innerHTML = svg; return; }
-    if (!code) return;
-    // No flag drawn for it: the honest two letters instead.
-    const box = document.createElement("span");
-    box.className = "flag code";
-    box.textContent = code;
-    el.append(box);
-  }
+  const journal_ui = window.journal_ui;
+  const load_journal = () => journal_ui.load();
+  const render_journal = () => journal_ui.render();
+  const toggle_journal = () => journal_ui.toggle();
+  const journal_line = (e) => journal_ui.line(e);
 
   function load_expanded() {
     try { return localStorage.getItem("expanded") === "1"; } catch (e) { return false; }
@@ -236,10 +189,6 @@
 
   const protocol_names = { wireguard: "WireGuard", amneziawg: "AmneziaWG", openvpn: "OpenVPN" };
 
-  function server_by_id(id) {
-    return (servers || []).find((s) => s.node_id === id) || null;
-  }
-
   function ms(value) {
     return value === undefined || value === null ? "" : Math.round(value) + " мс";
   }
@@ -312,12 +261,13 @@
     row_time("measured", status.measured_at);
 
     render_mode(status, s);
+    render_server_policy();
     // render_goals(status, s);
     $("gamer").setAttribute("aria-checked", gamer ? "true" : "false");
     render_account(status);
     render_games();
     render_blocks();
-    if ((expanded || compact_journal) && !journal_unsupported) load_journal();
+    if (expanded || journal_ui.is_compact()) load_journal();
     render_journal();
 
     $("window").classList.toggle("expanded", expanded);
@@ -334,7 +284,7 @@
   let fitted_layout = "";
   function fit_height_when_layout_changes() {
     if (expanded) { fitted_layout = ""; return; }
-    const layout = [gamer, games ? games.length : -1, compact_journal].join("|");
+    const layout = [gamer, games ? games.length : -1, journal_ui.is_compact()].join("|");
     if (layout === fitted_layout) return;
     fitted_layout = layout;
     setTimeout(fit_height, 0);
@@ -393,8 +343,8 @@
     badge.className = "chip-badge auto";
     badge.textContent = s.country ? "Авто" : "Авто · страна";
     badge.dataset.tip = s.country
-      ? "Сервер в этой стране выбирается автоматически и меняется, если перестал работать. Чтобы закрепить, выберите сервер в списке."
-      : "Страна и сервер выбираются автоматически и меняются, если сервер перестал работать. Чтобы закрепить, выберите страну или сервер в списке.";
+      ? "Сервер в этой стране выбирается автоматически и меняется, если перестал работать. Обычный щелчок по серверу в списке сделает его предпочтительным, Ctrl+щелчок — закреплённым."
+      : "Страна и сервер выбираются автоматически и меняются, если сервер перестал работать. Обычный щелчок по серверу в списке сделает его предпочтительным, Ctrl+щелчок — закреплённым.";
     $("chip").classList.toggle("auto", auto && strategy !== null);
     flag_into($("chip-flag"), code);
     set_text("place", title);
@@ -610,16 +560,9 @@
     if (answer && answer.error && answer.error.code === "unknown_command") strategy_unsupported = true;
     if (answer && answer.strategy) {
       strategy = answer.strategy;
-      if (strategy.node_id && servers === null) load_servers().then(render);
+      if (strategy.node_id && servers_ui.get_servers() === null) load_servers().then(render);
       render();
     }
-  }
-
-  async function load_servers() {
-    let answer;
-    try { answer = await backend().Servers(); } catch (e) { answer = { error: { code: "failed", message: String(e) } }; }
-    if (answer && !answer.error) servers = answer.servers || [];
-    return answer || { error: { code: "failed" } };
   }
 
   function show_error(id, outcome) {
@@ -667,13 +610,18 @@
   async function change(edit) {
     if (strategy === null || busy) return;
     const next = Object.assign({}, strategy, edit);
+    if ("node_id" in edit && !("pinned" in edit)) next.pinned = false;
+    if (!next.node_id) next.pinned = false;
     if (strategy.anonymity === "high" && next.anonymity !== "high") {
       if (!(await ask("Снять высокий уровень анонимности?", "Снять"))) return;
     }
     // A match ends when the tunnel moves to another server. Pinning the
     // server already connected to moves nothing.
     const live = view && view.status && view.status.session_id ? view.status.protocol || "" : "";
-    const moves = ("node_id" in edit && edit.node_id !== live_node()) || ("country" in edit && edit.country !== strategy.country) ||
+    const pin_forces_move = "pinned" in edit && edit.pinned && strategy.node_id && strategy.node_id !== live_node();
+    const moves = ("node_id" in edit && edit.node_id !== live_node()) ||
+      pin_forces_move ||
+      ("country" in edit && edit.country !== strategy.country) ||
       ("protocol" in edit && edit.protocol && edit.protocol !== live);
     if (in_match && moves) {
       if (!(await ask("Идёт матч. Сменить сервер? Матч прервётся.", "Сменить"))) return;
@@ -756,33 +704,6 @@
   }
 
   // --- the journal -------------------------------------------------------
-  // The service's operations in words: what was asked, which server and
-  // protocol were tried, what failed and why. The service keeps them in
-  // its own terms; the sentences are made here.
-
-  async function load_journal() {
-    if (loading_journal || journal_unsupported) return;
-    const app = backend();
-    if (!app || typeof app.Journal !== "function") { journal_unsupported = true; return; }
-    loading_journal = true;
-    render_journal();
-    let answer = null;
-    try { answer = await app.Journal(); } catch (e) { answer = null; } finally { loading_journal = false; }
-    if (answer && answer.error && answer.error.code === "unknown_command") { journal_unsupported = true; render_journal(); return; }
-    journal_error = !answer || !!answer.error;
-    if (answer && !answer.error) {
-      journal_entries = answer.entries || [];
-      if (servers === null && journal_entries.some((e) => e.attrs && e.attrs.node_id)) load_servers().then(render_journal);
-    }
-    render_journal();
-  }
-
-  function node_label(id) {
-    const s = server_by_id(id);
-    if (!s) return id ? "сервер " + id.slice(0, 8) : "сервер";
-    const c = country_of(s.country);
-    return c.name ? c.name + " · " + label_of(s) : label_of(s);
-  }
 
   function protocol_label(p) {
     return protocol_names[p] || p || "";
@@ -811,161 +732,6 @@
   }
 
   const tunnel_text = { vpn: "весь трафик", antizapret: "Антизапрет", games: "игры и Антизапрет" };
-
-  const event_text = {
-    profile_changed: ["Профиль изменён", "ok"],
-    network_changed: ["Сеть изменилась", "net"],
-    connection_established: ["Подключено", "ok"],
-    connection_lost: ["Связь с сервером потеряна", "warn"],
-    connection_degraded: ["Проверяем соединение", "warn"],
-    switch_started: ["Переключение", ""],
-    switch_completed: ["Переключено", "ok"],
-    switch_failed: ["Переключиться не удалось", "warn"]
-  };
-
-  // journal_line turns one entry into [text, tone, tip]. An entry the
-  // window has no words for -- a warning added to the service later -- is
-  // shown as the service wrote it rather than hidden.
-  function journal_line(e) {
-    const a = e.attrs || {};
-    const p = protocol_label(a.protocol);
-    switch (e.message) {
-      case "service starting": return ["Служба запущена", ""];
-      case "service stopped": return ["Служба остановлена", ""];
-      case "service stopped with an error": return ["Служба остановлена с ошибкой", "warn", a.error];
-      case "service ended without stopping": return ["Служба завершилась, не остановившись: сбой или выключение компьютера", "warn"];
-      case "connect requested": return [a.node_id ? "Подключение к " + node_label(a.node_id) : "Подключение, сервер выбирается автоматически", ""];
-      case "disconnect requested": return ["Отключение по вашей команде", ""];
-      case "the control plane moved; its address came from a signed manifest":
-        return ["Сервер управления переехал — новый адрес взят из подписанного обновления", ""];
-      case "control plane recommendation": {
-        const why = reason_text[a.reason] ? ", " + reason_text[a.reason] : "";
-        return ["Сервер: " + node_label(a.node_id) + why + "; рекомендован " + p, ""];
-      }
-      case "using an offered alternative this build speaks":
-        return ["Пробуем " + p + " вместо рекомендованного", ""];
-      case "leaving aside what this network reported or keeps losing":
-        return ["Протоколы, которые в этой сети отваливались или о которых вы сообщали, пробуются последними", ""];
-      case "the connection keeps dropping; moving to another protocol": {
-        const to = [a.next_node_id && a.next_node_id !== a.node_id ? node_label(a.next_node_id) : "", protocol_label(a.next_protocol)].filter(Boolean).join(", ");
-        return [p + ": связь то и дело пропадает — переходим на " + (to || "другой протокол"), "warn"];
-      }
-      case "the connection keeps dropping; there is nothing else to move to":
-        return [p + ": связь то и дело пропадает, а перейти не на что", "warn", a.reason];
-      case "the connection keeps dropping after a move for drops; staying":
-        return [p + " пропадает так же часто — дело не в протоколе. Следующая смена не раньше чем через час", "warn"];
-      case "the connection moved to did not hold; going back":
-        return [p + " не удержался — возвращаемся на " + protocol_label(a.back_protocol), "warn"];
-      case "the connection failed": return ["Не подключено — нажмите «Подключиться»", "warn", a.error];
-      case "openvpn event": return window.health_text.openvpn(a.event);
-      case "using the offered protocol that worked last on this node":
-        return ["Пробуем " + p + ": в прошлый раз на этом сервере сработал он", ""];
-      case "verification failed":
-        return [p + " поднят, но трафик не идёт: " + transport_text(a.transport) + ". Пробуем дальше", "warn", a.transport];
-      case "reconnected at start: the machine was left connected": return ["Подключение восстановлено после запуска", "ok"];
-      case "retry on the same node failed to connect": return ["Переподключиться к тому же серверу не удалось", "warn", a.err];
-      case "retry on the same node failed verification": return ["Переподключились к тому же серверу, но трафик не идёт", "warn", a.err];
-      case "network changed; moving the endpoint route failed": return ["Сеть изменилась, а маршрут к серверу перенести не удалось", "warn", a.error];
-      case "strategy set": {
-        const parts = [a.node_id ? "сервер закреплён: " + node_label(a.node_id) : "сервер — автоматически"];
-        if (a.protocol) parts.push("протокол: " + (protocol_names[a.protocol] || a.protocol));
-        if (a.route === "true") parts.push("самый быстрый маршрут");
-        if (a.bypass === "true") parts.push("обход блокировок");
-        if (a.anonymity) parts.push("анонимность: " + (level_text[a.anonymity] || a.anonymity).toLowerCase());
-        if (a.country) parts.push("страна: " + (country_of(a.country).name || a.country));
-        return ["Настройки: " + parts.join(", "), ""];
-      }
-      case "games set": {
-        const ids = list_of(a.games);
-        const names = ids.map((id) => ((games || []).find((g) => g.id === id) || {}).name || id);
-        return [names.length ? "Через сервер идут игры: " + names.join(", ") : "Игры выключены", ""];
-      }
-      case "tunnel mode set": return ["Режим: " + (a.mode === "antizapret" ? "Антизапрет" : "VPN"), ""];
-      case "game router started": return ["Игры отделены от остального трафика", "ok"];
-      case "game router stopped": return ["Разделение игр остановлено", ""];
-      case "game router: capture stopped; games go direct until the next connect":
-        return ["Перехват игр остановился — до следующего подключения игры идут напрямую", "warn", a.error];
-      case "event": {
-        if (a.kind === "connection_degraded") return [window.health_text.degraded(a), "warn"];
-        // One bad sample the next check did not confirm: still a failure.
-        if (a.kind === "connection_blip") return ["Короткий провал · " + window.health_text.degraded(a), "warn"];
-        if (a.kind === "switch_started" && a.to_protocol) {
-          const to = [a.to_node_id && a.to_node_id !== a.node_id ? node_label(a.to_node_id) : "", protocol_label(a.to_protocol)].filter(Boolean).join(", ");
-          return ["Переключение на " + to, ""];
-        }
-        const t = event_text[a.kind];
-        if (!t) return [a.kind, ""];
-        // A tunnel that came up says where and how.
-        if (a.node_id && (a.kind === "connection_established" || a.kind === "switch_completed")) {
-          const how = [node_label(a.node_id), p, tunnel_text[a.tunnel]].filter(Boolean).join(", ");
-          return [t[0] + ": " + how, t[1]];
-        }
-        // A failed switch says why on hover.
-        return [t[0], t[1], a.error];
-      }
-    }
-    const detail = Object.keys(a).map((k) => k + "=" + a[k]).join(" ");
-    return [e.message, e.level === "info" ? "" : "warn", detail];
-  }
-
-  const is_blip = (e) => e.message === "event" && !!e.attrs && e.attrs.kind === "connection_blip";
-  const clock_time = (at) => new Date(at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  function span_text(ms) {
-    const minutes = Math.max(1, Math.round(ms / 60000));
-    return minutes < 60 ? minutes + " мин" : Math.round(minutes / 60) + " ч";
-  }
-
-  function render_journal() {
-    const box = $("journal");
-    const show = expanded ? !!(journal_entries && journal_entries.length) : compact_journal;
-    const parent = expanded ? document.querySelector(".side") : $("games");
-    if (box.parentElement !== parent) parent.append(box);
-    $("compact-journal").hidden = expanded;
-    $("compact-journal").setAttribute("aria-expanded", String(!expanded && compact_journal));
-    $("journal-title").disabled = expanded;
-    $("journal-note").textContent = journal_unsupported || journal_error ? "Журнал недоступен" : journal_entries === null && loading_journal ? "Загрузка…" : !journal_entries || !journal_entries.length ? "Записей пока нет" : "";
-    $("journal-note").hidden = !$("journal-note").textContent;
-    $("journal-retry").hidden = !journal_error || journal_unsupported;
-    box.hidden = !show;
-    if (!show) return;
-    const entries = journal_entries || [];
-    // A problem the journal shows can be reported from it for as long as it
-    // is there, not only while it is fresh enough to count as failing now.
-    $("journal-report").hidden = !entries.some((e) => Date.parse(e.at) > reported_at && journal_line(e)[1] === "warn");
-    const list = $("journal-list");
-    const key = entries.length + ":" + (entries[entries.length - 1] || {}).at + ":" + (servers ? servers.length : -1);
-    if (list.dataset.key === key) return;
-    list.dataset.key = key;
-    list.textContent = "";
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const e = entries[i];
-      let [text, tone, tip] = journal_line(e);
-      // Short blips with nothing between them are one line. Each is still
-      // counted in the statistics, and each is listed on hover.
-      let run = 1;
-      while (is_blip(e) && i - run >= 0 && is_blip(entries[i - run])) run++;
-      if (run > 1) {
-        const lines = [];
-        for (let k = i; k > i - run; k--) lines.push(clock_time(entries[k].at) + " — " + journal_line(entries[k])[0].replace(/^Короткий провал · /, ""));
-        text = "Короткие провалы ×" + run + " за " + span_text(Date.parse(e.at) - Date.parse(entries[i - run + 1].at));
-        tip = lines.slice(0, 12).join("\n") + (lines.length > 12 ? "\n…и ещё " + (lines.length - 12) : "");
-        i -= run - 1;
-      }
-      const li = document.createElement("li");
-      if (tone) li.className = tone;
-      const when = document.createElement("span");
-      when.className = "when";
-      when.dataset.time = e.at;
-      when.dataset.tip = full_date(e.at);
-      when.textContent = ago(e.at);
-      const what = document.createElement("span");
-      what.className = "what";
-      what.textContent = text;
-      if (tip) what.dataset.tip = tip;
-      li.append(when, what);
-      list.append(li);
-    }
-  }
 
   // --- games ---------------------------------------------------------------
   // Shown in gamer mode only. A card per game the catalog offers: pressing
@@ -1002,44 +768,8 @@
     try { gamer = !!(app && typeof app.Gamer_default === "function" && await app.Gamer_default()); } catch (e) { gamer = false; }
   }
 
-  // A window made so short that the journal has under two lines left folds
-  // it back to the games. Only shrinking does: a journal just opened, before
-  // the window has grown for it, is not folded.
-  const journal_min_px = 48;
-  let last_window_height = 0;
-  new ResizeObserver(() => {
-    const height = $("window").clientHeight;
-    const shrank = height < last_window_height;
-    last_window_height = height;
-    if (!shrank || expanded || !compact_journal || $("journal").hidden || $("window").classList.contains("measuring")) return;
-    if ($("journal-list").getBoundingClientRect().height < journal_min_px) toggle_journal();
-  }).observe($("window"));
-
-  function toggle_journal() {
-    const old = compact_journal ? $("journal") : $("game-cards");
-    const parent = $("games");
-    const rect = old.getBoundingClientRect(), base = parent.getBoundingClientRect();
-    const snapshot = old.cloneNode(true);
-    snapshot.removeAttribute("id");
-    snapshot.querySelectorAll("[id]").forEach(el => el.removeAttribute("id"));
-    snapshot.setAttribute("aria-hidden", "true");
-    snapshot.inert = true;
-    snapshot.style.cssText = `position:absolute;left:${rect.left-base.left}px;top:${rect.top-base.top}px;width:${rect.width}px;height:${rect.height}px;pointer-events:none;z-index:1;`;
-    compact_journal = !compact_journal;
-    try { localStorage.setItem("compact.panel", compact_journal ? "journal" : "games"); } catch (e) {}
-    render();
-    const next = compact_journal ? $("journal") : $("game-cards");
-    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      parent.append(snapshot);
-      const duration = 100;
-      next.animate([{ opacity: 0 }, { opacity: 1 }], { duration, easing: "ease-out" });
-      snapshot.animate([{ opacity: 1 }, { opacity: 0 }], { duration, easing: "ease-out" }).finished.then(() => snapshot.remove(), () => snapshot.remove());
-    }
-    if (!compact_journal) $("compact-journal").focus();
-  }
-
   function toggle_gamer() {
-    if (!expanded && compact_journal) { toggle_journal(); return; }
+    if (!expanded && journal_ui.is_compact()) { toggle_journal(); return; }
     gamer = !gamer;
     try { localStorage.setItem("gamer", gamer ? "1" : "0"); } catch (e) { /* kept for this run only */ }
     if (!$("settings").hidden) render_themes();
@@ -1194,9 +924,9 @@
   // The games section stands whenever the catalog offers a game: its
   // heading is the gamer mode switch, and the cards show in gamer mode.
   function render_games() {
-    $("games").hidden = !(gamer !== null && games && games.length) && !(!expanded && compact_journal);
+    $("games").hidden = !(gamer !== null && games && games.length) && !(!expanded && journal_ui.is_compact());
     $("gamer").hidden = !(games && games.length);
-    $("game-cards").hidden = !gamer || (!expanded && compact_journal);
+    $("game-cards").hidden = !gamer || (!expanded && journal_ui.is_compact());
     if ($("games").hidden || !gamer) return;
     const st = view && view.status ? view.status.state : "";
     const box = $("game-cards");
@@ -1443,277 +1173,6 @@
   // servers, its first line picks the country itself and leaves the server
   // to automatic choice, and any server below picks that server.
 
-  // group_servers puts the servers under their countries, the countries in
-  // the order of their Russian names; servers with no country come last.
-  function group_servers() {
-    const groups = new Map();
-    for (const server of servers || []) {
-      const c = country_of(server.country);
-      const key = c.code || c.name;
-      if (!groups.has(key)) groups.set(key, { key, code: c.code, name: c.name, servers: [] });
-      groups.get(key).servers.push(server);
-    }
-    const list = Array.from(groups.values());
-    for (const g of list) {
-      g.servers.sort((a, b) => label_of(a).localeCompare(label_of(b), "ru"));
-    }
-    return list.sort((a, b) => {
-      if (!a.name !== !b.name) return a.name ? -1 : 1;
-      return a.name.localeCompare(b.name, "ru");
-    });
-  }
-
-  function label_of(server) {
-    const c = country_of(server.country);
-    return (c.name ? short_name(server.name, server.country, server.city) : server.name) || server.city || server.node_id;
-  }
-
-  // group_ping is the country's best answer: the lowest of the fresh ones,
-  // or else the lowest of the newest round any of its servers answered.
-  function group_ping(group) {
-    let best = null;
-    for (const server of group.servers) {
-      const p = server.available ? pings[server.node_id] : null;
-      if (!p) continue;
-      if (best === null || p.at > best.at + ping_keep_ms || (Math.abs(p.at - best.at) <= ping_keep_ms && p.rtt < best.rtt)) best = p;
-    }
-    return best;
-  }
-
-  const ping_tip = "Ping с этого компьютера напрямую, мимо туннеля; пока меню открыто, обновляется раз в 5 секунд.";
-
-  // ping_into writes a ping as its number, followed by how long ago it was
-  // taken once it is no longer this second's; the full date is the hint.
-  function ping_into(el, p) {
-    if (!p) { el.textContent = ""; el.dataset.tip = ping_tip; return; }
-    const at = new Date(p.at).toISOString();
-    const fresh = Date.now() - p.at < ping_keep_ms;
-    el.textContent = ms(p.rtt) + (fresh ? "" : " · " + ago(at));
-    el.classList.toggle("stale", !fresh);
-    el.dataset.tip = ping_tip + (fresh ? "" : " Замер: " + full_date(at) + ".");
-  }
-
-  function ping_span(kind, key) {
-    const span = document.createElement("span");
-    span.className = "ping num";
-    span.dataset[kind] = key;
-    span.dataset.tip = ping_tip;
-    return span;
-  }
-
-  // The last answer of every server is kept between runs: a number with the
-  // moment it was measured is a measurement, however old.
-  function load_pings() {
-    try {
-      const saved = JSON.parse(localStorage.getItem("pings") || "{}");
-      for (const id of Object.keys(saved)) {
-        const p = saved[id];
-        if (p && typeof p.rtt === "number" && typeof p.at === "number") pings[id] = { rtt: p.rtt, at: p.at };
-      }
-    } catch (e) { /* a convenience */ }
-  }
-  function save_pings() {
-    try { localStorage.setItem("pings", JSON.stringify(pings)); } catch (e) { /* a convenience */ }
-  }
-
-  // live_node is the server the tunnel is on now, or "".
-  function live_node() {
-    const st = view && view.status;
-    return st && st.session_id ? st.node_id || "" : "";
-  }
-
-  // auto_option is the automatic choice in the list, drawn as the same
-  // badge the server plate wears when it is chosen automatically, after
-  // what it chooses: a country or a server.
-  function auto_option(what, selected, tip, on_pick) {
-    const b = option(what + " ", selected, on_pick);
-    const badge = document.createElement("span");
-    badge.className = "chip-badge auto";
-    badge.textContent = "Авто";
-    b.querySelector(".opt-name").append(badge);
-    b.dataset.tip = tip;
-    return b;
-  }
-
-  function option(text, selected, on_pick) {
-    const b = document.createElement("button");
-    b.className = "opt line";
-    b.setAttribute("role", "option");
-    b.setAttribute("aria-selected", selected ? "true" : "false");
-    const name = document.createElement("span");
-    name.className = "opt-name";
-    name.textContent = text;
-    b.append(name);
-    b.addEventListener("click", on_pick);
-    return b;
-  }
-
-  function render_server_menu() {
-    const list = $("server-list");
-    if (servers === null) return;
-    const scroll = $("servers").scrollTop;
-    list.textContent = "";
-    const s = strategy || {};
-    const auto = !s.node_id;
-    const strategy_code = flags.country_code(s.country);
-    const live = live_node();
-
-    list.append(auto_option("Страна", auto && !strategy_code, "Страна и сервер выбираются автоматически.", () => change({ country: "", node_id: "" })));
-
-    for (const group of group_servers()) {
-      const open = open_groups.has(group.key);
-      const head = document.createElement("button");
-      head.className = "group";
-      head.setAttribute("aria-expanded", open ? "true" : "false");
-      head.classList.toggle("picked", auto && !!group.code && group.code === strategy_code);
-      head.classList.toggle("live", !!live && group.servers.some((x) => x.node_id === live));
-      head.innerHTML = '<svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
-      const flag = document.createElement("span");
-      flag.className = "group-flag";
-      flag_into(flag, group.code);
-      const name = document.createElement("span");
-      name.className = "group-name";
-      name.textContent = group.name || "Без страны";
-      const count = document.createElement("span");
-      count.className = "group-count num";
-      count.textContent = String(group.servers.length);
-      head.append(flag, name, count, ping_span("group", group.key));
-      head.addEventListener("click", () => {
-        if (open_groups.has(group.key)) open_groups.delete(group.key);
-        else open_groups.add(group.key);
-        render_server_menu();
-      });
-      list.append(head);
-      if (!open) continue;
-
-      // Under an open country its servers hang off a line drawn from the
-      // flag; the stretch of it leading to the server connected to is lit.
-      const rows = [];
-      // The country itself can only be asked for by its code.
-      if (group.code) {
-        rows.push(auto_option("Сервер", auto && group.code === strategy_code, "Сервер в этой стране выбирается автоматически.", () => change({ country: group.code, node_id: "" })));
-      }
-      for (const server of group.servers) {
-        const b = option(label_of(server), s.node_id === server.node_id, () => change({ node_id: server.node_id }));
-        if (server.node_id === live) {
-          b.classList.add("live");
-          b.dataset.tip = "Подключено к этому серверу.";
-          const dot = document.createElement("span");
-          dot.className = "live-dot";
-          b.append(dot);
-        }
-        b.disabled = !server.available;
-        if (server.available) {
-          b.append(ping_span("node", server.node_id));
-        } else {
-          const off = document.createElement("span");
-          off.className = "ping";
-          off.textContent = "недоступен";
-          b.append(off);
-        }
-        rows.push(b);
-      }
-      const live_at = rows.findIndex((b) => b.classList.contains("live"));
-      rows.forEach((b, i) => {
-        b.classList.add("inner");
-        b.classList.toggle("trail", i < live_at);
-        b.classList.toggle("last", i === rows.length - 1);
-        list.append(b);
-      });
-    }
-    update_pings();
-    $("servers").scrollTop = scroll;
-  }
-
-  // update_pings rewrites only the numbers, so the menu does not rebuild
-  // under the pointer at every ping.
-  function update_pings() {
-    for (const el of $("server-list").querySelectorAll("[data-node]")) {
-      ping_into(el, pings[el.dataset.node]);
-    }
-    const groups = new Map(group_servers().map((g) => [g.key, g]));
-    for (const el of $("server-list").querySelectorAll("[data-group]")) {
-      const g = groups.get(el.dataset.group);
-      ping_into(el, g ? group_ping(g) : null);
-    }
-  }
-
-  async function ping_once() {
-    if (ping_pending) return;
-    ping_pending = true;
-    let answer = null;
-    try { answer = await backend().Ping_servers(); } catch (e) { answer = null; } finally { ping_pending = false; }
-    if (!answer || answer.error) return;
-    const now = Date.now();
-    for (const p of answer.pings || []) {
-      if (typeof p.rtt_ms === "number") pings[p.node_id] = { rtt: p.rtt_ms, at: now };
-    }
-    save_pings();
-    if (!$("servers").hidden) update_pings();
-  }
-
-  // While the menu is open every server is pinged every five seconds; while
-  // it is closed, once in a while, so the numbers it opens with are recent.
-  function start_pings() {
-    stop_pings();
-    ping_once();
-    ping_timer = setInterval(ping_once, 5000);
-  }
-  function stop_pings() {
-    if (ping_timer) clearInterval(ping_timer);
-    ping_timer = 0;
-  }
-  function background_ping() {
-    if (ping_timer || !main_active || document.hidden) return;
-    ping_once();
-  }
-
-  // place_menu opens the menu on whichever side of the chip has the room,
-  // and no taller than that room.
-  function place_menu() {
-    const pop = $("servers");
-    const chip = $("chip").getBoundingClientRect();
-    const below = window.innerHeight - chip.bottom - 12;
-    const above = chip.top - 12;
-    const down = below >= 240 || below >= above;
-    pop.classList.toggle("up", !down);
-    pop.style.maxHeight = Math.max(160, Math.min(420, down ? below : above)) + "px";
-  }
-
-  async function open_servers() {
-    if (!$("servers").hidden) { close_pops(); return; }
-    close_pops();
-    open_pop("servers", "chip");
-    place_menu();
-    const note = $("servers-note");
-    if (servers === null) {
-      set_text("server-list", "");
-      note.hidden = false;
-      note.textContent = "Загружаем список…";
-    }
-    const request = ++list_request;
-    const answer = await load_servers();
-    if (request !== list_request || $("servers").hidden) return;
-    if (answer.error) {
-      note.hidden = false;
-      note.textContent = "Список не загрузился: " + (answer.error.message || answer.error.code);
-      return;
-    }
-    note.hidden = servers.length > 0;
-    note.textContent = "Серверов нет.";
-    // Unfold where the choice is now: the picked server's country, the
-    // country automatic choice keeps to, or the one connected to.
-    const s = strategy || {};
-    const picked = server_by_id(s.node_id);
-    const here = picked ? picked.country : (s.country || (view && view.status && view.status.country) || "");
-    const c = country_of(here);
-    if (c.code || c.name) open_groups.add(c.code || c.name);
-    const groups = group_servers();
-    if (groups.length === 1) open_groups.add(groups[0].key);
-    render_server_menu();
-    start_pings();
-  }
-
   // The switch after "Сервер": on means the control plane picks, which
   // also moves the connection off a server that dies. Turning it off keeps
   // the server the tunnel is on -- the service sees the same node and does
@@ -1739,63 +1198,11 @@
   function close_pop(id) {
     $(id).hidden = true;
     $(pop_owner[id]).setAttribute("aria-expanded", "false");
-    if (id === "servers") stop_pings();
+    if (id === "servers") servers_ui.stop_pings();
   }
 
   function close_pops() {
     for (const id of pops) close_pop(id);
-  }
-
-  // --- hints -------------------------------------------------------------
-  // A hint belongs to the thing it explains: it shows on hovering or
-  // focusing that thing, never as text printed somewhere apart from it.
-
-  let tip_target = null;
-  let tip_timer = 0;
-
-  function show_tip(el) {
-    const text = el.dataset.tip;
-    if (!text || !el.isConnected) return;
-    const tip = $("tip");
-    tip.textContent = text;
-    tip.hidden = false;
-    const r = el.getBoundingClientRect();
-    const t = tip.getBoundingClientRect();
-    const left = Math.max(8, Math.min(r.left + r.width / 2 - t.width / 2, window.innerWidth - t.width - 8));
-    let top = r.bottom + 8;
-    if (top + t.height > window.innerHeight - 8) top = r.top - t.height - 8;
-    tip.style.left = left + "px";
-    tip.style.top = Math.max(8, top) + "px";
-  }
-
-  function hide_tip() {
-    clearTimeout(tip_timer);
-    tip_target = null;
-    $("tip").hidden = true;
-  }
-
-  function tip_owner(node) {
-    return node && node.closest ? node.closest("[data-tip]") : null;
-  }
-
-  function watch_tips() {
-    document.addEventListener("pointerover", (e) => {
-      const el = tip_owner(e.target);
-      if (el === tip_target) return;
-      hide_tip();
-      if (!el) return;
-      tip_target = el;
-      tip_timer = setTimeout(() => show_tip(el), 350);
-    });
-    document.addEventListener("pointerout", (e) => { if (!e.relatedTarget) hide_tip(); });
-    document.addEventListener("focusin", (e) => {
-      const el = tip_owner(e.target);
-      hide_tip();
-      if (el && el.matches(":focus-visible")) { tip_target = el; show_tip(el); }
-    });
-    document.addEventListener("focusout", hide_tip);
-    document.addEventListener("pointerdown", hide_tip);
-    document.addEventListener("scroll", hide_tip, true);
   }
 
   // --- the detailed mode -------------------------------------------------
@@ -1836,7 +1243,7 @@
     show_error("signin-error", outcome);
     strategy = null;
     tunnel = null;
-    servers = null;
+    servers_ui.reset();
     await refresh();
   }
 
@@ -1847,7 +1254,7 @@
     show_error("action-error", outcome);
     strategy = null;
     tunnel = null;
-    servers = null;
+    servers_ui.reset();
     await refresh();
   }
 
@@ -1886,7 +1293,7 @@
   // report happened, as the service binds the report: one written an hour
   // after the loss is about that connection, not the one made since.
   function failing_place() {
-    const failure = window.report_ui.failing_entry(journal_entries || [], reported_at, e => journal_line(e)[1] === "warn");
+    const failure = window.report_ui.failing_entry(journal_ui.entries() || [], reported_at, e => journal_line(e)[1] === "warn");
     if (!failure) return "";
     const a = failure.attrs;
     const mode = { antizapret: "Антизапрет", vpn: "VPN", games: "только игры" }[a.tunnel] || "";
@@ -1941,6 +1348,30 @@
     }, true);
 
     $("chip").addEventListener("click", open_servers);
+    $("server-settings-button").addEventListener("click", () => {
+      const opening = $("server-policy").hidden;
+      close_pops();
+      if (opening) {
+        render_server_policy();
+        open_pop("server-policy", "server-settings-button");
+        const active = $("server-policy").querySelector('[aria-selected="true"]') ||
+          $("server-policy").querySelector('[data-server-policy]');
+        if (active) active.focus();
+      }
+    });
+    for (const button of $("server-policy").querySelectorAll("[data-server-policy]")) {
+      button.addEventListener("click", () => {
+        close_pops();
+        const target_pinned = button.dataset.serverPolicy === "pinned";
+        if (strategy && strategy.node_id) {
+          if (!!strategy.pinned === target_pinned) return;
+          change({ pinned: target_pinned });
+        } else {
+          servers_ui.set_default_pinned(target_pinned);
+          render_server_policy();
+        }
+      });
+    }
     $("gamer").addEventListener("click", toggle_gamer);
     $("compact-journal").addEventListener("click", toggle_journal);
     $("journal-title").addEventListener("click", () => { if (!expanded) toggle_journal(); });
@@ -2005,7 +1436,7 @@
       close_pops();
       render();
     });
-    window.addEventListener("resize", () => { if (!$("servers").hidden) place_menu(); });
+    window.addEventListener("resize", () => { if (!$("servers").hidden) servers_ui.place_menu(); });
     // The path is taken when the click happens: a country row rebuilds the
     // list under the pointer, and its button is out of the page by the time
     // the click reaches here, so contains() alone would call it outside.
@@ -2017,15 +1448,31 @@
         }
       }
     });
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") { close_pops(); hide_tip(); } });
-    watch_tips();
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") { close_pops(); if (window.tips_ui) window.tips_ui.hide(); } });
     window.runtime.EventsOn("changed", () => { refresh(); reread_analysis(); });
     // Events cover state changes; the poll picks up new measurements, which
     // the service takes on its own schedule without announcing them.
     setInterval(refresh, 3000);
     setInterval(tick_times, 1000);
-    load_pings();
-    setInterval(background_ping, 60000);
+    servers_ui.init({
+      get_strategy: () => strategy,
+      get_status: () => (view && view.status) || {},
+      change: (diff) => change(diff),
+      open_pop,
+      close_pop,
+      close_pops
+    });
+    journal_ui.init({
+      node_label: (id) => node_label(id),
+      protocol_label: (p) => protocol_label(p),
+      get_expanded: () => expanded,
+      get_reported_at: () => reported_at,
+      get_games: () => games,
+      get_servers_count: () => servers_ui.get_servers() ? servers_ui.get_servers().length : -1,
+      load_servers: () => load_servers(),
+      render_parent: () => render()
+    });
+    setInterval(() => servers_ui.background_ping(main_active), 60000);
     restore_expanded();
     const app = backend();
     if (app && typeof app.Stick_to_edges === "function") app.Stick_to_edges();

@@ -31,6 +31,65 @@ func Test_the_stored_strategy_and_this_connection_go_into_the_recommendation(t *
 
 // The server's own pick at provisioning knows nothing of a country or a
 // server picked by hand, so a first connect with either asks first.
+func Test_a_preferred_server_is_sent_as_a_preference_with_fallbacks_available(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01"}
+	env.protocols.by_name["openvpn"] = &fake_protocol{name: "openvpn"}
+	env.control_plane.recommend_result = api.Recommendation{Node_id: "de-01", Protocol: "wireguard", Alternatives: []api.Alternative{
+		{Node: "nl-02", Protocol: "openvpn"},
+	}}
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	request := env.control_plane.recommend_requests[0]
+	if request.Node_id != "" || request.Preferred_node_id != "de-01" {
+		t.Fatalf("recommend request = %+v; want a soft preference for de-01", request)
+	}
+	if len(manager.alternatives) != 1 || manager.alternatives[0].Node_id != "nl-02" {
+		t.Fatalf("recovery alternatives = %+v; want fallback on nl-02", manager.alternatives)
+	}
+}
+
+func Test_a_preferred_server_failure_uses_an_offered_server_and_protocol(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01"}
+	env.control_plane.recommend_result = api.Recommendation{Node_id: "de-01", Protocol: "wireguard", Alternatives: []api.Alternative{
+		{Node: "nl-02", Protocol: "openvpn"},
+	}}
+	env.protocols.by_name["openvpn"] = &fake_protocol{name: "openvpn"}
+	env.protocol.connect_err = errors.New("preferred server failed")
+	env.control_plane.fetch_config_sequence = []fetch_config_response{
+		{config: env.control_plane.fetch_config_result},
+		{config: api.Vpn_config{Config: "fallback-config", Protocol: "openvpn", Mode: "full"}},
+	}
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	session, _ := manager.Session()
+	if session.Node_id != "nl-02" || session.Protocol != "openvpn" {
+		t.Fatalf("connected to %+v; want fallback nl-02/openvpn", session)
+	}
+}
+
+func Test_a_hard_pinned_server_is_sent_as_node_id(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01", Pinned: true}
+	env.control_plane.recommend_result = api.Recommendation{Node_id: "de-01", Protocol: "wireguard", Alternatives: []api.Alternative{
+		{Node: "de-01", Protocol: "openvpn"}, {Node: "nl-02", Protocol: "wireguard"},
+	}}
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	request := env.control_plane.recommend_requests[0]
+	if request.Node_id != "de-01" || request.Preferred_node_id != "" {
+		t.Fatalf("recommend request = %+v; want hard pin on de-01", request)
+	}
+}
+
 func Test_a_first_connect_for_a_country_provisions_on_the_recommended_node(t *testing.T) {
 	env := new_test_env(t)
 	env.store.state.Strategy = state.Strategy{Country: "NL"}
@@ -98,7 +157,7 @@ func Test_a_new_strategy_whose_server_fails_goes_back_to_the_old_one(t *testing.
 func Test_a_server_picked_by_hand_keeps_recovery_on_that_server(t *testing.T) {
 	env := new_test_env(t)
 	env.store.state.Client_id = "client-1"
-	env.store.state.Strategy = state.Strategy{Node_id: "de-01"}
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01", Pinned: true}
 	env.control_plane.recommend_result = api.Recommendation{Node_id: "de-01", Protocol: "wireguard", Alternatives: []api.Alternative{
 		{Node: "de-01", Protocol: "openvpn"}, {Node: "nl-02", Protocol: "wireguard"},
 	}}
@@ -118,7 +177,7 @@ func Test_a_server_picked_by_hand_keeps_recovery_on_that_server(t *testing.T) {
 func Test_a_control_plane_that_ignores_the_picked_server_is_named_as_the_cause(t *testing.T) {
 	env := new_test_env(t)
 	env.store.state.Client_id = "client-1"
-	env.store.state.Strategy = state.Strategy{Node_id: "de-01"}
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01", Pinned: true}
 	env.control_plane.recommend_result = api.Recommendation{Node_id: "nl-02", Protocol: "openvpn", Alternatives: []api.Alternative{
 		{Node: "nl-02", Protocol: "wireguard"},
 	}}
@@ -135,7 +194,7 @@ func Test_a_control_plane_that_ignores_the_picked_server_is_named_as_the_cause(t
 func Test_a_turn_back_to_automatic_on_the_same_node_updates_why_it_was_chosen(t *testing.T) {
 	env := new_test_env(t)
 	env.store.state.Client_id = "client-1"
-	env.store.state.Strategy = state.Strategy{Node_id: "de-01"}
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01", Pinned: true}
 	env.control_plane.recommend_result = api.Recommendation{Node_id: "de-01", Protocol: "wireguard", Reason: "chosen_node"}
 	manager := env.build()
 	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
