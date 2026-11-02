@@ -108,12 +108,18 @@ check survives service restarts, with historical results explicitly marked. Unkn
 checks are not counted as available. Refresh is available only with the VPN off;
 these results do not describe reachability through the current VPN connection.
 
-## Building
+## Building and testing
 
 ```
-go build ./...
-go test ./...
-scripts/build.ps1
+scripts/test.cmd          # full automated test suite: whitespace, formatting, vet, frontend, Go tests
+scripts/build.cmd         # builds the installer package
+```
+
+Or with PowerShell:
+
+```
+scripts/test.ps1 [-Build] [-E2E]   # full suite; -Build also verifies setup compilation
+scripts/build.ps1 -Setup           # builds dist/SingularityVPN-setup.exe
 ```
 
 `go build` produces a binary that connects nowhere, on purpose. `build.ps1`
