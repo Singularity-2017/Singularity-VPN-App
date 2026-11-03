@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"singularity-vpn-app/internal/diagnostics"
@@ -258,11 +260,11 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 		dns_ok = system_lookup()
 	}
 
-	rtts, failed := p.dial_all(ctx, target)
+	rtts, failed, blocked := p.dial_all(ctx, target)
 	<-udp_done
 	if len(rtts) == 0 && ctx.Err() == nil && target == p.dial_target && p.fallback_target != "" && p.fallback_allowed != nil && p.fallback_allowed() {
 		target = p.fallback_target
-		rtts, failed = p.dial_all(ctx, target)
+		rtts, failed, blocked = p.dial_all(ctx, target)
 		// The figures describe the server the sample names.
 		if len(rtts) > 0 {
 			udp = p.udp_probe(ctx, target)
@@ -285,6 +287,26 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 		// asked to shut down.
 		if err := ctx.Err(); err != nil {
 			return diagnostics.Sample{}, err
+		}
+		// When local platform policy or another security product (e.g. WFP
+		// filter) actively blocks outgoing sockets to this target port,
+		// the transport itself did not fail and the tunnel must not be torn
+		// down silently. Report the sample as internet-reachable with DNS unconfirmed.
+		if blocked == p.attempts && p.tunnel_up != nil && p.tunnel_up() {
+			p.logger.Warn("probe target blocked by local platform filtering; tunnel remains up", "target", target, "blocked", blocked)
+			return diagnostics.Sample{
+				Rtt:                0,
+				Resent:             0,
+				Udp_measured:       udp.sent > 0,
+				Udp_rtt:            udp.rtt,
+				Udp_loss:           udp.loss(),
+				Measurement_target: target,
+				Packet_loss:        0,
+				Dns_ok:             false,
+				Internet_ok:        true,
+				Tunnel_up:          true,
+				Taken_at:           p.now(),
+			}, nil
 		}
 		// There is no round trip to report, and a zero one would poison
 		// the session's baseline for the rest of its life.
@@ -351,7 +373,7 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 // closed here, including one that opens after another attempt has already
 // answered the question this probe was asked -- a leaked handle in a
 // service meant to run for months is a slow death.
-func (p *Network_prober) dial_all(ctx context.Context, target string) ([]time.Duration, int) {
+func (p *Network_prober) dial_all(ctx context.Context, target string) ([]time.Duration, int, int) {
 	type outcome struct {
 		rtt    time.Duration
 		ok     bool
@@ -376,12 +398,16 @@ func (p *Network_prober) dial_all(ctx context.Context, target string) ([]time.Du
 
 	rtts := make([]time.Duration, 0, p.attempts)
 	failed := 0
+	blocked := 0
 	timeouts, failures := 0, 0
 	for _, o := range outcomes {
 		if o.ok {
 			rtts = append(rtts, o.rtt)
 		} else {
 			failed++
+			if o.reason == "blocked_by_platform" {
+				blocked++
+			}
 			if o.reason == "timeout" {
 				timeouts++
 			} else {
@@ -390,9 +416,9 @@ func (p *Network_prober) dial_all(ctx context.Context, target string) ([]time.Du
 		}
 	}
 	if ctx.Err() == nil {
-		p.log_target(target, rtts, failed, timeouts, failures)
+		p.log_target(target, rtts, failed, timeouts, failures, blocked)
 	}
-	return rtts, failed
+	return rtts, failed, blocked
 }
 
 // dial_one performs one round trip: dial target within its own
@@ -577,6 +603,24 @@ func mean_rtt(rtts []time.Duration) time.Duration {
 	return total / time.Duration(len(rtts))
 }
 
+func is_blocked_by_platform(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && (errno == 10013 || errno == 10048) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "10013") ||
+		strings.Contains(msg, "wsaeacces") ||
+		strings.Contains(msg, "access permissions") ||
+		strings.Contains(msg, "permission denied")
+}
+
 // Keep dial errors categorical: arbitrary resolver or transport payloads may contain private data.
 func probe_failure_reason(err error) string {
 	if errors.Is(err, context.Canceled) {
@@ -589,6 +633,9 @@ func probe_failure_reason(err error) string {
 	if errors.As(err, &network_error) && network_error.Timeout() {
 		return "timeout"
 	}
+	if is_blocked_by_platform(err) {
+		return "blocked_by_platform"
+	}
 	return "connection_failed"
 }
 
@@ -598,7 +645,7 @@ type probe_log_state struct {
 	at        time.Time
 }
 
-func (p *Network_prober) log_target(target string, rtts []time.Duration, failed, timeouts, failures int) {
+func (p *Network_prober) log_target(target string, rtts []time.Duration, failed, timeouts, failures, blocked int) {
 	p.log_mu.Lock()
 	defer p.log_mu.Unlock()
 	if p.target_logs == nil {
@@ -619,7 +666,7 @@ func (p *Network_prober) log_target(target string, rtts []time.Duration, failed,
 			slow++
 		}
 	}
-	signature := fmt.Sprintf("%d/%d/%d/%d", failed, timeouts, failures, slow)
+	signature := fmt.Sprintf("%d/%d/%d/%d/%d", failed, timeouts, failures, blocked, slow)
 	now := p.now()
 	previous, exists := p.target_logs[target]
 	if exists && previous.signature == signature && now.Sub(previous.at) < time.Minute {
@@ -633,11 +680,13 @@ func (p *Network_prober) log_target(target string, rtts []time.Duration, failed,
 	if target == p.fallback_target {
 		target_kind = "fallback"
 	}
-	attrs := []any{"target", target_kind, "failed_attempts", failed, "attempts", p.attempts, "timeouts", timeouts, "connection_failures", failures, "fallback", target == p.fallback_target}
+	attrs := []any{"target", target_kind, "failed_attempts", failed, "attempts", p.attempts, "timeouts", timeouts, "connection_failures", failures, "blocked_by_platform", blocked, "fallback", target == p.fallback_target}
 	if len(rtts) > 0 {
 		attrs = append(attrs, "rtt", mean_rtt(rtts), "rtt_min", shortest, "rtt_max", longest, "slow_successes", slow)
 	}
-	if failed > 0 {
+	if blocked == p.attempts && blocked > 0 {
+		p.logger.Warn("probe target blocked by local platform filtering", attrs...)
+	} else if failed > 0 {
 		p.logger.Warn("probe target measurement failed", attrs...)
 	} else if slow > 0 {
 		p.logger.Info("probe target slow TCP connect", attrs...)

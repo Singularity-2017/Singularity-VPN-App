@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -626,8 +627,8 @@ func Test_probe_logs_aggregate_rate_limit_and_recover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.log_target("primary", nil, 4, 3, 1)
-	p.log_target("primary", nil, 4, 3, 1)
+	p.log_target("primary", nil, 4, 3, 1, 0)
+	p.log_target("primary", nil, 4, 3, 1, 0)
 	if strings.Count(output.String(), "probe target measurement failed") != 1 {
 		t.Fatalf("repeated failure not suppressed: %s", &output)
 	}
@@ -635,16 +636,16 @@ func Test_probe_logs_aggregate_rate_limit_and_recover(t *testing.T) {
 		t.Fatalf("missing aggregate: %s", &output)
 	}
 	clock.advance(time.Minute)
-	p.log_target("primary", nil, 4, 3, 1)
+	p.log_target("primary", nil, 4, 3, 1, 0)
 	if strings.Count(output.String(), "probe target measurement failed") != 2 {
 		t.Fatal("missing heartbeat")
 	}
-	p.log_target("primary", []time.Duration{time.Millisecond}, 0, 0, 0)
+	p.log_target("primary", []time.Duration{time.Millisecond}, 0, 0, 0, 0)
 	if !strings.Contains(output.String(), "probe target recovered") {
 		t.Fatal("missing immediate recovery")
 	}
 	clock.advance(time.Minute)
-	p.log_target("primary", []time.Duration{time.Millisecond}, 0, 0, 0)
+	p.log_target("primary", []time.Duration{time.Millisecond}, 0, 0, 0, 0)
 	if strings.Count(output.String(), "probe target recovered") != 1 {
 		t.Fatal("healthy heartbeat falsely reported another recovery")
 	}
@@ -751,7 +752,7 @@ func Test_slow_successful_dials_log_the_unmodified_range(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		prober.log_target("example.test:443", []time.Duration{49 * time.Millisecond, 1053 * time.Millisecond}, 0, 0, 0)
+		prober.log_target("example.test:443", []time.Duration{49 * time.Millisecond, 1053 * time.Millisecond}, 0, 0, 0, 0)
 	}
 	line := output.String()
 	if strings.Count(line, "probe target slow TCP connect") != 1 || !strings.Contains(line, "rtt_min=49ms rtt_max=1.053s slow_successes=1") {
@@ -946,5 +947,23 @@ func Test_queries_that_never_left_are_not_lost_datagrams(t *testing.T) {
 	}
 	if sample.Udp_measured || sample.Udp_loss != 0 {
 		t.Fatalf("udp measured %v, loss %v; nothing was sent, so nothing was measured", sample.Udp_measured, sample.Udp_loss)
+	}
+}
+
+func Test_probe_blocked_by_platform_preserves_running_tunnel(t *testing.T) {
+	config := base_config()
+	config.Dial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Err: syscall.Errno(10013)}
+	}
+	prober, err := New_network_prober(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample, err := prober.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("expected probe to succeed when blocked by platform with tunnel up, got error: %v", err)
+	}
+	if !sample.Tunnel_up || !sample.Internet_ok {
+		t.Fatalf("expected Tunnel_up and Internet_ok to remain true, got: %+v", sample)
 	}
 }

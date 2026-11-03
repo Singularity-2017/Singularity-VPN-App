@@ -1230,6 +1230,64 @@ func Test_network_changed_while_disconnected_does_nothing(t *testing.T) {
 	}
 }
 
+func Test_network_changed_settling_window_prevents_premature_disconnect(t *testing.T) {
+	env := new_test_env(t)
+	manager := env.build()
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+
+	// Make future probes fail with Err_no_internet
+	env.prober.set([]prober_response{{err: diagnostics.Err_no_internet}})
+
+	// Trigger network changed at t = 5s
+	t0 := env.clock.advance(5 * time.Second)
+	manager.Network_changed(context.Background(), t0)
+
+	// In the settle window (0s elapsed), probe failed, but state should still be State_connected
+	if s := manager.State(); s != State_connected {
+		t.Fatalf("State() = %v, want State_connected during settle window", s)
+	}
+	if manager.consecutive_probe_errors != 0 {
+		t.Fatalf("consecutive_probe_errors = %d, want 0 during settle window", manager.consecutive_probe_errors)
+	}
+
+	// Advance clock by 5s (total 5s < 15s window) and Tick
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
+	if s := manager.State(); s != State_connected {
+		t.Fatalf("State() = %v, want State_connected during settle window", s)
+	}
+
+	// Advance clock past the 15s settle window (advance 11s -> 16s elapsed)
+	// Now failures should be counted
+	manager.Tick(context.Background(), env.clock.advance(11*time.Second))
+	if manager.consecutive_probe_errors != 1 {
+		t.Fatalf("consecutive_probe_errors = %d, want 1 after settle window", manager.consecutive_probe_errors)
+	}
+
+	// Second failure past settle window should escalate to lost
+	manager.Tick(context.Background(), env.clock.advance(5*time.Second))
+	if s := manager.State(); s == State_connected {
+		t.Fatalf("State() still %v after exceeding error threshold", s)
+	}
+}
+
+func Test_choose_target_falls_back_to_strategy_when_recommend_fails(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	env.store.state.Strategy = state.Strategy{Node_id: "de-01", Protocol: "wireguard"}
+	env.control_plane.recommend_err = context.DeadlineExceeded
+	manager := env.build()
+
+	if err := manager.Connect(context.Background(), Connect_request{Mode: Mode_auto}); err != nil {
+		t.Fatalf("Connect() error = %v; want fallback to succeed", err)
+	}
+	session, ok := manager.Session()
+	if !ok || session.Node_id != "de-01" || session.Protocol != "wireguard" {
+		t.Fatalf("session = %+v (ok=%v), want de-01/wireguard", session, ok)
+	}
+}
+
 // A match holds a worse but working connection where it is: leaving the
 // node would end the match. When the match ends the switch goes ahead.
 func Test_a_match_holds_a_degraded_connection_on_its_node(t *testing.T) {

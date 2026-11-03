@@ -23,6 +23,11 @@ import (
 // probe can produce on its own; two in a row is a symptom worth acting on.
 const probe_errors_before_lost = 2
 
+// network_change_settle_window is how long after a physical network interface change
+// the prober allows transient probe failures without escalating to handle_lost,
+// giving Windows routing tables and adapter bindings time to settle.
+const network_change_settle_window = 15 * time.Second
+
 // Control_plane is the subset of api.Client this package drives. It is an
 // interface, not *api.Client, so a test scripts a control plane without a
 // network.
@@ -185,6 +190,7 @@ type Manager struct {
 	// cleared by the next sample: a second bad one confirms degradation.
 	degraded_pending         bool
 	consecutive_probe_errors int
+	network_changed_at       time.Time
 	// drops are the moments the current connection dropped for a moment
 	// within unstable_window; unstable_moved_at is when drops last moved
 	// it on this network. See instability.go.
@@ -569,6 +575,28 @@ func (m *Manager) choose_target(ctx context.Context, token string, request Conne
 	}
 	recommendation, err := m.control_plane.Recommend(ctx, token, m.recommend_request())
 	if err != nil {
+		s := m.local_state.Strategy
+		if s.Node_id != "" {
+			proto := s.Protocol
+			if proto == "" {
+				proto = m.local_state.Last_protocol
+			}
+			if proto == "" {
+				proto = "amneziawg"
+			}
+			m.logger.Warn("control plane recommend failed; falling back to saved strategy target", "error", err, "node_id", s.Node_id, "protocol", proto)
+			return recovery.Target{Node_id: s.Node_id, Protocol: proto}, nil
+		}
+		if m.has_recommended {
+			if target, fault := m.spoken_target(m.recommended); fault == nil {
+				m.logger.Warn("control plane recommend failed; falling back to last recommendation", "error", err, "node_id", target.Node_id, "protocol", target.Protocol)
+				return target, nil
+			}
+		}
+		if m.local_state.Last_node_id != "" && m.local_state.Last_protocol != "" {
+			m.logger.Warn("control plane recommend failed; falling back to last connected target", "error", err, "node_id", m.local_state.Last_node_id, "protocol", m.local_state.Last_protocol)
+			return recovery.Target{Node_id: m.local_state.Last_node_id, Protocol: m.local_state.Last_protocol}, nil
+		}
 		return recovery.Target{}, classify_control_plane_error("recommend", err)
 	}
 	target, fault := m.spoken_target(recommendation)
@@ -1006,6 +1034,7 @@ func (m *Manager) clear_session() {
 	m.current_config = protocols.Connection_config{}
 	m.degraded_since_set = false
 	m.consecutive_probe_errors = 0
+	m.network_changed_at = time.Time{}
 	m.drops, m.unstable_moved_at = nil, time.Time{}
 	m.retried_at, m.retried_target = time.Time{}, recovery.Target{}
 	m.forget_way_back()
@@ -1165,6 +1194,8 @@ func (m *Manager) Network_changed(ctx context.Context, now time.Time) {
 	if current != State_connected && current != State_degraded {
 		return
 	}
+	m.network_changed_at = now
+	m.consecutive_probe_errors = 0
 	// The repin and the pass share one hold of op_mu: Tick takes the same
 	// lock, so the pass is the lock-free body tick_locked.
 	m.monitor = probe_schedule{}
@@ -1198,6 +1229,10 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 			return
 		}
+		if !m.network_changed_at.IsZero() && now.Sub(m.network_changed_at) < network_change_settle_window {
+			m.logger.Info("connection probe failed during network change settle window; waiting for network to settle", "elapsed", now.Sub(m.network_changed_at), "window", network_change_settle_window, "error", err)
+			return
+		}
 		m.monitor.observe(now, false, m.config.Monitor_interval, m.config.Monitor_max_interval)
 		m.evidence_loss_reason = "unknown"
 		if errors.Is(err, diagnostics.Err_no_internet) {
@@ -1223,6 +1258,7 @@ func (m *Manager) tick_locked(ctx context.Context, now time.Time) {
 		return
 	}
 	m.consecutive_probe_errors = 0
+	m.network_changed_at = time.Time{}
 	m.baseline.Observe(sample)
 	detail := diagnostics.Degradation_of(sample, m.baseline, diagnostics.Default_thresholds())
 	m.set_sample(sample, detail)
