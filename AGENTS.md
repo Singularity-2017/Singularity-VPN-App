@@ -37,6 +37,13 @@ Subagents are cheaper models and they are wrong often enough to matter. Do not
 take a subagent result at face value: check the claim against the code before
 reporting it as done.
 
+## Core philosophy: user agency and co-existence
+
+The purpose of this project is user control over their own network connections.
+- Any machine state or external network situation must be handled gracefully without ever causing the user to lose control or visibility.
+- A failure mode that silently tears down a functioning tunnel because of an unhandled environmental conflict violates this core purpose.
+- Continuous, lightweight monitoring and handling of competing network software (other VPNs, proxies, WFP filters, local DNS blockers) must run at all times without burdening computer resources.
+
 ## Environment facts (do not rediscover these)
 
 - `go test -race` cannot run here (Cygwin toolchain). Skip it and say so.
