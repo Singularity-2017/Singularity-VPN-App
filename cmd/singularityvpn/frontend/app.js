@@ -102,6 +102,28 @@
   const render_server_policy = () => servers_ui.render_server_policy();
   const open_servers = () => servers_ui.open_servers();
 
+  function server_icon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "server-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>';
+    return svg;
+  }
+
+  function option(text, selected, on_pick) {
+    const b = document.createElement("button");
+    b.className = "opt line";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", selected ? "true" : "false");
+    const name = document.createElement("span");
+    name.className = "opt-name";
+    name.textContent = text;
+    b.append(name);
+    if (on_pick) b.addEventListener("click", on_pick);
+    return b;
+  }
+
   const journal_ui = window.journal_ui;
   const load_journal = () => journal_ui.load();
   const render_journal = () => journal_ui.render();
@@ -217,7 +239,7 @@
     if (!status) { show_screen("screen-wait"); return; }
     if (!status.signed_in) { show_screen("screen-signin"); return; }
     show_screen("screen-main");
-    if (!main_active) { main_active = true; load_analysis(); background_ping(); }
+    if (!main_active) { main_active = true; load_analysis(); servers_ui.background_ping(main_active); }
     if (strategy === null && !strategy_unsupported) load_strategy();
     if (tunnel === null && !tunnel_unsupported) load_tunnel();
     if (games === null && !games_unsupported) load_games();
@@ -630,12 +652,19 @@
     busy = true;
     show_error("action-error", null);
     render();
-    const outcome = await backend().Set_strategy(next);
-    busy = false;
+    let outcome = null;
+    try {
+      outcome = await backend().Set_strategy(next);
+    } catch (e) {
+      outcome = { code: "failed", message: String(e && e.message ? e.message : e) };
+    } finally {
+      busy = false;
+      show_error("action-error", outcome);
+      render();
+    }
     // The record stands even when moving the connection failed; read back
     // what the service now holds rather than assuming.
     await load_strategy();
-    show_error("action-error", outcome);
     await refresh();
   }
 
@@ -695,11 +724,18 @@
     busy = true;
     show_error("action-error", null);
     render();
-    const outcome = await backend().Set_tunnel_mode(mode);
-    busy = false;
-    tunnel = null;
+    let outcome = null;
+    try {
+      outcome = await backend().Set_tunnel_mode(mode);
+    } catch (e) {
+      outcome = { code: "failed", message: String(e && e.message ? e.message : e) };
+    } finally {
+      busy = false;
+      tunnel = null;
+      show_error("action-error", outcome);
+      render();
+    }
     await load_tunnel();
-    show_error("action-error", outcome);
     await refresh();
   }
 
@@ -895,9 +931,16 @@
     if (p.online === true && !(await ask("Профиль «" + (p.label || "Без имени") + "» сейчас подключён на другом устройстве. Если взять его здесь, то устройство отключится.", "Взять профиль"))) return;
     busy = true;
     render();
-    const outcome = await backend().Set_profile(p.id);
-    busy = false;
-    show_error("action-error", outcome);
+    let outcome = null;
+    try {
+      outcome = await backend().Set_profile(p.id);
+    } catch (e) {
+      outcome = { code: "failed", message: String(e && e.message ? e.message : e) };
+    } finally {
+      busy = false;
+      show_error("action-error", outcome);
+      render();
+    }
     if (!outcome || (!outcome.code && !outcome.error)) close_pops();
     await load_profiles();
     await refresh();
@@ -1119,19 +1162,26 @@
     busy = boosting = true;
     show_error("action-error", null);
     render();
-    let outcome = same ? {} : await backend().Set_games([id], region);
-    const st = view && view.status ? view.status.state : "";
-    const off = !(st === "connected" || st === "degraded" || st === "connecting" || st === "switching");
-    // A region played from home needs no tunnel for the game: nothing is
-    // connected for it.
-    const direct = !!(game && (game.regions || []).find((r) => r.id === region && r.direct));
-    if (!(outcome && outcome.code) && off && !direct) outcome = await backend().Connect();
-    if (!(outcome && outcome.code) && launch) outcome = await backend().Launch_game(id);
-    busy = boosting = false;
+    let outcome = same ? {} : null;
+    try {
+      if (!same) outcome = await backend().Set_games([id], region);
+      const st = view && view.status ? view.status.state : "";
+      const off = !(st === "connected" || st === "degraded" || st === "connecting" || st === "switching");
+      // A region played from home needs no tunnel for the game: nothing is
+      // connected for it.
+      const direct = !!(game && (game.regions || []).find((r) => r.id === region && r.direct));
+      if (!(outcome && outcome.code) && off && !direct) outcome = await backend().Connect();
+      if (!(outcome && outcome.code) && launch) outcome = await backend().Launch_game(id);
+    } catch (e) {
+      outcome = { code: "failed", message: String(e && e.message ? e.message : e) };
+    } finally {
+      busy = boosting = false;
+      show_error("action-error", outcome);
+      render();
+    }
     // The record stands even when connecting failed; read back what the
     // service now holds rather than assuming.
     await load_games();
-    show_error("action-error", outcome);
     await refresh();
   }
 
@@ -1143,12 +1193,19 @@
     busy = boosting = true;
     show_error("action-error", null);
     render();
-    // The service rebuilds the tunnel for the chosen mode; nothing is
-    // disconnected.
-    const outcome = await backend().Set_games([], "");
-    busy = boosting = false;
+    let outcome = null;
+    try {
+      // The service rebuilds the tunnel for the chosen mode; nothing is
+      // disconnected.
+      outcome = await backend().Set_games([], "");
+    } catch (e) {
+      outcome = { code: "failed", message: String(e && e.message ? e.message : e) };
+    } finally {
+      busy = boosting = false;
+      show_error("action-error", outcome);
+      render();
+    }
     await load_games();
-    show_error("action-error", outcome);
     await refresh();
   }
 
@@ -1162,9 +1219,16 @@
     busy = true;
     show_error("action-error", null);
     render();
-    const outcome = turning_off ? await backend().Disconnect() : await backend().Connect();
-    busy = false;
-    show_error("action-error", outcome);
+    let outcome = null;
+    try {
+      outcome = turning_off ? await backend().Disconnect() : await backend().Connect();
+    } catch (e) {
+      outcome = { code: "failed", message: String(e && e.message ? e.message : e) };
+    } finally {
+      busy = false;
+      show_error("action-error", outcome);
+      render();
+    }
     await refresh();
   }
 
@@ -1190,7 +1254,7 @@
   // --- pop-ups -----------------------------------------------------------
 
   function open_pop(id, owner) {
-    hide_tip();
+    if (window.tips_ui) window.tips_ui.hide();
     $(id).hidden = false;
     $(owner).setAttribute("aria-expanded", "true");
   }

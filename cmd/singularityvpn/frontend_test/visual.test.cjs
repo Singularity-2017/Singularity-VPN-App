@@ -29,6 +29,9 @@ describe('Visual & UI Layout Tests (Headless CDP)', () => {
     // Inject mock Wails bindings before navigation
     await browser.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `
+        window.page_errors = [];
+        window.addEventListener('error', e => window.page_errors.push(e.message || String(e)));
+        window.addEventListener('unhandledrejection', e => window.page_errors.push(e.reason ? (e.reason.message || String(e.reason)) : String(e)));
         window.fixture_events = {};
         window.runtime = {
           EventsOn: (key, fn) => { window.fixture_events[key] = fn; },
@@ -154,7 +157,7 @@ describe('Visual & UI Layout Tests (Headless CDP)', () => {
         const preferred = popup.querySelector('[data-server-policy="preferred"]');
         const pinned = popup.querySelector('[data-server-policy="pinned"]');
         return {
-          visible: popup.getAttribute('aria-hidden') !== 'true',
+          visible: !popup.hidden,
           hasPreferred: !!preferred,
           hasPinned: !!pinned
         };
@@ -167,7 +170,7 @@ describe('Visual & UI Layout Tests (Headless CDP)', () => {
 
     // Close with Escape
     await browser.evaluate(`
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     `);
   });
 
@@ -234,5 +237,54 @@ describe('Visual & UI Layout Tests (Headless CDP)', () => {
     `);
 
     assert.ok(diff.percent < 1.0, `Visual mismatch too high: ${diff.percent.toFixed(2)}% pixels changed`);
+  });
+
+  test('power button and menu interactions execute without runtime exceptions', async (t) => {
+    if (!browser) return t.skip('Browser not found');
+
+    const result = await browser.evaluate(`
+      (async () => {
+        const calls = [];
+        const originalConnect = window.go.main.App.Connect;
+        window.go.main.App.Connect = async () => {
+          calls.push('Connect');
+          return {};
+        };
+
+        // Click power button
+        document.getElementById('power').click();
+        await new Promise(r => setTimeout(r, 100));
+
+        // Click server chip
+        document.getElementById('chip').click();
+        await new Promise(r => setTimeout(r, 100));
+        const serversOpen = !document.getElementById('servers').hidden;
+
+        // Press Escape to close servers
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await new Promise(r => setTimeout(r, 50));
+
+        // Click settings button
+        document.getElementById('settings-button').click();
+        await new Promise(r => setTimeout(r, 100));
+        const settingsOpen = !document.getElementById('settings').hidden;
+
+        // Press Escape to close settings
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await new Promise(r => setTimeout(r, 50));
+
+        return {
+          calls,
+          serversOpen,
+          settingsOpen,
+          errors: window.page_errors || []
+        };
+      })()
+    `);
+
+    assert.deepEqual(result.errors, [], `Runtime errors detected during interaction: ${JSON.stringify(result.errors)}`);
+    assert.ok(result.calls.includes('Connect'), 'Power click must invoke backend Connect');
+    assert.ok(result.serversOpen, 'Clicking chip must open server popup');
+    assert.ok(result.settingsOpen, 'Clicking settings must open settings popup');
   });
 });
