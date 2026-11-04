@@ -102,6 +102,12 @@
   const render_server_policy = () => servers_ui.render_server_policy();
   const open_servers = () => servers_ui.open_servers();
 
+  // live_node is the server the tunnel is on now, or "".
+  function live_node() {
+    const st = view && view.status;
+    return st && st.session_id ? st.node_id || "" : "";
+  }
+
   function server_icon() {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "server-icon");

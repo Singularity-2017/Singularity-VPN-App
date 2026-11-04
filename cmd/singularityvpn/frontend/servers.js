@@ -225,7 +225,11 @@
     const auto = !s.node_id;
     const strategy_code = flags ? flags.country_code(s.country) : "";
     const set_server = (node_id, ctrl) => {
-      const want_pinned = ctrl ? !default_pinned : default_pinned;
+      let want_pinned = ctrl ? !default_pinned : default_pinned;
+      if (s.node_id === node_id) {
+        if (ctrl) want_pinned = !s.pinned;
+        else if (s.pinned) want_pinned = false;
+      }
       env.change({ node_id, pinned: !!node_id && want_pinned });
     };
     const live = live_node();
@@ -264,7 +268,7 @@
       }
       for (const server of group.servers) {
         const selected = s.node_id === server.node_id;
-        const b = option(label_of(server), selected, (event) => set_server(server.node_id, event && event.ctrlKey));
+        const b = option(label_of(server), selected, (event) => set_server(server.node_id, !!(event && (event.ctrlKey || event.metaKey))));
         if (selected) {
           b.dataset.tip = s.pinned
             ? "Сервер закреплён. Обычный щелчок переключит его на предпочтительный режим."
@@ -435,6 +439,7 @@
     stop_pings,
     background_ping,
     load_pings,
+    live_node,
     reset: () => { servers = null; },
     get_default_pinned: () => default_pinned,
     set_default_pinned: (v) => {
