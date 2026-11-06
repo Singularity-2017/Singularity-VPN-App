@@ -1,0 +1,7 @@
+.profile-row { border-bottom: 1px solid var(--line); }
+.profile-row > .opt[aria-pressed="true"] { color: var(--accent); }
+.vless-disclosure { padding-left: 28px; }
+.vless-options { padding-left: 12px; animation: vless-reveal .1s ease-out; }
+.vless-options .opt { white-space: normal; text-align: left; }
+@keyframes vless-reveal { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .vless-options { animation: none; } }

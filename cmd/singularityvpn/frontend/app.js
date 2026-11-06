@@ -920,6 +920,9 @@
     note.textContent = profiles.length ? "" : "Профиль появится при первом подключении.";
     for (const p of profiles) {
       const b = option(p.label || "Без имени", !!p.current, () => choose_profile(p));
+      b.setAttribute("role", "button");
+      b.removeAttribute("aria-selected");
+      b.setAttribute("aria-pressed", p.current ? "true" : "false");
       b.disabled = busy;
       if (p.online === true && !p.current) {
         const tag = document.createElement("span");
@@ -927,7 +930,13 @@
         tag.textContent = "на другом устройстве";
         b.append(tag);
       }
-      list.append(b);
+      const row = document.createElement("div");
+      row.className = "profile-row";
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", p.label || "Без имени");
+      row.append(b);
+      window.vless_ui?.append(row, p, app);
+      list.append(row);
     }
   }
 
