@@ -288,7 +288,7 @@ type fixture struct {
 	bus           *events.Bus
 }
 
-func new_fixture(t *testing.T) *fixture {
+func new_fixture(t *testing.T, additional ...protocols.Protocol) *fixture {
 	t.Helper()
 
 	control_plane := &fake_control_plane{
@@ -299,7 +299,7 @@ func new_fixture(t *testing.T) *fixture {
 		recommendation: api.Recommendation{Node_id: "node-1", Protocol: "wireguard"},
 	}
 	protocol := &fake_protocol{name: "wireguard"}
-	registry, err := protocols.New_registry(protocol)
+	registry, err := protocols.New_registry(append([]protocols.Protocol{protocol}, additional...)...)
 	if err != nil {
 		t.Fatalf("building the protocol registry: %v", err)
 	}

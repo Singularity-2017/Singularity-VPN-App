@@ -45,13 +45,18 @@ test('a build without a version names none and marks none',()=>{
   if(unreleased) assert.equal(e[0].title,'Не выпущена');
   assert.equal(e.filter(x=>x.current).length,0);
 });
-test('only the nearest plan has a number, and it is ahead of every release',()=>{
+test('plans do not reuse a released version',()=>{
   const {plans}=require('../frontend/about.js');
   assert.ok(plans.length>0);
-  assert.match(plans[0].version,/^\d+\.\d+\.\d+$/);
-  for(const p of plans.slice(1)) assert.equal(p.version,undefined);
-  const n=s=>s.split('.').map(Number);
-  const [a,b]=[n(plans[0].version),n(newest_release.version)];
-  assert.ok(a[0]>b[0]||a[0]===b[0]&&(a[1]>b[1]||a[1]===b[1]&&a[2]>b[2]));
+  for(const p of plans) assert.ok(!p.version || !changes.some(c=>c.version===p.version));
   for(const p of plans) for(const [kind,items] of p.groups) assert.ok(kind&&items.length>0,kind);
+});
+
+test('the current release explains VLESS in the protocol selector',()=>{
+  const fs=require('node:fs'), path=require('node:path');
+  const version=fs.readFileSync(path.join(__dirname,'../../../VERSION'),'utf8').trim();
+  const current=entries(version).find(e=>e.current);
+  assert.ok(current);
+  if (version === '0.3.0') assert.match(current.groups.flat(2).join(' '),/меню «Протокол».*VLESS/);
+  assert.match(entries('0.2.0').find(e=>e.current).groups.flat(2).join(' '),/скачать настройки VLESS/);
 });

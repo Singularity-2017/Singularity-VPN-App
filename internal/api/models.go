@@ -109,12 +109,13 @@ func (r Recommend_request) query() url.Values {
 // Server is one entry of the server list: what a person picks a server by,
 // and whether it can take a connection now.
 type Server struct {
-	Node_id   string `json:"node_id"`
-	Name      string `json:"name"`    // absent in the response means empty here
-	Country   string `json:"country"` // absent in the response means empty here
-	Region    string `json:"region"`
-	City      string `json:"city"`
-	Available bool   `json:"available"`
+	Vless_available bool   `json:"vless_available"`
+	Node_id         string `json:"node_id"`
+	Name            string `json:"name"`    // absent in the response means empty here
+	Country         string `json:"country"` // absent in the response means empty here
+	Region          string `json:"region"`
+	City            string `json:"city"`
+	Available       bool   `json:"available"`
 
 	// Host is the public address the node's configs point at, usually an
 	// IPv4 literal, possibly a DNS name. Absent in the response means empty
@@ -330,19 +331,20 @@ func (c *Client) Servers(ctx context.Context, token string) ([]Server, error) {
 // control plane says it is offline.
 func (c *Client) servers_from_nodes(ctx context.Context, token string) ([]Server, error) {
 	var nodes []struct {
-		Id      string  `json:"id"`
-		Name    string  `json:"name"`
-		Country string  `json:"country"`
-		Status  string  `json:"status"`
-		Region  *string `json:"region"`
-		City    *string `json:"city"`
+		Vless_available bool    `json:"vless_available"`
+		Id              string  `json:"id"`
+		Name            string  `json:"name"`
+		Country         string  `json:"country"`
+		Status          string  `json:"status"`
+		Region          *string `json:"region"`
+		City            *string `json:"city"`
 	}
 	if err := c.do(ctx, "GET", "/api/v1/nodes", nil, token, nil, &nodes, true); err != nil {
 		return nil, err
 	}
 	servers := make([]Server, 0, len(nodes))
 	for _, n := range nodes {
-		server := Server{Node_id: n.Id, Name: n.Name, Country: n.Country, Available: n.Status != "offline"}
+		server := Server{Node_id: n.Id, Name: n.Name, Country: n.Country, Available: n.Status != "offline", Vless_available: n.Vless_available}
 		if n.Region != nil {
 			server.Region = *n.Region
 		}
@@ -416,6 +418,12 @@ func (c *Client) Create_profile(ctx context.Context, token, protocol, node_id st
 // substitution. client_id, protocol and node_id are omitted from the query
 // when empty rather than sent as empty values.
 func (c *Client) Fetch_config(ctx context.Context, token, client_id, protocol, node_id, mode string) (Vpn_config, error) {
+	if protocol == "vless" {
+		if mode == Mode_antizapret {
+			return Vpn_config{}, errors.New("api: native VLESS requires full VPN mode")
+		}
+		return c.fetch_native_vless(ctx, token, client_id, node_id)
+	}
 	query := url.Values{}
 	if client_id != "" {
 		query.Set("client_id", client_id)

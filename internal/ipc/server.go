@@ -604,6 +604,8 @@ func error_body_for(err error) *Error_body {
 		return &Error_body{Code: Error_busy, Message: err.Error()}
 	case errors.Is(err, Err_tunnel_up):
 		return &Error_body{Code: Error_tunnel_up, Message: err.Error()}
+	case errors.Is(err, Err_protocol_unavailable):
+		return &Error_body{Code: Error_protocol_unavailable, Message: err.Error()}
 	case errors.Is(err, Err_server_unavailable):
 		return &Error_body{Code: Error_server_unavailable, Message: err.Error()}
 	case errors.Is(err, Err_no_server_in_country):

@@ -29,9 +29,12 @@ const (
 	// release has is the release's business: the whole directory is the
 	// payload, and only the program and the licence are required by name.
 	openvpn_dir = "openvpn"
+	xray_dir    = "xray"
 )
 
 var openvpn_required = []string{openvpn_dir + "/openvpn.exe", openvpn_dir + "/LICENSE"}
+
+var xray_required = []string{"xray/xray.exe", "xray/wintun.dll", "xray/geoip.dat", "xray/geosite.dat", "xray/LICENSE", "xray/LICENSE-Wintun", "xray/README.md", "xray/manifest.json", "xray/NOTICE.txt"}
 
 var payload_files = []string{service_exe, window_exe, ctl_exe, swap_exe, wintun_dll, windivert_dll, windivert_sys, windivert_licence}
 
@@ -45,7 +48,7 @@ func payload_contents(source fs.FS) (map[string][]byte, error) {
 	}
 	contents := make(map[string][]byte, len(payload_files))
 	var missing []string
-	for _, name := range payload_files {
+	for _, name := range append(append([]string{}, payload_files...), xray_required...) {
 		data, err := fs.ReadFile(source, name)
 		if err != nil || len(data) == 0 {
 			missing = append(missing, name)
@@ -84,12 +87,12 @@ func payload_contents(source fs.FS) (map[string][]byte, error) {
 }
 
 // install_order is every file of the payload in the order it is written:
-// the fixed ones first, then the OpenVPN directory by name.
+// the fixed ones first, then the dependency directories by name.
 func install_order(contents map[string][]byte) []string {
 	names := append([]string{}, payload_files...)
 	var extra []string
 	for name := range contents {
-		if strings.HasPrefix(name, openvpn_dir+"/") {
+		if strings.HasPrefix(name, openvpn_dir+"/") || strings.HasPrefix(name, xray_dir+"/") {
 			extra = append(extra, name)
 		}
 	}

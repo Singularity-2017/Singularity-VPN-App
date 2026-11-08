@@ -360,7 +360,7 @@ func Test_servers_fall_back_to_the_older_node_listing(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"success":false,"error":{"code":"NOT_FOUND","message":"not found"}}`))
 		case "/api/v1/nodes":
-			write_success(w, `[{"id":"n-1","ip":"192.0.2.9","name":"Germany","country":"DE","status":"online","city":"Frankfurt"},{"id":"n-2","name":"Old","country":"DE","status":"offline"}]`)
+			write_success(w, `[{"id":"n-1","ip":"192.0.2.9","name":"Germany","country":"DE","status":"online","city":"Frankfurt","vless_available":true},{"id":"n-2","name":"Old","country":"DE","status":"offline"}]`)
 		}
 	}))
 	defer server.Close()
@@ -372,7 +372,7 @@ func Test_servers_fall_back_to_the_older_node_listing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || !reflect.DeepEqual(got[0], Server{Node_id: "n-1", Name: "Germany", Country: "DE", City: "Frankfurt", Available: true}) || got[1].Available {
+	if len(got) != 2 || !reflect.DeepEqual(got[0], Server{Node_id: "n-1", Name: "Germany", Country: "DE", City: "Frankfurt", Available: true, Vless_available: true}) || got[1].Available {
 		t.Fatalf("servers = %+v", got)
 	}
 }

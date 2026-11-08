@@ -44,6 +44,9 @@ func map_error(err error) error {
 
 	// Last, because the two checks above are more specific readings of
 	// errors that also arrive wearing this kind.
+	if kind, ok := connection.Kind_of(err); ok && kind == connection.Fault_protocol_unavailable {
+		return fmt.Errorf("%w: %w", ipc.Err_protocol_unavailable, err)
+	}
 	if kind, ok := connection.Kind_of(err); ok && kind == connection.Fault_authentication {
 		return fmt.Errorf("%w: %w", ipc.Err_unauthorized, err)
 	}

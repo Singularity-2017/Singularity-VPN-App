@@ -215,7 +215,7 @@
     for (const el of document.querySelectorAll("[data-time]")) el.textContent = ago(el.dataset.time);
   }
 
-  const protocol_names = { wireguard: "WireGuard", amneziawg: "AmneziaWG", openvpn: "OpenVPN" };
+  const protocol_names = { wireguard: "WireGuard", amneziawg: "AmneziaWG", openvpn: "OpenVPN", vless: "VLESS + REALITY" };
 
   function ms(value) {
     return value === undefined || value === null ? "" : Math.round(value) + " мс";
@@ -334,13 +334,15 @@
   function render_chip(status, s, auto, up) {
     let code = "", title = "", sub = [], server = "";
     if (status.session_id) {
-      const c = country_of(status.country);
+      const known = server_by_id(status.node_id) || {};
+      const country = status.country || known.country;
+      const name = status.node_name || known.name;
+      const city = status.city || known.city;
+      const c = country_of(country);
       code = c.code;
-      title = c.name || status.node_name || status.node_id;
-      server = c.name ? short_name(status.node_name, status.country, status.city) : "";
+      title = c.name || name || status.node_id;
+      server = c.name ? short_name(name, country, city) : "";
       if (server) sub.push(server);
-      const protocol = protocol_names[status.protocol] || status.protocol || "";
-      if (protocol) sub.push(protocol);
     } else if (!auto) {
       const picked = server_by_id(s.node_id);
       if (picked) {
@@ -387,7 +389,9 @@
       const rtt = document.createElement("span");
       rtt.className = "num accent";
       rtt.textContent = ms(status.rtt_ms);
-      rtt.dataset.tip = status.tunnel === "antizapret"
+      rtt.dataset.tip = status.protocol === "vless"
+ ? "Время проверенного TLS-соединения через туннель до внешнего адреса."
+ : status.tunnel === "antizapret"
         ? "Задержка через туннель: время TCP-соединения с DNS сервера."
         : "Задержка через туннель: время TCP-соединения с внешним адресом, а не ping до сервера.";
       chip_sub.append(rtt);
@@ -588,7 +592,7 @@
     if (answer && answer.error && answer.error.code === "unknown_command") strategy_unsupported = true;
     if (answer && answer.strategy) {
       strategy = answer.strategy;
-      if (strategy.node_id && servers_ui.get_servers() === null) load_servers().then(render);
+      if (servers_ui.get_servers() === null) load_servers().then(render);
       render();
     }
   }
@@ -603,6 +607,7 @@
       service_not_running: "Служба не запущена.",
       untrusted_pipe: "Канал к службе не прошёл проверку.",
       server_unavailable: "Этот сервер сейчас не принимает подключения. Выберите другой или включите «Авто».",
+      protocol_unavailable: "Выбранный протокол недоступен на этом сервере. Выберите другой сервер или протокол.",
       launch_failed: "Steam не запустил игру. Буст включён: запустите её сами.",
       no_server_in_country: "В этой стране сейчас нет доступного сервера."
     };
@@ -651,7 +656,14 @@
       pin_forces_move ||
       ("country" in edit && edit.country !== strategy.country) ||
       ("protocol" in edit && edit.protocol && edit.protocol !== live);
-    if (in_match && moves) {
+    const selecting_vless = edit.protocol === "vless" && strategy.protocol !== "vless";
+    const split_mode = tunnel === "antizapret" || (view && view.status && ["games", "antizapret"].includes(view.status.tunnel)) || (games || []).some((g) => g.on);
+    if (selecting_vless && split_mode) {
+      const warning = "VLESS подключит весь компьютер через VPN. Антизапрет и игровой буст будут выключены." +
+        (in_match ? " Идёт матч: соединение перестроится, и матч прервётся." : "");
+      if (!(await ask(warning, "Включить полный VPN"))) return;
+    }
+    if (in_match && moves && !(selecting_vless && split_mode)) {
       if (!(await ask("Идёт матч. Сменить сервер? Матч прервётся.", "Сменить"))) return;
     }
     close_pops();
@@ -661,6 +673,11 @@
     let outcome = null;
     try {
       outcome = await backend().Set_strategy(next);
+      const state = view && view.status && view.status.state;
+      if (selecting_vless && !(outcome && outcome.code) &&
+          state !== "connected" && state !== "degraded" && state !== "connecting" && state !== "switching") {
+        outcome = await backend().Connect();
+      }
     } catch (e) {
       outcome = { code: "failed", message: String(e && e.message ? e.message : e) };
     } finally {
@@ -671,6 +688,11 @@
     // The record stands even when moving the connection failed; read back
     // what the service now holds rather than assuming.
     await load_strategy();
+    if (selecting_vless) {
+      tunnel = null;
+      await load_tunnel();
+      await load_games();
+    }
     await refresh();
   }
 
@@ -693,15 +715,20 @@
   function render_mode(status, s) {
     $("mode").hidden = tunnel === null;
     if (tunnel === null) return;
+    const selected_mode = s.protocol === "vless" ? "vpn" : tunnel;
     for (const b of $("mode").querySelectorAll("[data-mode]")) {
-      b.setAttribute("aria-checked", b.dataset.mode === tunnel ? "true" : "false");
-      b.disabled = busy;
+      b.setAttribute("aria-checked", b.dataset.mode === selected_mode ? "true" : "false");
+      b.disabled = busy || (s.protocol === "vless" && b.dataset.mode !== "vpn");
+      if (!b.dataset.baseTip) b.dataset.baseTip = b.dataset.tip || "";
+      b.dataset.tip = s.protocol === "vless" && b.dataset.mode !== "vpn"
+        ? "VLESS работает в режиме полного VPN. Для Антизапрета выберите другой протокол."
+        : b.dataset.baseTip;
     }
     // What the live tunnel carries, when it is not what was chosen.
     let note = "", tip = "";
     const live = status.session_id ? status.tunnel : "";
     // A boosted game is carried beside the chosen mode, not instead of it.
-    if (live && live !== "games" && live !== tunnel) {
+    if (live && live !== "games" && live !== selected_mode) {
       if (live === "vpn" && s.anonymity) {
         note = "Сейчас весь трафик: включена анонимность";
         tip = "Антизапрет оставляет большую часть трафика без VPN, а это противоречит анонимности. Пока она включена, через сервер идёт всё.";
@@ -718,9 +745,30 @@
     // known, "Авто" standing for none picked by hand.
     $("protocol-pick").hidden = strategy === null;
     $("protocol-chip").disabled = busy;
-    set_text("protocol-value", protocol_names[s.protocol] || "Авто");
+    const active_protocol = status.session_id ? protocol_label(status.protocol) : "";
+    const automatic_protocol = !s.protocol;
+    const protocol_chip = $("protocol-chip");
+    const protocol_title = automatic_protocol && active_protocol ? "Протокол · Авто" : "Протокол";
+    const protocol_value = active_protocol || protocol_names[s.protocol] || "Авто";
+    const protocol_label_el = protocol_chip.querySelector(".protocol-label");
+    const protocol_changed = protocol_label_el.textContent !== protocol_title || $("protocol-value").textContent !== protocol_value;
+    protocol_label_el.textContent = protocol_title;
+    set_text("protocol-value", protocol_value);
+    if (protocol_changed && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      protocol_chip.animate([{opacity: 0}, {opacity: 1}], {duration: 100});
+    }
+    if (active_protocol && s.protocol && status.protocol !== s.protocol) {
+      protocol_chip.dataset.tip = "Сейчас: " + active_protocol + ". Выбран: " + protocol_label(s.protocol) + ".";
+    } else {
+      delete protocol_chip.dataset.tip;
+    }
     for (const b of $("protocol").querySelectorAll("[data-protocol]")) {
       b.setAttribute("aria-selected", b.dataset.protocol === (s.protocol || "") ? "true" : "false");
+      if (b.dataset.protocol === "vless") {
+        const available = servers_ui.vless_available(s);
+        b.hidden = !available && s.protocol !== "vless";
+        b.disabled = busy || !available;
+      }
     }
   }
 
@@ -1494,13 +1542,18 @@
     // the handler that closes a pop clicked outside of.
     $("report-problem").addEventListener("click", (e) => { e.stopPropagation(); open_problem_report(); });
     $("journal-report").addEventListener("click", (e) => { e.stopPropagation(); open_problem_report(); });
-    $("protocol-chip").addEventListener("click", () => {
+    $("protocol-chip").addEventListener("click", async () => {
       const opening = $("protocol").hidden;
       close_pops();
-      if (opening) open_pop("protocol", "protocol-chip");
+      if (opening) {
+        open_pop("protocol", "protocol-chip");
+        await load_servers();
+        render();
+      }
     });
     for (const b of $("protocol").querySelectorAll("[data-protocol]")) {
       b.addEventListener("click", () => {
+        if (b.disabled || b.hidden) return;
         close_pops();
         if (b.dataset.protocol !== ((strategy && strategy.protocol) || "")) change({ protocol: b.dataset.protocol });
       });

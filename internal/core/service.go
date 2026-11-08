@@ -581,7 +581,7 @@ func (a *Application) Servers(ctx context.Context) (ipc.Servers_result, error) {
 	hosts := make(map[string]string, len(list))
 	for _, s := range list {
 		result.Servers = append(result.Servers, ipc.Server{
-			Node_id: s.Node_id, Name: s.Name, Country: s.Country, Region: s.Region, City: s.City, Available: s.Available,
+			Node_id: s.Node_id, Name: s.Name, Country: s.Country, Region: s.Region, City: s.City, Available: s.Available, Vless_available: s.Vless_available && s.Available,
 		})
 		if s.Host != "" {
 			hosts[s.Node_id] = s.Host

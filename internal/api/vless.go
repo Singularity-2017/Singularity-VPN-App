@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"singularity-vpn-app/internal/protocols/vless"
 	"strings"
 )
 
@@ -11,6 +12,19 @@ type Vless_node struct {
 	Node_id         string `json:"node_id"`
 	Vless_available bool   `json:"vless_available"`
 	Reason          string `json:"reason,omitempty"`
+}
+
+// Native connections share the authenticated, ownership-checked export fetch,
+// then apply the stricter native transport contract before touching networking.
+func (c *Client) fetch_native_vless(ctx context.Context, token, client_id, node_id string) (Vpn_config, error) {
+	config, err := c.Fetch_vless(ctx, token, client_id, node_id)
+	if err != nil {
+		return Vpn_config{}, err
+	}
+	if _, err := vless.Parse_uri([]byte(config.Config)); err != nil {
+		return Vpn_config{}, err
+	}
+	return config, nil
 }
 
 type Vless_options struct {

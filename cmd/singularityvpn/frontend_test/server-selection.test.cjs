@@ -6,7 +6,13 @@ const { createStaticServer, launchBrowser } = require('./cdp.cjs');
 
 const root = path.resolve(__dirname, '..', 'frontend');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-const about = fs.readFileSync(path.join(root, 'about.js'), 'utf8');
+const release_version = fs.readFileSync(path.resolve(root, '../../../VERSION'), 'utf8').trim();
+const review_dir = process.env.VPN_UI_REVIEW_DIR;
+async function review_screenshot(browser, name) {
+  if (!review_dir) return;
+  fs.mkdirSync(review_dir, { recursive: true });
+  fs.writeFileSync(path.join(review_dir, name + '.png'), await browser.screenshot());
+}
 
 test('server settings gear button controls server-policy popup', () => {
   assert.match(html, /id="server-settings-button"[^>]*aria-haspopup="listbox"[^>]*aria-controls="server-policy"/);
@@ -15,8 +21,9 @@ test('server settings gear button controls server-policy popup', () => {
   assert.match(html, /data-server-policy="pinned"[^>]*data-tip="[^"]+"[^>]*>[\s\S]*?Закреплённый/);
 });
 
-test('about notes preferred and pinned server modes', () => {
-  assert.match(about, /Выбранный сервер можно предпочесть или закрепить/);
+test('main protocol menu offers native VLESS alongside existing protocols', () => {
+  assert.match(html, /data-protocol="vless"/);
+  assert.match(html, /data-protocol="wireguard"/);
 });
 
 describe('Server selection and switching interactions', () => {
@@ -33,7 +40,7 @@ describe('Server selection and switching interactions', () => {
         window.page_errors = [];
         window.addEventListener('error', e => window.page_errors.push(e.message || String(e)));
         window.addEventListener('unhandledrejection', e => window.page_errors.push(e.reason ? (e.reason.message || String(e.reason)) : String(e)));
-        window.strategy_calls = [];
+        window.strategy_calls = []; window.connect_calls = 0; window.vless_capability = true;
         window.mock_strategy = { country: '', node_id: '', pinned: false };
         window.mock_status = {
           signed_in: true,
@@ -56,6 +63,7 @@ describe('Server selection and switching interactions', () => {
         window.go = {
           main: {
             App: new Proxy({
+              Connect: async () => { window.connect_calls++; return window.connect_error || {}; },
               Status: async () => ({
                 service_running: true,
                 status: window.mock_status
@@ -69,7 +77,7 @@ describe('Server selection and switching interactions', () => {
               Download_vless: async (id, node) => { window.vless_download = [id, node]; return { message: 'saved' }; },
               Servers: async () => ({
                 servers: [
-                  { node_id: 'de-01', name: 'Frankfurt 1', country: 'DE', city: 'Frankfurt', available: true },
+                  { node_id: 'de-01', name: 'Frankfurt 1', country: 'DE', city: 'Frankfurt', available: true, vless_available: window.vless_capability },
                   { node_id: 'nl-01', name: 'Amsterdam 1', country: 'NL', city: 'Amsterdam', available: true }
                 ]
               }),
@@ -79,7 +87,7 @@ describe('Server selection and switching interactions', () => {
                   { node_id: 'nl-01', rtt_ms: 42 }
                 ]
               }),
-              Version: async () => ({ version: '0.1.5' }),
+              Version: async () => ({ version: ${JSON.stringify(release_version)} }),
               Journal: async () => ({ entries: [] }),
               Analysis: async () => ({}),
               Set_strategy: async (s) => {
@@ -262,4 +270,148 @@ describe('Server selection and switching interactions', () => {
     assert.equal(lastCall.node_id, '', 'Auto country must clear node_id');
     assert.equal(lastCall.pinned, false, 'Auto country must clear pinned');
   });
+  test('connected server uses catalogue name when session metadata is absent', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`window.mock_status.node_name=''; window.mock_status.country=''; window.mock_status.city=''; window.fixture_events.changed()`);
+    await new Promise(r => setTimeout(r, 150));
+    const chip = await browser.evaluate(`document.getElementById('chip').textContent`);
+    assert.match(chip, /Германия/);
+    assert.match(chip, /Frankfurt/);
+    assert.doesNotMatch(chip, /de-01/);
+    await browser.evaluate(`window.mock_status.node_name='Frankfurt 1'; window.mock_status.country='DE'; window.mock_status.city='Frankfurt'; window.fixture_events.changed()`);
+  });
+  test('protocol capability does not create a duplicate server badge', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`document.getElementById('chip').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(await browser.evaluate(`document.querySelectorAll('#server-list .vless-capability').length`), 0);
+    assert.doesNotMatch(await browser.evaluate(`document.getElementById('chip-sub').textContent`), /AmneziaWG|WireGuard|OpenVPN|VLESS/);
+    assert.deepEqual(await browser.evaluate(`({label:document.querySelector('#protocol-chip .protocol-label').textContent,value:document.getElementById('protocol-value').textContent})`), {label:'Протокол · Авто',value:'AmneziaWG'});
+    await review_screenshot(browser, 'vless-server-row');
+    await browser.evaluate(`document.getElementById('chip').click()`);
+  });
+
+  test('VLESS availability follows selected server and country', async (t) => {
+    if (!browser) return t.skip('No browser');
+    const result = await browser.evaluate(`[
+      servers_ui.vless_available({node_id:'de-01'}),
+      servers_ui.vless_available({node_id:'nl-01'}),
+      servers_ui.vless_available({country:'DE'}),
+      servers_ui.vless_available({country:'NL'}),
+      servers_ui.vless_available({node_id:'missing'})
+    ]`);
+    assert.deepEqual(result, [true, false, true, false, false]);
+  });
+
+  test('VLESS is capability scoped, filters servers and connects through native backend', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`document.getElementById('protocol-chip').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(await browser.evaluate(`!!document.querySelector('[data-protocol="vless"]:not([hidden]):not(:disabled)')`), true);
+    await review_screenshot(browser, 'vless-protocol-menu');
+    await browser.evaluate(`document.querySelector('[data-protocol="vless"]').click()`);
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(await browser.evaluate(`window.mock_strategy.protocol`), 'vless');
+    await browser.evaluate(`document.getElementById('chip').click()`);
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(await browser.evaluate(`document.getElementById('server-list').textContent.includes('Нидерланды')`), false);
+    await browser.evaluate(`document.getElementById('chip').click(); window.mock_status.state='disconnected'; window.mock_status.session_id=''; window.fixture_events.changed()`);
+    await new Promise(r => setTimeout(r, 150));
+    await browser.evaluate(`document.getElementById('power').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(await browser.evaluate(`window.connect_calls`), 1);
+    assert.deepEqual(await browser.evaluate(`window.page_errors`), []);
+  });
+
+  test('missing or malformed capability disables saved VLESS without silently changing the preference', async (t) => {
+    if (!browser) return t.skip('No browser');
+    for (const capability of ['undefined', 'false', '"true"']) {
+      await browser.evaluate(`window.vless_capability=${capability}; document.getElementById('protocol-chip').click()`);
+      await new Promise(r => setTimeout(r, 100));
+      assert.deepEqual(await browser.evaluate(`(() => {const b=document.querySelector('[data-protocol="vless"]'); return {disabled:b.disabled, selected:b.getAttribute('aria-selected'), label:document.getElementById('protocol-value').textContent};})()`), {disabled:true,selected:'true',label:'VLESS + REALITY'});
+      await browser.evaluate(`document.getElementById('protocol-chip').click()`);
+    }
+    assert.equal(await browser.evaluate(`window.mock_strategy.protocol`), 'vless');
+  });
+
+  test('native VLESS failure is visible and leaves the connect button usable', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`window.connect_error={code:'protocol_unavailable'}; document.getElementById('power').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(await browser.evaluate(`document.getElementById('action-error').hidden`), false);
+    assert.equal(await browser.evaluate(`document.getElementById('power').disabled`), false);
+    assert.equal(await browser.evaluate(`window.mock_strategy.protocol`), 'vless');
+  });
+
+  test('choosing VLESS while disconnected invokes native Connect immediately', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`window.connect_error=null; window.vless_capability=true; document.getElementById('protocol-chip').click()`);
+    await new Promise(r => setTimeout(r, 100));
+    await browser.evaluate(`document.querySelector('[data-protocol="wireguard"]').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    const before = await browser.evaluate(`window.connect_calls`);
+    await browser.evaluate(`document.getElementById('protocol-chip').click()`);
+    await new Promise(r => setTimeout(r, 100));
+    await browser.evaluate(`document.querySelector('[data-protocol="vless"]').click()`);
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(await browser.evaluate(`window.connect_calls`), before + 1);
+    assert.equal(await browser.evaluate(`window.mock_strategy.protocol`), 'vless');
+  });
+
+  test('AntiZapret and Games require explicit full VPN transition; cancel sends no native action', async (t) => {
+    if (!browser) return t.skip('No browser');
+    for (const mode of ['antizapret', 'games']) {
+      await browser.evaluate(`document.getElementById('protocol-chip').click()`);
+      await new Promise(r => setTimeout(r, 100));
+      await browser.evaluate(`document.querySelector('[data-protocol="wireguard"]').click()`);
+      await new Promise(r => setTimeout(r, 150));
+      await browser.evaluate(`window.mock_status.state='connected'; window.mock_status.session_id='live'; window.mock_status.tunnel='${mode}'; window.fixture_events.changed()`);
+      await new Promise(r => setTimeout(r, 100));
+      const before = await browser.evaluate(`({strategy:window.strategy_calls.length, connect:window.connect_calls})`);
+      await browser.evaluate(`document.getElementById('protocol-chip').click()`);
+      await new Promise(r => setTimeout(r, 100));
+      await browser.evaluate(`document.querySelector('[data-protocol="vless"]').click()`);
+      await new Promise(r => setTimeout(r, 50));
+      assert.equal(await browser.evaluate(`document.getElementById('confirm').hidden`), false);
+      assert.match(await browser.evaluate(`document.getElementById('confirm-text').textContent`), /весь компьютер/);
+      await browser.evaluate(`document.getElementById('confirm-no').click()`);
+      await new Promise(r => setTimeout(r, 50));
+      assert.deepEqual(await browser.evaluate(`({strategy:window.strategy_calls.length, connect:window.connect_calls})`), before);
+      await browser.evaluate(`document.querySelector('[data-protocol="vless"]').click()`);
+      await new Promise(r => setTimeout(r, 50));
+      await browser.evaluate(`document.getElementById('confirm-yes').click()`);
+      await new Promise(r => setTimeout(r, 200));
+      assert.equal(await browser.evaluate(`window.strategy_calls.length`), before.strategy + 1);
+      assert.equal(await browser.evaluate(`window.strategy_calls.at(-1).protocol`), 'vless');
+      assert.equal(await browser.evaluate(`window.connect_calls`), before.connect, 'Live handover uses Set_strategy once, without a second Connect');
+      assert.deepEqual(await browser.evaluate(`({full:document.querySelector('[data-mode="vpn"]').getAttribute('aria-checked'),split_disabled:document.querySelector('[data-mode="antizapret"]').disabled})`), {full:'true',split_disabled:true});
+    }
+    assert.deepEqual(await browser.evaluate(`window.page_errors`), []);
+  });
+
+  test('current About release and its VLESS group are expanded and visible, plans last', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`document.getElementById('settings-button').click()`);
+    await new Promise(r => setTimeout(r, 100));
+    await browser.evaluate(`document.getElementById('about-row').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    const result = await browser.evaluate(`(() => {
+      const body=document.getElementById('about-body');
+      const entry=Array.from(body.querySelectorAll('.about-version')).find(e=>e.querySelector('.about-current'));
+      const group=entry && entry.querySelector('.about-group');
+      const item=group && Array.from(group.querySelectorAll('li')).find(e=>e.textContent.includes('VLESS'));
+      const rect=item && item.getBoundingClientRect();
+      return {panel:!document.getElementById('about-panel').hidden, title:entry?.querySelector('.about-title').textContent, open:entry?.open,group_open:group?.open,text:item?.textContent,visible:!!rect && rect.height>0 && rect.top>=0 && rect.bottom<=window.innerHeight,plans_last:body.lastElementChild.classList.contains('about-plans'), errors:window.page_errors};
+    })()`);
+    assert.equal(result.panel, true);
+    assert.equal(result.title, 'Версия ' + release_version);
+    assert.equal(result.open, true);
+    assert.equal(result.group_open, true);
+    assert.match(result.text, /VLESS/);
+    assert.equal(result.visible, true);
+    assert.equal(result.plans_last, true);
+    assert.deepEqual(result.errors, []);
+    await review_screenshot(browser, 'about-current-vless');
+  });
+
 });

@@ -132,7 +132,7 @@ type Strategy struct {
 }
 
 // Strategy_protocols are the protocols a person can pick by hand.
-var Strategy_protocols = []string{"amneziawg", "wireguard", "openvpn"}
+var Strategy_protocols = []string{"amneziawg", "wireguard", "openvpn", "vless"}
 
 // Validate refuses an anonymity level that is not one of the three, a
 // country that is not two capital letters, and a node id that is not a
@@ -312,12 +312,13 @@ type Goal_outcome struct {
 
 // Server is one entry of Servers_result.
 type Server struct {
-	Node_id   string `json:"node_id"`
-	Name      string `json:"name,omitempty"`
-	Country   string `json:"country,omitempty"`
-	Region    string `json:"region,omitempty"`
-	City      string `json:"city,omitempty"`
-	Available bool   `json:"available"`
+	Vless_available bool   `json:"vless_available"`
+	Node_id         string `json:"node_id"`
+	Name            string `json:"name,omitempty"`
+	Country         string `json:"country,omitempty"`
+	Region          string `json:"region,omitempty"`
+	City            string `json:"city,omitempty"`
+	Available       bool   `json:"available"`
 }
 
 // Servers_result answers Command_servers.
@@ -549,12 +550,13 @@ type Version_result struct {
 
 // Error codes a Response carries in its Error_body.
 const (
-	Error_unknown_command = "unknown_command"
-	Error_bad_request     = "bad_request"   // malformed JSON, or params that failed Validate
-	Error_busy            = "busy"          // connection.Err_busy
-	Error_not_signed_in   = "not_signed_in" // no device token stored
-	Error_unauthorized    = "unauthorized"  // the control plane rejected the credentials
-	Error_internal        = "internal"      // anything else
+	Error_unknown_command      = "unknown_command"
+	Error_bad_request          = "bad_request"   // malformed JSON, or params that failed Validate
+	Error_busy                 = "busy"          // connection.Err_busy
+	Error_not_signed_in        = "not_signed_in" // no device token stored
+	Error_unauthorized         = "unauthorized"  // the control plane rejected the credentials
+	Error_protocol_unavailable = "protocol_unavailable"
+	Error_internal             = "internal" // anything else
 
 	Error_tunnel_up            = "tunnel_up"            // the analysis needs the tunnel down, or the connection moved while it ran
 	Error_server_unavailable   = "server_unavailable"   // the chosen server cannot take a connection now
@@ -581,6 +583,7 @@ var (
 
 	Err_tunnel_up = errors.New("ipc: a connection is up or was changing, so a direct measurement would measure the tunnel")
 
+	Err_protocol_unavailable = errors.New("ipc: selected protocol is unavailable")
 	Err_server_unavailable   = errors.New("ipc: the chosen server cannot take a connection right now")
 	Err_no_server_in_country = errors.New("ipc: no server in the chosen country can take a connection right now")
 

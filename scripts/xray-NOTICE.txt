@@ -1,0 +1,14 @@
+Xray-core 26.10.31, unmodified official Windows x64 release
+https://github.com/XTLS/Xray-core/releases/tag/v26.10.31
+Source code for this release (MPL 2.0):
+https://github.com/XTLS/Xray-core/tree/v26.10.31
+The complete upstream license is included as LICENSE.
+The upstream README is included verbatim as README.md.
+
+The release's Wintun binary is included unmodified and used through its API.
+Its complete upstream prebuilt binary license is included as LICENSE-Wintun.
+geoip.dat and geosite.dat are included verbatim from the same official archive.
+The pinned archive digest and individual file hashes are in manifest.json.
+
+This bundle contains no user configuration or credentials.
+No binary is downloaded at build, install, upgrade or runtime by this packaging.

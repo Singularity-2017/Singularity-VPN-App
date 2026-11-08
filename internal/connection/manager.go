@@ -488,6 +488,12 @@ func (m *Manager) connect_locked(ctx context.Context, request Connect_request) e
 	if err != nil {
 		return m.fail(now, &Fault{Kind: Fault_configuration, Op: "connect", Err: err})
 	}
+	if request.Protocol == "vless" || local.Strategy.Protocol == "vless" {
+		normalize_vless(&local)
+		if err := m.store.Save(local); err != nil {
+			return m.fail(now, &Fault{Kind: Fault_configuration, Op: "connect", Err: err})
+		}
+	}
 	m.local_state = local
 
 	target, config, fault := m.provision(connect_ctx, token, request)
@@ -570,6 +576,9 @@ func (m *Manager) provision(ctx context.Context, token string, request Connect_r
 // client_id already exists. Manual mode uses what the person chose; auto
 // mode asks the control plane and remembers its alternatives for recovery.
 func (m *Manager) choose_target(ctx context.Context, token string, request Connect_request) (recovery.Target, *Fault) {
+	if request.Protocol == "vless" || (request.Mode != Mode_manual && m.local_state.Strategy.Protocol == "vless") {
+		return m.vless_target(ctx, token, request)
+	}
 	if request.Mode == Mode_manual {
 		return recovery.Target{Node_id: request.Node_id, Protocol: request.Protocol}, nil
 	}
@@ -623,6 +632,11 @@ func (m *Manager) create_profile(ctx context.Context, token string, request Conn
 	protocol, node_id := "", ""
 	if request.Mode == Mode_manual {
 		protocol, node_id = request.Protocol, request.Node_id
+		if protocol == "vless" {
+			if _, fault := m.vless_target(ctx, token, request); fault != nil {
+				return recovery.Target{}, api.Vpn_config{}, fault
+			}
+		}
 	} else {
 		target, fault := m.choose_target(ctx, token, request)
 		if fault != nil {
@@ -861,6 +875,9 @@ func (m *Manager) Set_strategy(strategy state.Strategy) error {
 		return err
 	}
 	local.Strategy = strategy
+	if strategy.Protocol == "vless" {
+		normalize_vless(&local)
+	}
 	if err := m.store.Save(local); err != nil {
 		return err
 	}
@@ -928,6 +945,9 @@ func (m *Manager) Apply_strategy(ctx context.Context) error {
 	// budget Tick relies on nor be refused as flapping.
 	m.policy.Reset()
 	m.forget_way_back()
+	if target.Protocol == "vless" {
+		m.stop_companion(ctx)
+	}
 	previous := m.current
 	now := m.now()
 	m.set_state(State_switching)

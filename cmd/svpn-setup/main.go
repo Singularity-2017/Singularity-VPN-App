@@ -144,6 +144,9 @@ func install() error {
 	if err != nil {
 		return err
 	}
+	if err := verify_xray_payload(files); err != nil {
+		return err
+	}
 	dir, err := install_dir()
 	if err != nil {
 		return fmt.Errorf("cannot locate Program Files: %w", err)
@@ -223,14 +226,14 @@ func install() error {
 		}
 		total += int64(len(files[name]))
 	}
-	// A file of an older OpenVPN release that this one does not have --
-	// a DLL renamed between versions -- would otherwise stay beside the
-	// new openvpn.exe for good.
-	if entries, err := os.ReadDir(filepath.Join(dir, openvpn_dir)); err == nil {
-		for _, entry := range entries {
-			if _, ours := files[openvpn_dir+"/"+entry.Name()]; !ours {
-				if err := os.RemoveAll(filepath.Join(dir, openvpn_dir, entry.Name())); err != nil {
-					warn("  %s не удалён: %v", filepath.Join(openvpn_dir, entry.Name()), err)
+	// Remove obsolete dependency files only after the new payload is written.
+	for _, dependency_dir := range []string{openvpn_dir, xray_dir} {
+		if entries, err := os.ReadDir(filepath.Join(dir, dependency_dir)); err == nil {
+			for _, entry := range entries {
+				if _, ours := files[dependency_dir+"/"+entry.Name()]; !ours {
+					if err := os.RemoveAll(filepath.Join(dir, dependency_dir, entry.Name())); err != nil {
+						return fmt.Errorf("removing obsolete dependency %s: %w", entry.Name(), err)
+					}
 				}
 			}
 		}
@@ -335,8 +338,10 @@ func uninstall(purge bool) error {
 			warn("  %s не удалён: %v", name, err)
 		}
 	}
-	if err := os.RemoveAll(filepath.Join(dir, openvpn_dir)); err != nil {
-		warn("  %s не удалён: %v", openvpn_dir, err)
+	for _, dependency_dir := range []string{openvpn_dir, xray_dir} {
+		if err := os.RemoveAll(filepath.Join(dir, dependency_dir)); err != nil {
+			warn("  dependency directory %s could not be removed: %v", dependency_dir, err)
+		}
 	}
 	if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		// The running uninstaller is still in it; Windows removes the

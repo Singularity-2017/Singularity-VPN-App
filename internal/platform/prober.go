@@ -2,6 +2,8 @@ package platform
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -73,6 +75,9 @@ type Network_prober struct {
 	target_now       func() string
 	fallback_target  string
 	fallback_allowed func() bool
+	verify_tls       func() bool
+	verified_dial    func(context.Context, string, string) (net.Conn, error)
+	tls_roots        *x509.CertPool // nil uses system trust; tests supply their local peer authority
 	logger           *slog.Logger
 
 	attempts        int
@@ -109,7 +114,11 @@ type Prober_config struct {
 	// Fallback_target corroborates total failure only when Fallback_allowed confirms full routing.
 	Fallback_target  string
 	Fallback_allowed func() bool
-	Logger           *slog.Logger
+	// Verify_tls requires an authenticated remote response for locally terminated TUN TCP.
+	Verify_tls func() bool
+	// Verified_dial pins authenticated probes to the proxy interface; it must never fall back.
+	Verified_dial func(context.Context, string, string) (net.Conn, error)
+	Logger        *slog.Logger
 
 	// Attempts is how many round trips one probe makes. Zero means
 	// Default_attempts.
@@ -188,6 +197,8 @@ func New_network_prober(config Prober_config) (*Network_prober, error) {
 		target_now:       config.Dial_target_now,
 		fallback_target:  config.Fallback_target,
 		fallback_allowed: config.Fallback_allowed,
+		verify_tls:       config.Verify_tls,
+		verified_dial:    config.Verified_dial,
 		logger:           config.Logger,
 		attempts:         attempts,
 		attempt_timeout:  attempt_timeout,
@@ -230,6 +241,7 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 	// working tunnel, and turning that into a refusal here would make a
 	// usable connection look like a dead one. Bound it by attempt_timeout
 	// so a stalled resolver cannot hold up the TCP reachability check.
+	verify_tls := p.verify_tls != nil && p.verify_tls()
 	target := p.dial_target
 	if p.target_now != nil {
 		if current := p.target_now(); current != "" {
@@ -242,7 +254,9 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 	udp_done := make(chan struct{})
 	go func() {
 		defer close(udp_done)
-		udp = p.udp_probe(ctx, target)
+		if !verify_tls {
+			udp = p.udp_probe(ctx, target)
+		}
 	}()
 
 	system_lookup := func() bool {
@@ -260,14 +274,16 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 		dns_ok = system_lookup()
 	}
 
-	rtts, failed, blocked := p.dial_all(ctx, target)
+	rtts, failed, blocked := p.dial_all(ctx, target, verify_tls)
 	<-udp_done
 	if len(rtts) == 0 && ctx.Err() == nil && target == p.dial_target && p.fallback_target != "" && p.fallback_allowed != nil && p.fallback_allowed() {
 		target = p.fallback_target
-		rtts, failed, blocked = p.dial_all(ctx, target)
+		rtts, failed, blocked = p.dial_all(ctx, target, verify_tls)
 		// The figures describe the server the sample names.
 		if len(rtts) > 0 {
-			udp = p.udp_probe(ctx, target)
+			if !verify_tls {
+				udp = p.udp_probe(ctx, target)
+			}
 		}
 	}
 	if p.udp_dns {
@@ -278,6 +294,10 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 		}
 	}
 	prompt, resent := split_resent(rtts)
+	if verify_tls {
+		// Application handshake time does not identify retransmitted SYNs.
+		prompt, resent = rtts, 0
+	}
 	if len(rtts) == 0 {
 		// A probe that was cancelled says nothing about the tunnel. Every
 		// attempt fails the moment ctx ends, which looks exactly like a
@@ -292,7 +312,7 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 		// filter) actively blocks outgoing sockets to this target port,
 		// the transport itself did not fail and the tunnel must not be torn
 		// down silently. Report the sample as internet-reachable with DNS unconfirmed.
-		if blocked == p.attempts && p.tunnel_up != nil && p.tunnel_up() {
+		if blocked == p.attempts && p.tunnel_up != nil && p.tunnel_up() && !verify_tls {
 			p.logger.Warn("probe target blocked by local platform filtering; tunnel remains up", "target", target, "blocked", blocked)
 			return diagnostics.Sample{
 				Rtt:                0,
@@ -373,7 +393,7 @@ func (p *Network_prober) Probe(ctx context.Context) (diagnostics.Sample, error) 
 // closed here, including one that opens after another attempt has already
 // answered the question this probe was asked -- a leaked handle in a
 // service meant to run for months is a slow death.
-func (p *Network_prober) dial_all(ctx context.Context, target string) ([]time.Duration, int, int) {
+func (p *Network_prober) dial_all(ctx context.Context, target string, verify_tls bool) ([]time.Duration, int, int) {
 	type outcome struct {
 		rtt    time.Duration
 		ok     bool
@@ -386,7 +406,7 @@ func (p *Network_prober) dial_all(ctx context.Context, target string) ([]time.Du
 	for i := 0; i < p.attempts; i++ {
 		go func(i int) {
 			defer wg.Done()
-			rtt, err := p.dial_one(ctx, target)
+			rtt, err := p.dial_one(ctx, target, verify_tls)
 			reason := ""
 			if err != nil {
 				reason = probe_failure_reason(err)
@@ -422,9 +442,9 @@ func (p *Network_prober) dial_all(ctx context.Context, target string) ([]time.Du
 }
 
 // dial_one performs one round trip: dial target within its own
-// Attempt_timeout, timed from just before the dial to just after it
-// returns, and close the connection the moment it is no longer needed.
-func (p *Network_prober) dial_one(ctx context.Context, target string) (time.Duration, error) {
+// Attempt_timeout, including the authenticated TLS response when required.
+// The connection is closed as soon as the measurement completes.
+func (p *Network_prober) dial_one(ctx context.Context, target string, verify_tls bool) (time.Duration, error) {
 	attempt_ctx := ctx
 	if p.attempt_timeout > 0 {
 		var cancel context.CancelFunc
@@ -433,14 +453,33 @@ func (p *Network_prober) dial_one(ctx context.Context, target string) (time.Dura
 	}
 
 	start := p.now()
-	conn, err := p.dial(attempt_ctx, "tcp", target)
-	elapsed := p.now().Sub(start)
+	dial := p.dial
+	if verify_tls && p.verified_dial != nil {
+		dial = p.verified_dial
+	}
+	conn, err := dial(attempt_ctx, "tcp", target)
+
 	if err != nil {
 		return 0, err
 	}
 
-	_ = conn.Close()
-	return elapsed, nil
+	defer conn.Close()
+	if verify_tls {
+		host, _, err := net.SplitHostPort(target)
+		if err != nil {
+			return 0, err
+		}
+		// The local TUN can acknowledge TCP before the proxy reaches its peer.
+		// Only the peer's authenticated TLS response establishes reachability.
+		secure := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, RootCAs: p.tls_roots})
+		if err := secure.HandshakeContext(attempt_ctx); err != nil {
+			return 0, err
+		}
+	}
+	if verify_tls && !p.verify_tls() {
+		return 0, diagnostics.Err_tunnel_down
+	}
+	return p.now().Sub(start), nil
 }
 
 // udp_outcome is one UDP burst: how many queries went out, how many came

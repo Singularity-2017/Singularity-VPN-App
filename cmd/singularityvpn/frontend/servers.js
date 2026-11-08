@@ -77,6 +77,16 @@
     return (servers || []).find((s) => s.node_id === id) || null;
   }
 
+  function supports_vless(server) {
+    return !!server && server.available === true && server.vless_available === true;
+  }
+
+  function vless_available(strategy) {
+    const s = strategy || {};
+    return (servers || []).some((server) => supports_vless(server) &&
+      (s.node_id ? server.node_id === s.node_id : !s.country || country_of(server.country).code === country_of(s.country).code));
+  }
+
   function node_label(id) {
     const s = server_by_id(id);
     if (!s) return id ? "сервер " + id.slice(0, 8) : "сервер";
@@ -117,6 +127,7 @@
   function group_servers() {
     const groups = new Map();
     for (const server of servers || []) {
+      if ((env.get_strategy() || {}).protocol === "vless" && !supports_vless(server)) continue;
       const c = country_of(server.country);
       const key = c.code || c.name;
       if (!groups.has(key)) groups.set(key, { key, code: c.code, name: c.name, servers: [] });
@@ -290,6 +301,7 @@
           dot.className = "live-dot";
           b.append(dot);
         }
+
         b.disabled = !server.available;
         if (server.available) {
           b.append(ping_span("node", server.node_id));
@@ -373,7 +385,7 @@
     if (!app || typeof app.Servers !== "function") return { error: { code: "not_available" } };
     let answer = null;
     try { answer = await app.Servers(); } catch (e) { answer = null; }
-    if (answer && !answer.error) servers = answer.servers || [];
+    servers = answer && !answer.error ? answer.servers || [] : [];
     return answer || { error: { code: "read_failed" } };
   }
 
@@ -429,6 +441,7 @@
     short_name,
     flag_into,
     server_by_id,
+    vless_available,
     node_label,
     load_servers,
     render_server_menu,

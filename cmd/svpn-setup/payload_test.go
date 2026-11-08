@@ -8,7 +8,7 @@ import (
 
 func full_payload() fstest.MapFS {
 	fs := fstest.MapFS{}
-	for _, name := range payload_files {
+	for _, name := range append(append([]string{}, payload_files...), xray_required...) {
 		fs[name] = &fstest.MapFile{Data: []byte("content of " + name)}
 	}
 	for _, name := range []string{"openvpn/openvpn.exe", "openvpn/LICENSE", "openvpn/libssl-3-x64.dll"} {
@@ -24,7 +24,7 @@ func Test_the_whole_openvpn_directory_is_installed_after_the_fixed_files(t *test
 	}
 	order := install_order(got)
 	want_tail := []string{"openvpn/LICENSE", "openvpn/libssl-3-x64.dll", "openvpn/openvpn.exe"}
-	if len(order) != len(payload_files)+len(want_tail) || order[0] != service_exe {
+	if len(order) != len(payload_files)+len(xray_required)+len(want_tail) || order[0] != service_exe {
 		t.Fatalf("install_order = %v, want the fixed files then the openvpn directory", order)
 	}
 	for i, name := range want_tail {
@@ -48,8 +48,8 @@ func Test_a_complete_payload_is_read_whole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("payload_contents = %v, want nil", err)
 	}
-	if len(got) != len(payload_files)+3 {
-		t.Fatalf("payload_contents returned %d files, want %d", len(got), len(payload_files)+3)
+	if len(got) != len(payload_files)+len(xray_required)+3 {
+		t.Fatalf("payload_contents returned %d files, want %d", len(got), len(payload_files)+len(xray_required)+3)
 	}
 }
 
@@ -104,5 +104,27 @@ func Test_the_uninstall_command_is_quoted(t *testing.T) {
 	}
 	if got := autostart_command(dir); got != `"C:\Program Files\Singularity VPN\SingularityVPN.exe" --tray` {
 		t.Fatalf("autostart_command = %q, want the quoted window path with --tray", got)
+	}
+}
+
+func Test_each_required_xray_file_is_required_before_install(t *testing.T) {
+	for _, name := range xray_required {
+		files := full_payload()
+		delete(files, name)
+		_, err := payload_contents(files)
+		if err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("missing %s: %v", name, err)
+		}
+	}
+}
+
+func Test_xray_disk_manifest_cannot_authorize_replacement(t *testing.T) {
+	files := map[string][]byte{"xray/manifest.json": []byte(`{"files":{}}`)}
+	if err := verify_xray_payload(files); err == nil {
+		t.Fatal("replacement manifest accepted")
+	}
+	files["xray/manifest.json"] = xray_pin
+	if err := verify_xray_payload(files); err == nil {
+		t.Fatal("missing pinned binaries accepted")
 	}
 }

@@ -35,6 +35,7 @@ import (
 	"singularity-vpn-app/internal/platform/windows/divert"
 	"singularity-vpn-app/internal/protocols"
 	"singularity-vpn-app/internal/protocols/openvpn"
+	"singularity-vpn-app/internal/protocols/vless"
 	"singularity-vpn-app/internal/protocols/wireguard"
 	"singularity-vpn-app/internal/reach"
 	"singularity-vpn-app/internal/security"
@@ -487,6 +488,8 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 	tunnel_up := func() bool { return adapter.Status().Running }
 	probe_target := adapter.Probe_target
 	fallback_allowed := adapter.Full_probe_routes
+	verify_tls := func() bool { return false }
+	var verified_dial func(context.Context, string, string) (net.Conn, error)
 	if ovpn := openvpn_adapter(p, logger); ovpn != nil {
 		adapters = append(adapters, ovpn)
 		// Corroboration follows the main tunnel, including the shared Amnezia adapter.
@@ -507,6 +510,24 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 			return ovpn.Probe_target()
 		}
 	}
+	if exe, err := os.Executable(); err == nil {
+		path := filepath.Join(filepath.Dir(exe), "xray", "xray.exe")
+		if _, err := os.Stat(path); err == nil {
+			xray := vless.New_windows_adapter(path)
+			adapters = append(adapters, xray)
+			verify_tls = xray.Probe_required
+			verified_dial = xray.Dial_probe
+			previous_up, previous_probe, previous_fallback := tunnel_up, probe_target, fallback_allowed
+			tunnel_up = func() bool { return xray.Status().Running || previous_up() }
+			probe_target = func() string {
+				if xray.Status().Running {
+					return ""
+				}
+				return previous_probe()
+			}
+			fallback_allowed = func() bool { return xray.Status().Running || previous_fallback() }
+		}
+	}
 	registry, err := protocols.New_registry(adapters...)
 	if err != nil {
 		return nil, err
@@ -520,6 +541,8 @@ func build_application(p paths, logger *slog.Logger, operations *journal.Journal
 		Dial_target_now:  probe_target,
 		Fallback_target:  "8.8.8.8:443",
 		Fallback_allowed: fallback_allowed,
+		Verify_tls:       verify_tls,
+		Verified_dial:    verified_dial,
 		// Games travel over UDP, so every probe measures it too; its
 		// answers also stand for the DNS check, which keeps the probe off
 		// the DNS Client service.

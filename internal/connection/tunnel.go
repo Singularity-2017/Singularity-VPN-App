@@ -26,6 +26,9 @@ const (
 // only carry the whole machine cannot put games through alone; the games
 // still go through, with everything else, as anonymity does it.
 func effective_mode(local state.State) string {
+	if local.Strategy.Protocol == "vless" {
+		return Tunnel_vpn
+	}
 	if len(split_for(local).Games) > 0 {
 		if carries_only_whole_machine(local.Strategy.Protocol) {
 			return Tunnel_vpn
@@ -46,7 +49,7 @@ func effective_mode(local state.State) string {
 // alone, before any adapter is at hand, so the name is kept here; a test
 // holds it to the adapter.
 func carries_only_whole_machine(protocol string) bool {
-	return protocol == "openvpn"
+	return protocol == "openvpn" || protocol == "vless"
 }
 
 // profile_for is the name Fetch_config is asked for: "antizapret" for the

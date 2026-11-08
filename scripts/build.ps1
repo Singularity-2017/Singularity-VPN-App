@@ -13,6 +13,8 @@ param(
     # drives it without a window.
     [string[]]$Target = @("./cmd/svpn-service", "./cmd/singularityvpn", "./cmd/svpn-ctl", "./cmd/svpn-swap"),
     [string]$Out = "dist",
+    # Previously verified official files only; this script never downloads Xray.
+    [string]$XraySource = "",
     # Build SingularityVPN-setup.exe: the programs, wintun.dll, the
     # WinDivert packet driver and openvpn.exe inside one installer.
     # wintun.dll is taken from local/ or from the output directory, where
@@ -67,8 +69,12 @@ if ($version) { $ldflags += "-X $pkg.Version=$version" }
 if ($commit) { $ldflags += "-X $pkg.Commit=$commit" }
 $ldflags += "-X $pkg.Built_at=$built_at"
 
-$out_dir = Join-Path $root $Out
+$out_dir = if ([IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $root $Out }
 New-Item -ItemType Directory -Force -Path $out_dir | Out-Null
+if ($Setup -or $Target -contains './cmd/svpn-service' -or $Target -contains './cmd/singularityvpn') {
+    if (-not $XraySource) { $XraySource = Join-Path $root 'local/xray' }
+    & (Join-Path $PSScriptRoot 'stage-xray.ps1') -Source $XraySource -Destination (Join-Path $out_dir 'xray')
+}
 
 if ($control_plane) {
     Write-Host "control plane: supplied from local/app.env"
@@ -125,11 +131,12 @@ if ($env:SVPN_SIGN_CERT) {
 } else {
     Write-Host "code signing: no certificate configured -- skipped"
 }
-Sign-Binaries @(Get-ChildItem $out_dir -Filter *.exe | Where-Object { $_.Name -ne "SingularityVPN-setup.exe" } | ForEach-Object { $_.FullName })
+Sign-Binaries @($Target | ForEach-Object { if ($_ -eq $gui) { Join-Path $out_dir "SingularityVPN.exe" } else { Join-Path $out_dir ((Split-Path -Leaf $_) + ".exe") } })
 
 if ($Setup) {
     $payload = Join-Path $root "cmd/svpn-setup/payload"
     New-Item -ItemType Directory -Force -Path $payload | Out-Null
+    & (Join-Path $PSScriptRoot 'stage-xray.ps1') -Source (Join-Path $out_dir 'xray') -Destination (Join-Path $payload 'xray')
     foreach ($name in @("svpn-service.exe", "SingularityVPN.exe", "svpn-ctl.exe", "svpn-swap.exe")) {
         $from = Join-Path $out_dir $name
         if (-not (Test-Path $from)) { Write-Error "setup: $name was not built; build all the default targets with -Setup" }
