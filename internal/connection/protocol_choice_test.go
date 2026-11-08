@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"singularity-vpn-app/internal/api"
+	"singularity-vpn-app/internal/state"
 )
 
 // On a network where plain WireGuard is throttled the control plane
@@ -234,6 +235,26 @@ func Test_manual_plain_protocol_remains_authoritative(t *testing.T) {
 	}
 	if m.current.Protocol != "wireguard" {
 		t.Fatalf("manual choice changed: %+v", m.current)
+	}
+}
+
+func Test_manual_connection_applies_an_explicit_protocol_change(t *testing.T) {
+	env := new_test_env(t)
+	env.store.state.Client_id = "client-1"
+	awg := &fake_protocol{name: "amneziawg"}
+	env.protocols.by_name["amneziawg"] = awg
+	m := env.build()
+	if err := m.Connect(context.Background(), Connect_request{Mode: Mode_manual, Node_id: "de-01", Protocol: "wireguard"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Set_strategy(state.Strategy{Protocol: "amneziawg"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Apply_strategy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if m.current.Node_id != "de-01" || m.current.Protocol != "amneziawg" || awg.connect_calls != 1 {
+		t.Fatalf("manual protocol choice was not applied on the same node: %+v", m.current)
 	}
 }
 

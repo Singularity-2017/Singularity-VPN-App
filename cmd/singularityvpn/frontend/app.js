@@ -748,8 +748,9 @@
     const active_protocol = status.session_id ? protocol_label(status.protocol) : "";
     const automatic_protocol = !s.protocol;
     const protocol_chip = $("protocol-chip");
-    const protocol_title = automatic_protocol && active_protocol ? "Протокол · Авто" : "Протокол";
-    const protocol_value = active_protocol || protocol_names[s.protocol] || "Авто";
+    const mismatch = active_protocol && s.protocol && status.protocol !== s.protocol;
+    const protocol_title = mismatch ? "Сейчас · " + active_protocol : automatic_protocol && active_protocol ? "Протокол · Авто" : "Протокол";
+    const protocol_value = protocol_names[s.protocol] || active_protocol || "Авто";
     const protocol_label_el = protocol_chip.querySelector(".protocol-label");
     const protocol_changed = protocol_label_el.textContent !== protocol_title || $("protocol-value").textContent !== protocol_value;
     protocol_label_el.textContent = protocol_title;
@@ -757,7 +758,7 @@
     if (protocol_changed && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       protocol_chip.animate([{opacity: 0}, {opacity: 1}], {duration: 100});
     }
-    if (active_protocol && s.protocol && status.protocol !== s.protocol) {
+    if (mismatch) {
       protocol_chip.dataset.tip = "Сейчас: " + active_protocol + ". Выбран: " + protocol_label(s.protocol) + ".";
     } else {
       delete protocol_chip.dataset.tip;

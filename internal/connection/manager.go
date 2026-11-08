@@ -910,23 +910,30 @@ func (m *Manager) Strategy() (state.Strategy, error) {
 }
 
 // Apply_strategy asks the control plane again for a connection that is up
-// in auto mode, and switches to its answer if that is somewhere else. A
-// connection that is not up, or that the person pinned in manual mode, is
-// left alone: the next connect asks with the new strategy anyway.
+// in auto mode. A manual connection keeps its node, but an explicitly
+// changed protocol is applied to that node immediately.
 func (m *Manager) Apply_strategy(ctx context.Context) error {
 	m.cancel_monitor_probe()
 	m.op_mu.Lock()
 	defer m.op_mu.Unlock()
 
 	current := m.get_state()
-	if (current != State_connected && current != State_degraded) || m.mode != Mode_auto {
+	if current != State_connected && current != State_degraded {
 		return nil
 	}
 	token, err := m.token.Token(ctx)
 	if err != nil {
 		return &Fault{Kind: Fault_authentication, Op: "apply_strategy", Err: err}
 	}
-	target, fault := m.choose_target(ctx, token, Connect_request{Mode: Mode_auto})
+	request := Connect_request{Mode: Mode_auto}
+	if m.mode == Mode_manual {
+		protocol := m.local_state.Strategy.Protocol
+		if protocol == "" || protocol == m.current.Protocol {
+			return nil
+		}
+		request = Connect_request{Mode: Mode_manual, Node_id: m.current.Node_id, Protocol: protocol}
+	}
+	target, fault := m.choose_target(ctx, token, request)
 	if fault != nil {
 		return fault
 	}

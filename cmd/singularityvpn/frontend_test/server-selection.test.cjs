@@ -291,6 +291,15 @@ describe('Server selection and switching interactions', () => {
     await browser.evaluate(`document.getElementById('chip').click()`);
   });
 
+  test('a selected protocol remains visible if the old session is still active', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`window.mock_strategy.protocol='vless'; window.mock_status.protocol='openvpn'; window.fixture_events.changed()`);
+    await new Promise(r => setTimeout(r, 150));
+    const state = await browser.evaluate(`({label:document.querySelector('#protocol-chip .protocol-label').textContent,value:document.getElementById('protocol-value').textContent})`);
+    assert.deepEqual(state, {label:'Сейчас · OpenVPN',value:'VLESS + REALITY'});
+    await browser.evaluate(`window.mock_strategy.protocol=''; window.mock_status.protocol='amneziawg'; window.fixture_events.changed()`);
+    await new Promise(r => setTimeout(r, 150));
+  });
   test('VLESS availability follows selected server and country', async (t) => {
     if (!browser) return t.skip('No browser');
     const result = await browser.evaluate(`[
