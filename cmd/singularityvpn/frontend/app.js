@@ -263,6 +263,16 @@
     // document.querySelector(".goals").hidden = strategy === null;
     render_chip(status, s, auto, up);
 
+    const conflict = status.conflict;
+    const cb = $("conflict-banner");
+    if (cb) {
+      cb.hidden = !conflict;
+      if (conflict) {
+        set_text("conflict-title", "Включён другой VPN: " + conflict.name);
+        set_text("conflict-body", "Адаптер «" + conflict.adapter + "» («" + conflict.name + "») перехватывает или блокирует трафик Singularity VPN. Отключите его, чтобы связь не рвалась.");
+      }
+    }
+
     const power = $("power");
     power.className = "power" + (st === "connected" ? " on" : "") + (moving ? " busy" : "") + (st === "degraded" || st === "failed" ? " trouble" : "");
     set_text("power-label", power_text[st] || st);
@@ -920,6 +930,9 @@
     note.textContent = profiles.length ? "" : "Профиль появится при первом подключении.";
     for (const p of profiles) {
       const b = option(p.label || "Без имени", !!p.current, () => choose_profile(p));
+      b.setAttribute("role", "button");
+      b.removeAttribute("aria-selected");
+      b.setAttribute("aria-pressed", p.current ? "true" : "false");
       b.disabled = busy;
       if (p.online === true && !p.current) {
         const tag = document.createElement("span");
@@ -927,7 +940,13 @@
         tag.textContent = "на другом устройстве";
         b.append(tag);
       }
-      list.append(b);
+      const row = document.createElement("div");
+      row.className = "profile-row";
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", p.label || "Без имени");
+      row.append(b);
+      window.vless_ui?.append(row, p, app);
+      list.append(row);
     }
   }
 

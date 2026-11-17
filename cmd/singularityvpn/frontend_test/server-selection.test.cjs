@@ -65,6 +65,8 @@ describe('Server selection and switching interactions', () => {
               Games: async () => ({ games: [] }),
               Gamer_default: async () => false,
               Profiles: async () => ({ profiles: [{ id: 'p1', label: 'Основной', current: true }] }),
+              Vless_options: async (id) => ({ nodes: [{ node_id: 'de-01', vless_available: true }, { node_id: 'nl-01', vless_available: false }] }),
+              Download_vless: async (id, node) => { window.vless_download = [id, node]; return { message: 'saved' }; },
               Servers: async () => ({
                 servers: [
                   { node_id: 'de-01', name: 'Frankfurt 1', country: 'DE', city: 'Frankfurt', available: true },
@@ -101,6 +103,26 @@ describe('Server selection and switching interactions', () => {
   after(async () => {
     if (browser) await browser.close();
     if (serverInfo) await serverInfo.close();
+  });
+
+  test('profile menu creates and saves VLESS on a capable node without changing the tunnel', async (t) => {
+    if (!browser) return t.skip('No browser');
+    await browser.evaluate(`document.getElementById('menu-button').click(); document.getElementById('profile-row').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    await browser.evaluate(`document.querySelector('#profile-list .vless-disclosure').click()`);
+    await new Promise(r => setTimeout(r, 150));
+    const result = await browser.evaluate(`(async () => {
+      const buttons = document.querySelectorAll('#profile-list .vless-options button');
+      if (buttons.length !== 1) throw new Error('Unavailable node offered for export');
+      buttons[0].click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return { download: window.vless_download, text: buttons[0].textContent, errors: window.page_errors, calls: window.strategy_calls.length };
+    })()`);
+    assert.deepEqual(result.download, ['p1', 'de-01']);
+    assert.match(result.text, /Файл сохранён/);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.calls, 0);
+    await browser.evaluate(`document.getElementById('menu-button').click()`);
   });
 
   test('selecting a server switches server with preferred by default', async (t) => {

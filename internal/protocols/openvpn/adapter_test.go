@@ -238,7 +238,7 @@ func Test_connect_returns_once_openvpn_reports_the_tunnel_set_up(t *testing.T) {
 		t.Fatalf("Status = %+v, want running over TCP", status)
 	}
 	joined := strings.Join(h.args, " ")
-	for _, want := range []string{"--config " + h.profile, "--windows-driver wintun", "--dev-node Singularity OpenVPN", "--connect-retry-max 1"} {
+	for _, want := range []string{"--config " + h.profile, "--windows-driver wintun", "--dev-node Singularity OpenVPN", "--connect-retry-max 1", "--sndbuf 524288", "--rcvbuf 524288"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("openvpn.exe arguments %q lack %q", joined, want)
 		}

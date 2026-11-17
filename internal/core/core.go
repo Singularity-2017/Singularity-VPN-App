@@ -94,8 +94,9 @@ type Dependencies struct {
 	Journal *journal.Journal
 	// Matches is where the servers detected for matches, and the
 	// player's confirmations of them, are kept; nil keeps them in memory.
-	Matches *matchserver.Store
-	Now     func() time.Time
+	Matches           *matchserver.Store
+	Now               func() time.Time
+	Conflict_detector func() *platform.Vpn_conflict
 
 	// Log_path is the service log whose newest part a problem report
 	// attaches; the one rolled over before it is read from path+".1".
@@ -131,6 +132,7 @@ type Application struct {
 	store                 connection.State_store
 	bus                   *events.Bus
 	device_name           string
+	conflict_detector     func() *platform.Vpn_conflict
 	logger                *slog.Logger
 	journal               *journal.Journal
 	now                   func() time.Time
@@ -245,6 +247,11 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		matches, _ = matchserver.Open_store("")
 	}
 
+	detector := dependencies.Conflict_detector
+	if detector == nil {
+		detector = platform.Detect_vpn_conflict
+	}
+
 	app := &Application{
 		statistics_stop:       make(chan struct{}),
 		statistics:            stats,
@@ -256,6 +263,7 @@ func New_application(dependencies Dependencies) (*Application, error) {
 		store:                 dependencies.Store,
 		bus:                   dependencies.Bus,
 		device_name:           dependencies.Device_name,
+		conflict_detector:     detector,
 		logger:                logger,
 		journal:               dependencies.Journal,
 		now:                   now,

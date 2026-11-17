@@ -354,6 +354,40 @@ func (h *conn_handler) dispatch(ctx context.Context, req Request, handlers *sync
 		result, err := h.service.Profiles(ctx)
 		h.reply(req.Id, result, err)
 
+	case Command_vless_options:
+		params, err := decode_params[Set_profile](req)
+		if err == nil {
+			err = params.Validate()
+		}
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		service, ok := h.service.(Vless_service)
+		if !ok {
+			h.reply(req.Id, nil, errors.New("ipc: profile exports unavailable"))
+			return
+		}
+		result, err := service.Vless_options(ctx, params)
+		h.reply(req.Id, result, err)
+
+	case Command_export_vless:
+		params, err := decode_params[Export_vless](req)
+		if err == nil {
+			err = params.Validate()
+		}
+		if err != nil {
+			h.respond_bad_request(req.Id, err)
+			return
+		}
+		service, ok := h.service.(Vless_service)
+		if !ok {
+			h.reply(req.Id, nil, errors.New("ipc: profile exports unavailable"))
+			return
+		}
+		result, err := service.Export_vless(ctx, params)
+		h.reply(req.Id, result, err)
+
 	case Command_set_profile:
 		params, err := decode_params[Set_profile](req)
 		if err != nil {

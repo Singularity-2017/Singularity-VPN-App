@@ -530,6 +530,15 @@ type Status_result struct {
 	// Failures is present when the connection has kept failing lately in a
 	// way no network change or disconnect explains; see Failure_signal.
 	Failures *Failure_signal `json:"failures,omitempty"`
+
+	// Conflict is present when another VPN client's active tunnel adapter
+	// (such as Happ) is up on the machine and may intercept or block traffic.
+	Conflict *Vpn_conflict `json:"conflict,omitempty"`
+}
+
+type Vpn_conflict struct {
+	Adapter string `json:"adapter"`
+	Name    string `json:"name"`
 }
 
 // Version_result answers Command_version. Every field is omitempty for the

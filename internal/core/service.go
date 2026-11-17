@@ -41,6 +41,11 @@ func (a *Application) Status(ctx context.Context) (ipc.Status_result, error) {
 		State:     string(snapshot.State),
 		Signed_in: signed_in,
 	}
+	if a.conflict_detector != nil {
+		if c := a.conflict_detector(); c != nil {
+			result.Conflict = &ipc.Vpn_conflict{Adapter: c.Adapter, Name: c.Name}
+		}
+	}
 	result.Statistics_error = a.statistics_error.Load()
 	if a.statistics != nil {
 		stats := a.statistics.Snapshot()

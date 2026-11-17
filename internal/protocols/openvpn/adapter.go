@@ -133,6 +133,8 @@ func (a *Adapter) arguments() []string {
 		"--connect-retry-max", "1",
 		"--server-poll-timeout", poll_timeout,
 		"--resolv-retry", "5",
+		"--sndbuf", "524288",
+		"--rcvbuf", "524288",
 		"--verb", "3",
 		"--suppress-timestamps",
 	}

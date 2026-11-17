@@ -151,6 +151,8 @@ button { cursor: pointer; }
 .notice { max-width: 340px; display: flex; flex-direction: column; gap: 10px; padding: 20px; border-radius: 14px; background: var(--inset); border: 1px solid #2c343c; }
 .notice-title { font-size: 16px; font-weight: 600; }
 .notice.warn .notice-title { color: var(--warn); }
+.conflict-banner { max-width: none; width: 100%; border-color: var(--warn); background: rgba(245, 158, 11, 0.12); padding: 14px 16px; gap: 6px; margin-bottom: 10px; }
+.conflict-banner .notice-title { font-size: 17px; }
 
 .signin { display: flex; flex-direction: column; gap: 14px; padding-top: 24px; }
 .signin-title { font-size: 22px; font-weight: 600; }
